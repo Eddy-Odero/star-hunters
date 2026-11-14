@@ -1,10 +1,11 @@
 # Stage 1: Build React + TypeScript + Vite Frontend
 FROM node:22-alpine AS frontend-builder
 WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
+RUN corepack enable
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY frontend/ ./
-RUN npm run build
+RUN pnpm build
 
 # Stage 2: FastAPI Backend + Static Frontend Bundle
 FROM python:3.11-slim AS runtime
