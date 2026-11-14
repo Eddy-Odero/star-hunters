@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sky Flipbook — SPHEREx & WiseView Time-Series Viewer</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- FontAwesome for Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation Bar -->
+        <header class="app-header">
+            <div class="header-left">
+                <span class="nav-links">Settings &nbsp;|&nbsp; Links &nbsp;|&nbsp; Help &nbsp;|&nbsp; About</span>
+            </div>
+            <div class="header-center">
+                <span id="epoch-display" class="epoch-badge">2017.5 - 2021.1</span>
+            </div>
+            <div class="header-right">
+                <button id="theme-toggle" class="icon-btn" title="Toggle Theme"><i class="fa-solid fa-moon"></i></button>
+            </div>
+        </header>
+
+        <!-- Main Workspace Grid -->
+        <div class="workspace">
+            <!-- Left Control Panel -->
+            <aside class="control-panel">
+                <div class="control-group">
+                    <label class="control-label">Right ascension and declination</label>
+                    <input type="text" id="radec-input" class="text-input" value="133.708245 -7.244372">
+                </div>
+
+                <div class="control-row">
+                    <div class="control-group half">
+                        <input type="number" id="fov-input" class="text-input" value="176">
+                        <label class="control-sublabel">Field of View (arcseconds)</label>
+                    </div>
+                    <div class="control-group half">
+                        <select id="band-select" class="select-input">
+                            <option value="W2">W2</option>
+                            <option value="W1">W1</option>
+                            <option value="SPHEREx2">SPHEREx B2</option>
+                        </select>
+                        <label class="control-sublabel">Band[s]</label>
+                    </div>
+                </div>
+
+                <button class="btn-primary-outline">Apply defaults</button>
+
+                <div class="control-group slider-group">
+                    <div class="slider-label"><span>Sliding window (0.30 yrs)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
+                    <input type="range" min="0.1" max="1.0" step="0.05" value="0.30" class="range-slider">
+                </div>
+
+                <div class="control-group slider-group">
+                    <div class="slider-label"><span>Blink interval (500.00 ms)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
+                    <input type="range" min="100" max="1000" step="50" value="500" class="range-slider">
+                </div>
+
+                <div class="control-group slider-group">
+                    <div class="slider-label"><span>Zoom (35.0)</span></div>
+                    <input type="range" min="10" max="50" step="1" value="35" class="range-slider" id="zoom-slider">
+                </div>
+
+                <div class="control-group slider-group">
+                    <div class="slider-label"><span>Min - max pixel values: -22 - 347</span><i class="fa-solid fa-circle-info info-icon"></i></div>
+                    <input type="range" min="0" max="100" value="45" class="range-slider">
+                </div>
+
+                <div class="control-group slider-group">
+                    <div class="slider-label"><span>Stretch Linearity (1.150)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
+                    <input type="range" min="0.5" max="2.0" step="0.05" value="1.15" class="range-slider">
+                </div>
+
+                <!-- Checkbox Toggles -->
+                <div class="checkbox-list">
+                    <label class="checkbox-item"><input type="checkbox" checked id="chk-invert"> Invert pixel values</label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Maximize dynamic range</label>
+                    <label class="checkbox-item"><input type="checkbox"> Separate scan directions</label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Use only NEOWISE Imagery</label>
+                    <label class="checkbox-item"><input type="checkbox"> Skip middle epochs</label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Skip duplicate windows</label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Smooth by scan direction <i class="fa-solid fa-circle-info info-icon"></i></label>
+                    <label class="checkbox-item"><input type="checkbox"> Border epoch 0</label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Gaia DR3 overlay <i class="fa-solid fa-circle-info info-icon"></i></label>
+                    <label class="checkbox-item"><input type="checkbox" checked> Difference imaging <i class="fa-solid fa-circle-info info-icon"></i></label>
+                </div>
+
+                <div class="control-group">
+                    <label class="control-label">Exclusion window (1.00 yrs)</label>
+                    <input type="text" class="text-input" value="">
+                </div>
+
+                <div class="checkbox-list">
+                    <label class="checkbox-item"><input type="checkbox" checked> Astrometric fit <i class="fa-solid fa-circle-info info-icon"></i></label>
+                    <label class="checkbox-item"><input type="checkbox" checked id="chk-synthetic"> Synthetic Object <i class="fa-solid fa-circle-info info-icon"></i></label>
+                </div>
+
+                <div class="synthetic-box">
+                    <div class="synthetic-title">Synthetic Asteroid</div>
+                    <div class="synthetic-inputs">
+                        <input type="text" value="0" class="mini-input"> <span class="unit">mas/yr</span>
+                        <input type="text" value="26.3" class="mini-input"> <span class="unit">%</span>
+                    </div>
+                    <input type="range" min="0" max="100" value="26" class="range-slider">
+                    
+                    <div class="synthetic-title mt-2">Synthetic Comet</div>
+                    <input type="text" class="text-input mb-1" value="233.786245 -7.244372">
+                    <div class="flex-row">
+                        <span>Orbital</span> <input type="text" value="8.05" class="mini-input"> <span class="unit">mas/yr</span>
+                    </div>
+                </div>
+
+                <div class="footer-note">
+                    WiseView (v3.1 Beta) is operated by the American Museum of Natural History, in partnership with NASA/JPL.<br><br>
+                    Designed for modern browsers. Has known issues in IE.
+                </div>
+            </aside>
+
+            <!-- Center Viewport & Canvas -->
+            <main class="viewport-main">
+                <div class="canvas-wrapper">
+                    <canvas id="sky-canvas" width="800" height="750"></canvas>
+                    
+                    <!-- Interactive UI Overlays on Canvas -->
+                    <div class="overlay-badge target-w18e">
+                        <span class="target-cross">🎯</span>
+                        <span class="target-label">W18E 0855</span>
+                    </div>
+
+                    <div class="overlay-badge target-g1">
+                        <span class="g-badge">G</span>
+                    </div>
+
+                    <div class="overlay-badge target-a1">
+                        <span class="a1-badge">A1</span>
+                        <div class="arrow-indicator"></div>
+                    </div>
+                </div>
+
+                <!-- Bottom Timeline & Player Controls -->
+                <footer class="timeline-footer">
+                    <div class="timeline-info">
+                        <span id="current-frame-label">Frame 1 of 4</span>
+                        <span id="timestamp-label">2029-08-21 04:10 (0)</span>
+                        <span id="coord-label">2029-08-21 06:28 UTC - DEC: 232.4.6</span>
+                    </div>
+                    
+                    <div class="timeline-controls">
+                        <button class="control-btn" id="btn-prev"><i class="fa-solid fa-backward-step"></i></button>
+                        <button class="control-btn active" id="btn-pause"><i class="fa-solid fa-pause"></i> H Pause</button>
+                        <button class="control-btn" id="btn-next"><i class="fa-solid fa-forward-step"></i></button>
+                        <div class="speed-control">
+                            <span>Speed:</span>
+                            <button class="speed-pill active">4.3x</button>
+                            <button class="speed-pill">1x</button>
+                            <button class="speed-pill">2x</button>
+                        </div>
+                    </div>
+                </footer>
+            </main>
+
+            <!-- Right Observation Panel -->
+            <aside class="observation-panel">
+                <div.obs-header>
+                    <div class="top-search-row">
+                        <button class="search-btn"><i class="fa-solid fa-magnifying-glass"></i> Search Sky</button>
+                        <button class="sample-btn">● Sample: WISE 0833</button>
+                    </div>
+                    <div class="coord-pills">
+                        <span class="pill">Select 0F1</span>
+                        <span class="pill">Moderva 0F1</span>
+                        <span class="pill">Large 0F1</span>
+                    </div>
+                </div>
+
+                <div class="obs-section-title">
+                    <span>SPHEREx Observations <i class="fa-solid fa-circle-question"></i></span>
+                    <i class="fa-solid fa-chevron-up"></i>
+                </div>
+                <p class="obs-subtitle">Gary sky kan to urgent bost opach</p>
+
+                <!-- Epoch Frames List -->
+                <div class="epoch-list" id="epoch-list">
+                    <div class="epoch-item active" data-epoch="0">
+                        <div class="epoch-text">
+                            <strong>Frame 1: 2019-07-01 19:22 UTC</strong>
+                            <span>Fiem 3 - 3.33 pm • Tap. 322.2 s</span>
+                        </div>
+                        <button class="flux-btn">428 43913.43</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="1">
+                        <div class="epoch-text">
+                            <strong>Frame 2: 2019-07-01 20:20 UTC</strong>
+                            <span>Fiem 5 - 2.30 pm • Tap. 332.4 s</span>
+                        </div>
+                        <button class="flux-btn">428 42617.23</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="2">
+                        <div class="epoch-text">
+                            <strong>Frame 3: 2019-07-01 12:22 UTC</strong>
+                            <span>From S - 5.30 pm • Tap. 332.5 s</span>
+                        </div>
+                        <button class="flux-btn">438 43775.93</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="3">
+                        <div class="epoch-text">
+                            <strong>Frame 4: 2019-07-01 12:22 UTC</strong>
+                            <span>From 5 - 3.30 pm • Tap. 322.3 s</span>
+                        </div>
+                        <button class="flux-btn">428 42377.37</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="4">
+                        <div class="epoch-text">
+                            <strong>Frame 5: 2029-07-01 12:22 UTC</strong>
+                            <span>From 5 - 3.30 pm • Tap. 322,4 s</span>
+                        </div>
+                        <button class="flux-btn">438 42377.57</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="5">
+                        <div class="epoch-text">
+                            <strong>Frame 6: 2029-07-01 12:22 UTC</strong>
+                            <span>From S - 5.30 pm • Tap. 332.9 S</span>
+                        </div>
+                        <button class="flux-btn">438 42577.57</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="6">
+                        <div class="epoch-text">
+                            <strong>Frame 6: 2029-07-11 12:32 UTC</strong>
+                            <span>From 5 - 5.30 pm • Tap. 332.3 s</span>
+                        </div>
+                        <button class="flux-btn">438 42277.57</button>
+                    </div>
+                    <div class="epoch-item" data-epoch="7">
+                        <div class="epoch-text">
+                            <strong>Frame 7: 2029-01-01 22:22 UTC</strong>
+                            <span>Comer S - 9.20 am • Tap. 329.4 s</span>
+                        </div>
+                        <button class="flux-btn">438 42177.43</button>
+                    </div>
+                </div>
+
+                <!-- What to Look For Box -->
+                <div class="guide-box">
+                    <div class="guide-header">
+                        <span>What to Look For</span>
+                        <span class="guide-tag">Brown to Look For</span>
+                    </div>
+                    <ul class="guide-list">
+                        <li>• Eabonveny stere teot tested to glone diine dieseite mave secone areund event.</li>
+                        <li>• Mendngosialyst (Soe existiy frewn downs in deterazed step identify access the frame from sole to dats.</li>
+                        <li>• Coit. Sling Elecring Expeet cliose the image, then top the wroring fior prifo for in ta coviviness.</li>
+                    </ul>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
