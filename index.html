@@ -1,263 +1,512 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sky Flipbook — SPHEREx & WiseView Time-Series Viewer</title>
-    <link rel="stylesheet" href="style.css">
-    <!-- FontAwesome for Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sky Flipbook — SPHEREx & WiseView Citizen Science Viewer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            space: {
+              950: '#090d16',
+              900: '#0e1422',
+              850: '#111827',
+              800: '#162033',
+              700: '#1f2937',
+              600: '#334155',
+            }
+          }
+        }
+      }
+    }
+  </script>
 </head>
-<body>
-    <div class="app-container">
-        <!-- Top Navigation Bar -->
-        <header class="app-header">
-            <div class="header-left">
-                <span class="nav-links">Settings &nbsp;|&nbsp; Links &nbsp;|&nbsp; Help &nbsp;|&nbsp; About</span>
-            </div>
-            <div class="header-center">
-                <span id="epoch-display" class="epoch-badge">2017.5 - 2021.1</span>
-            </div>
-            <div class="header-right">
-                <button id="theme-toggle" class="icon-btn" title="Toggle Theme"><i class="fa-solid fa-moon"></i></button>
-            </div>
-        </header>
+<body class="min-h-screen flex flex-col bg-space-950 text-slate-200 selection:bg-cyan-500/30 selection:text-cyan-200">
 
-        <!-- Main Workspace Grid -->
-        <div class="workspace">
-            <!-- Left Control Panel -->
-            <aside class="control-panel">
-                <div class="control-group">
-                    <label class="control-label">Right ascension and declination</label>
-                    <input type="text" id="radec-input" class="text-input" value="133.708245 -7.244372">
-                </div>
-
-                <div class="control-row">
-                    <div class="control-group half">
-                        <input type="number" id="fov-input" class="text-input" value="176">
-                        <label class="control-sublabel">Field of View (arcseconds)</label>
-                    </div>
-                    <div class="control-group half">
-                        <select id="band-select" class="select-input">
-                            <option value="W2">W2</option>
-                            <option value="W1">W1</option>
-                            <option value="SPHEREx2">SPHEREx B2</option>
-                        </select>
-                        <label class="control-sublabel">Band[s]</label>
-                    </div>
-                </div>
-
-                <button class="btn-primary-outline">Apply defaults</button>
-
-                <div class="control-group slider-group">
-                    <div class="slider-label"><span>Sliding window (0.30 yrs)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
-                    <input type="range" min="0.1" max="1.0" step="0.05" value="0.30" class="range-slider">
-                </div>
-
-                <div class="control-group slider-group">
-                    <div class="slider-label"><span>Blink interval (500.00 ms)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
-                    <input type="range" min="100" max="1000" step="50" value="500" class="range-slider">
-                </div>
-
-                <div class="control-group slider-group">
-                    <div class="slider-label"><span>Zoom (35.0)</span></div>
-                    <input type="range" min="10" max="50" step="1" value="35" class="range-slider" id="zoom-slider">
-                </div>
-
-                <div class="control-group slider-group">
-                    <div class="slider-label"><span>Min - max pixel values: -22 - 347</span><i class="fa-solid fa-circle-info info-icon"></i></div>
-                    <input type="range" min="0" max="100" value="45" class="range-slider">
-                </div>
-
-                <div class="control-group slider-group">
-                    <div class="slider-label"><span>Stretch Linearity (1.150)</span><i class="fa-solid fa-circle-info info-icon"></i></div>
-                    <input type="range" min="0.5" max="2.0" step="0.05" value="1.15" class="range-slider">
-                </div>
-
-                <!-- Checkbox Toggles -->
-                <div class="checkbox-list">
-                    <label class="checkbox-item"><input type="checkbox" checked id="chk-invert"> Invert pixel values</label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Maximize dynamic range</label>
-                    <label class="checkbox-item"><input type="checkbox"> Separate scan directions</label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Use only NEOWISE Imagery</label>
-                    <label class="checkbox-item"><input type="checkbox"> Skip middle epochs</label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Skip duplicate windows</label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Smooth by scan direction <i class="fa-solid fa-circle-info info-icon"></i></label>
-                    <label class="checkbox-item"><input type="checkbox"> Border epoch 0</label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Gaia DR3 overlay <i class="fa-solid fa-circle-info info-icon"></i></label>
-                    <label class="checkbox-item"><input type="checkbox" checked> Difference imaging <i class="fa-solid fa-circle-info info-icon"></i></label>
-                </div>
-
-                <div class="control-group">
-                    <label class="control-label">Exclusion window (1.00 yrs)</label>
-                    <input type="text" class="text-input" value="">
-                </div>
-
-                <div class="checkbox-list">
-                    <label class="checkbox-item"><input type="checkbox" checked> Astrometric fit <i class="fa-solid fa-circle-info info-icon"></i></label>
-                    <label class="checkbox-item"><input type="checkbox" checked id="chk-synthetic"> Synthetic Object <i class="fa-solid fa-circle-info info-icon"></i></label>
-                </div>
-
-                <div class="synthetic-box">
-                    <div class="synthetic-title">Synthetic Asteroid</div>
-                    <div class="synthetic-inputs">
-                        <input type="text" value="0" class="mini-input"> <span class="unit">mas/yr</span>
-                        <input type="text" value="26.3" class="mini-input"> <span class="unit">%</span>
-                    </div>
-                    <input type="range" min="0" max="100" value="26" class="range-slider">
-                    
-                    <div class="synthetic-title mt-2">Synthetic Comet</div>
-                    <input type="text" class="text-input mb-1" value="233.786245 -7.244372">
-                    <div class="flex-row">
-                        <span>Orbital</span> <input type="text" value="8.05" class="mini-input"> <span class="unit">mas/yr</span>
-                    </div>
-                </div>
-
-                <div class="footer-note">
-                    WiseView (v3.1 Beta) is operated by the American Museum of Natural History, in partnership with NASA/JPL.<br><br>
-                    Designed for modern browsers. Has known issues in IE.
-                </div>
-            </aside>
-
-            <!-- Center Viewport & Canvas -->
-            <main class="viewport-main">
-                <div class="canvas-wrapper">
-                    <canvas id="sky-canvas" width="800" height="750"></canvas>
-                    
-                    <!-- Interactive UI Overlays on Canvas -->
-                    <div class="overlay-badge target-w18e">
-                        <span class="target-cross">🎯</span>
-                        <span class="target-label">W18E 0855</span>
-                    </div>
-
-                    <div class="overlay-badge target-g1">
-                        <span class="g-badge">G</span>
-                    </div>
-
-                    <div class="overlay-badge target-a1">
-                        <span class="a1-badge">A1</span>
-                        <div class="arrow-indicator"></div>
-                    </div>
-                </div>
-
-                <!-- Bottom Timeline & Player Controls -->
-                <footer class="timeline-footer">
-                    <div class="timeline-info">
-                        <span id="current-frame-label">Frame 1 of 4</span>
-                        <span id="timestamp-label">2029-08-21 04:10 (0)</span>
-                        <span id="coord-label">2029-08-21 06:28 UTC - DEC: 232.4.6</span>
-                    </div>
-                    
-                    <div class="timeline-controls">
-                        <button class="control-btn" id="btn-prev"><i class="fa-solid fa-backward-step"></i></button>
-                        <button class="control-btn active" id="btn-pause"><i class="fa-solid fa-pause"></i> H Pause</button>
-                        <button class="control-btn" id="btn-next"><i class="fa-solid fa-forward-step"></i></button>
-                        <div class="speed-control">
-                            <span>Speed:</span>
-                            <button class="speed-pill active">4.3x</button>
-                            <button class="speed-pill">1x</button>
-                            <button class="speed-pill">2x</button>
-                        </div>
-                    </div>
-                </footer>
-            </main>
-
-            <!-- Right Observation Panel -->
-            <aside class="observation-panel">
-                <div.obs-header>
-                    <div class="top-search-row">
-                        <button class="search-btn"><i class="fa-solid fa-magnifying-glass"></i> Search Sky</button>
-                        <button class="sample-btn">● Sample: WISE 0833</button>
-                    </div>
-                    <div class="coord-pills">
-                        <span class="pill">Select 0F1</span>
-                        <span class="pill">Moderva 0F1</span>
-                        <span class="pill">Large 0F1</span>
-                    </div>
-                </div>
-
-                <div class="obs-section-title">
-                    <span>SPHEREx Observations <i class="fa-solid fa-circle-question"></i></span>
-                    <i class="fa-solid fa-chevron-up"></i>
-                </div>
-                <p class="obs-subtitle">Gary sky kan to urgent bost opach</p>
-
-                <!-- Epoch Frames List -->
-                <div class="epoch-list" id="epoch-list">
-                    <div class="epoch-item active" data-epoch="0">
-                        <div class="epoch-text">
-                            <strong>Frame 1: 2019-07-01 19:22 UTC</strong>
-                            <span>Fiem 3 - 3.33 pm • Tap. 322.2 s</span>
-                        </div>
-                        <button class="flux-btn">428 43913.43</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="1">
-                        <div class="epoch-text">
-                            <strong>Frame 2: 2019-07-01 20:20 UTC</strong>
-                            <span>Fiem 5 - 2.30 pm • Tap. 332.4 s</span>
-                        </div>
-                        <button class="flux-btn">428 42617.23</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="2">
-                        <div class="epoch-text">
-                            <strong>Frame 3: 2019-07-01 12:22 UTC</strong>
-                            <span>From S - 5.30 pm • Tap. 332.5 s</span>
-                        </div>
-                        <button class="flux-btn">438 43775.93</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="3">
-                        <div class="epoch-text">
-                            <strong>Frame 4: 2019-07-01 12:22 UTC</strong>
-                            <span>From 5 - 3.30 pm • Tap. 322.3 s</span>
-                        </div>
-                        <button class="flux-btn">428 42377.37</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="4">
-                        <div class="epoch-text">
-                            <strong>Frame 5: 2029-07-01 12:22 UTC</strong>
-                            <span>From 5 - 3.30 pm • Tap. 322,4 s</span>
-                        </div>
-                        <button class="flux-btn">438 42377.57</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="5">
-                        <div class="epoch-text">
-                            <strong>Frame 6: 2029-07-01 12:22 UTC</strong>
-                            <span>From S - 5.30 pm • Tap. 332.9 S</span>
-                        </div>
-                        <button class="flux-btn">438 42577.57</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="6">
-                        <div class="epoch-text">
-                            <strong>Frame 6: 2029-07-11 12:32 UTC</strong>
-                            <span>From 5 - 5.30 pm • Tap. 332.3 s</span>
-                        </div>
-                        <button class="flux-btn">438 42277.57</button>
-                    </div>
-                    <div class="epoch-item" data-epoch="7">
-                        <div class="epoch-text">
-                            <strong>Frame 7: 2029-01-01 22:22 UTC</strong>
-                            <span>Comer S - 9.20 am • Tap. 329.4 s</span>
-                        </div>
-                        <button class="flux-btn">438 42177.43</button>
-                    </div>
-                </div>
-
-                <!-- What to Look For Box -->
-                <div class="guide-box">
-                    <div class="guide-header">
-                        <span>What to Look For</span>
-                        <span class="guide-tag">Brown to Look For</span>
-                    </div>
-                    <ul class="guide-list">
-                        <li>• Eabonveny stere teot tested to glone diine dieseite mave secone areund event.</li>
-                        <li>• Mendngosialyst (Soe existiy frewn downs in deterazed step identify access the frame from sole to dats.</li>
-                        <li>• Coit. Sling Elecring Expeet cliose the image, then top the wroring fior prifo for in ta coviviness.</li>
-                    </ul>
-                </div>
-            </aside>
-        </div>
+  <!-- Toast Notification Banner -->
+  <div id="toastBanner" class="fixed top-4 right-4 z-50 pointer-events-none opacity-0 translate-y-[-10px] transition-all duration-300">
+    <div class="bg-space-850/95 backdrop-blur-md border border-cyan-500/50 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 max-w-md">
+      <span id="toastIcon" class="w-2.5 h-2.5 rounded-full bg-teal-400 shrink-0"></span>
+      <p id="toastMessage" class="text-xs font-medium leading-relaxed"></p>
     </div>
+  </div>
 
-    <script src="script.js"></script>
+  <!-- Top Navigation & Coordinate Search Header -->
+  <header class="bg-space-900/95 border-b border-space-700/80 px-4 py-3 sticky top-0 z-30 backdrop-blur-md">
+    <div class="max-w-[1680px] mx-auto flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+      
+      <!-- Brand & Subtitle -->
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500/20 to-teal-500/20 border border-cyan-400/40 flex items-center justify-center shadow-inner shrink-0">
+            <svg class="w-5 h-5 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="9" stroke-dasharray="3 2" />
+              <circle cx="12" cy="12" r="3" fill="currentColor" />
+              <path d="M12 1v3M12 20v3M1 12h3M20 12h3" />
+            </svg>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <h1 class="text-sm sm:text-base font-bold tracking-tight text-white">Sky Flipbook</h1>
+              <span class="text-[10px] font-mono uppercase tracking-wider px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30">SPHEREx × WiseView</span>
+            </div>
+            <p class="text-xs text-slate-400">Enter sky coordinates to flip through time-series telescope observations and spot moving objects.</p>
+          </div>
+        </div>
+        <!-- Mobile Sidebar Toggle -->
+        <button id="toggleLeftDrawerBtn" class="lg:hidden px-3 py-1.5 rounded-lg bg-space-800 border border-space-700 text-xs font-medium text-slate-300 hover:text-white">
+          Tools
+        </button>
+      </div>
+
+      <!-- Coordinate Inputs & Patch Size Controls -->
+      <div class="flex flex-wrap items-end gap-2.5">
+        <!-- Right Ascension -->
+        <div class="flex flex-col gap-1 min-w-[135px] flex-1 sm:flex-initial">
+          <div class="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+            <span class="font-medium text-slate-300">Right Ascension (RA)</span>
+            <span class="font-mono text-slate-500">0° to 360°</span>
+          </div>
+          <div class="relative flex items-center">
+            <input id="raInput" type="number" step="0.000001" value="133.786245"
+              class="w-full bg-space-950 border border-space-700 focus:border-cyan-400 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none transition" />
+            <span class="absolute right-2.5 text-[10px] font-mono text-slate-500 pointer-events-none">deg</span>
+          </div>
+        </div>
+
+        <!-- Declination -->
+        <div class="flex flex-col gap-1 min-w-[135px] flex-1 sm:flex-initial">
+          <div class="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+            <span class="font-medium text-slate-300">Declination (Dec)</span>
+            <span class="font-mono text-slate-500">-90° to +90°</span>
+          </div>
+          <div class="relative flex items-center">
+            <input id="decInput" type="number" step="0.000001" value="-7.244372"
+              class="w-full bg-space-950 border border-space-700 focus:border-cyan-400 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none transition" />
+            <span class="absolute right-2.5 text-[10px] font-mono text-slate-500 pointer-events-none">deg</span>
+          </div>
+        </div>
+
+        <!-- Patch Size (Field of View) -->
+        <div class="flex flex-col gap-1">
+          <div class="flex items-center justify-between text-[10px] text-slate-400 px-0.5">
+            <span class="font-medium text-slate-300">Patch Size (Field of View)</span>
+            <span id="fovArcsecLabel" class="font-mono text-cyan-400 ml-2">176"</span>
+          </div>
+          <div class="inline-flex bg-space-950 p-0.5 rounded-lg border border-space-700">
+            <button type="button" data-fov="small" class="fov-btn px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-400 hover:text-white transition">Small (2.5')</button>
+            <button type="button" data-fov="medium" class="fov-btn px-2.5 py-1 rounded-md text-[11px] font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 transition">Medium (5')</button>
+            <button type="button" data-fov="large" class="fov-btn px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-400 hover:text-white transition">Large (10')</button>
+          </div>
+        </div>
+
+        <!-- Search Sky CTA -->
+        <button id="searchSkyBtn" type="button"
+          class="px-4 py-1.5 rounded-lg bg-gradient-to-r from-teal-400 to-cyan-400 hover:from-teal-300 hover:to-cyan-300 text-space-950 font-bold text-xs shadow-lg shadow-cyan-500/20 flex items-center gap-1.5 transition active:scale-[0.98] h-[32px]">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+          </svg>
+          Search Sky
+        </button>
+
+        <!-- Sample Presets Dropdown/Button -->
+        <div class="relative">
+          <button id="samplePresetBtn" type="button"
+            class="px-3 py-1.5 rounded-lg bg-space-850 hover:bg-space-800 border border-space-700 text-xs font-medium text-slate-200 flex items-center gap-2 transition h-[32px]">
+            <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+            <span id="currentSampleLabel">Sample: WISE 0855</span>
+            <svg class="w-3.5 h-3.5 text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div id="sampleMenu" class="hidden absolute right-0 mt-1.5 w-64 bg-space-850 border border-space-700 rounded-xl shadow-2xl py-1.5 z-40">
+            <div class="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Target Fields</div>
+            <button type="button" data-preset="wise0855" class="preset-item w-full text-left px-3 py-2 hover:bg-space-800 transition flex flex-col">
+              <span class="text-xs font-semibold text-amber-300">WISE 0855-0714 (Brown Dwarf)</span>
+              <span class="text-[10px] font-mono text-slate-400">RA 133.786245 · Dec -7.244372</span>
+            </button>
+            <button type="button" data-preset="asteroid" class="preset-item w-full text-left px-3 py-2 hover:bg-space-800 transition flex flex-col">
+              <span class="text-xs font-semibold text-cyan-300">2024 NEO-K7 (Fast Moving Asteroid)</span>
+              <span class="text-[10px] font-mono text-slate-400">RA 214.512800 · Dec +14.882100</span>
+            </button>
+            <button type="button" data-preset="stationary" class="preset-item w-full text-left px-3 py-2 hover:bg-space-800 transition flex flex-col">
+              <span class="text-xs font-semibold text-slate-200">Cygnus Calibration Field (Stationary)</span>
+              <span class="text-[10px] font-mono text-slate-400">RA 301.240000 · Dec +38.415000</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Main 3-Column Observatory Workspace -->
+  <main class="flex-1 max-w-[1680px] w-full mx-auto p-3 sm:p-4 grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+
+    <!-- LEFT SIDEBAR: Scientific WiseView Image Processing Controls -->
+    <aside id="leftSidebar" class="lg:col-span-3 xl:col-span-2 bg-space-850/90 border border-space-700/80 rounded-xl p-3.5 flex flex-col gap-3.5 shadow-xl">
+      <!-- Panel Header Tabs -->
+      <div class="flex items-center justify-between border-b border-space-700 pb-2">
+        <div class="flex items-center gap-1.5">
+          <span class="px-2.5 py-1 rounded-md bg-space-700 text-white text-xs font-semibold">Settings</span>
+          <button type="button" id="infoModalBtn" class="px-2 py-1 rounded-md text-slate-400 hover:text-white text-xs transition">FITS Info</button>
+        </div>
+        <span class="text-[10px] font-mono text-cyan-400">WiseView v3.1</span>
+      </div>
+
+      <!-- Band & Arcsec Settings -->
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <label class="text-[11px] font-medium text-slate-300">Spectral Band</label>
+          <span id="bandWavelengthBadge" class="text-[10px] font-mono text-teal-300 bg-teal-500/10 border border-teal-500/30 px-1.5 py-0.5 rounded">4.6 µm</span>
+        </div>
+        <select id="bandSelect" class="w-full bg-space-950 border border-space-700 focus:border-cyan-400 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-100 outline-none">
+          <option value="W2">W2 — 4.6 µm (NEOWISE / SPHEREx)</option>
+          <option value="W1">W1 — 3.4 µm (Near-IR Continuum)</option>
+          <option value="SPHEREx-B2">SPHEREx Band 2 — 1.63 µm</option>
+          <option value="SPHEREx-B3">SPHEREx Band 3 — 2.41 µm</option>
+        </select>
+
+        <button id="applyDefaultsBtn" type="button"
+          class="w-full py-1.5 px-3 rounded-lg bg-space-800 hover:bg-space-700 border border-space-600 text-xs font-medium text-slate-200 transition">
+          Apply defaults
+        </button>
+      </div>
+
+      <!-- Sliders Group -->
+      <div class="space-y-3 border-t border-space-700/80 pt-3">
+        <div>
+          <div class="flex justify-between text-[11px] mb-1">
+            <span class="text-slate-300">Sliding window</span>
+            <span id="slidingWindowVal" class="font-mono text-cyan-300">0.30 yrs</span>
+          </div>
+          <input id="slidingWindowSlider" type="range" min="0.1" max="1.0" step="0.05" value="0.30" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-[11px] mb-1">
+            <span class="text-slate-300">Blink interval</span>
+            <span id="blinkIntervalVal" class="font-mono text-cyan-300">650 ms</span>
+          </div>
+          <input id="blinkIntervalSlider" type="range" min="150" max="1500" step="50" value="650" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-[11px] mb-1">
+            <span class="text-slate-300">Detector Zoom</span>
+            <span id="zoomVal" class="font-mono text-cyan-300">1.0x</span>
+          </div>
+          <input id="zoomSlider" type="range" min="1.0" max="3.0" step="0.1" value="1.0" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-[11px] mb-1">
+            <span class="text-slate-300">Pixel Stretch (Contrast)</span>
+            <span id="stretchVal" class="font-mono text-cyan-300">1.15</span>
+          </div>
+          <input id="stretchSlider" type="range" min="0.5" max="2.5" step="0.05" value="1.15" class="w-full" />
+        </div>
+
+        <div>
+          <div class="flex justify-between text-[11px] mb-1">
+            <span class="text-slate-300">Min-Max Black Point</span>
+            <span id="blackPointVal" class="font-mono text-cyan-300">-22 to 347</span>
+          </div>
+          <input id="blackPointSlider" type="range" min="-60" max="80" step="2" value="-22" class="w-full" />
+        </div>
+      </div>
+
+      <!-- Scientific Checkboxes -->
+      <div class="space-y-2 border-t border-space-700/80 pt-3 text-xs">
+        <label class="flex items-center gap-2.5 cursor-pointer select-none group">
+          <input id="chkInvert" type="checkbox" class="w-3.5 h-3.5 rounded accent-cyan-400 bg-space-950 border-space-600" />
+          <span class="text-slate-300 group-hover:text-white transition">Invert pixel values</span>
+        </label>
+
+        <label class="flex items-center gap-2.5 cursor-pointer select-none group">
+          <input id="chkMaxDynamic" type="checkbox" checked class="w-3.5 h-3.5 rounded accent-cyan-400 bg-space-950 border-space-600" />
+          <span class="text-slate-300 group-hover:text-white transition">Maximize dynamic range</span>
+        </label>
+
+        <label class="flex items-center gap-2.5 cursor-pointer select-none group">
+          <input id="chkNeowiseOnly" type="checkbox" checked class="w-3.5 h-3.5 rounded accent-cyan-400 bg-space-950 border-space-600" />
+          <span class="text-slate-300 group-hover:text-white transition">Use only NEOWISE imagery</span>
+        </label>
+
+        <label class="flex items-center gap-2.5 cursor-pointer select-none group">
+          <input id="chkSmoothScan" type="checkbox" class="w-3.5 h-3.5 rounded accent-cyan-400 bg-space-950 border-space-600" />
+          <span class="text-slate-300 group-hover:text-white transition">Smooth by scan direction</span>
+        </label>
+
+        <label class="flex items-center gap-2.5 cursor-pointer select-none group">
+          <input id="chkGaiaOverlay" type="checkbox" checked class="w-3.5 h-3.5 rounded accent-cyan-400 bg-space-950 border-space-600" />
+          <span class="text-slate-300 group-hover:text-white transition">Gaia DR3 overlay</span>
+        </label>
+      </div>
+
+      <!-- Difference Imaging & Moving Target Highlight Boxes -->
+      <div class="space-y-2.5 border-t border-space-700/80 pt-3 text-xs">
+        <div class="p-2.5 rounded-lg bg-space-900/90 border border-space-700/80 space-y-2">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input id="chkDiffImaging" type="checkbox" class="w-3.5 h-3.5 rounded accent-teal-400" />
+            <span class="font-medium text-teal-300">Difference imaging</span>
+          </label>
+          <p class="text-[10px] text-slate-400 leading-snug">Subtracts median static frame to isolate moving sources.</p>
+        </div>
+
+        <div class="p-2.5 rounded-lg bg-space-900/90 border border-space-700/80 space-y-1.5">
+          <label class="flex items-center gap-2 cursor-pointer select-none">
+            <input id="chkVectorOverlay" type="checkbox" checked class="w-3.5 h-3.5 rounded accent-cyan-400" />
+            <span class="font-medium text-cyan-300">Proper Motion Vector (A1)</span>
+          </label>
+          <div class="flex items-center justify-between text-[10px] font-mono text-slate-400 pt-1">
+            <span>pmRA: -810 mas/yr</span>
+            <span>pmDec: +680 mas/yr</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-[10px] text-slate-500 leading-relaxed pt-1 border-t border-space-700/50">
+        WiseView engine adapted for <span class="text-slate-400 underline">NASA SPHEREx</span> &amp; Backyard Worlds: Planet 9 citizen science.
+      </div>
+    </aside>
+
+    <!-- CENTER MAIN VIEWPORT: Pixelated Sky Canvas & Playback Timeline -->
+    <section class="lg:col-span-6 xl:col-span-7 flex flex-col gap-3">
+      
+      <!-- Action Toolbar above Canvas -->
+      <div class="bg-space-850/90 border border-space-700/80 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-lg">
+        <div class="flex items-center gap-2">
+          <button id="flagModeBtn" type="button"
+            class="px-3 py-1.5 rounded-lg bg-space-800 hover:bg-space-700 border border-space-600 text-xs font-semibold text-slate-100 flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            <span id="flagModeBtnText">Flag Moving Object</span>
+          </button>
+
+          <button id="tutorialToggleBtn" type="button"
+            class="px-3 py-1.5 rounded-lg bg-space-900 hover:bg-space-800 border border-space-700 text-xs font-medium text-amber-300/90 flex items-center gap-1.5 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 16v-4M12 8h.01" />
+            </svg>
+            <span>Show Tutorial Hint</span>
+          </button>
+        </div>
+
+        <div class="flex items-center gap-3 text-[11px] font-mono text-slate-400">
+          <span id="cursorCoordReadout">Cursor: 133.7862°, -7.2444°</span>
+          <button id="resetViewBtn" type="button" class="text-cyan-400 hover:text-cyan-300 underline">Reset Pan/Zoom</button>
+        </div>
+      </div>
+
+      <!-- Collapsible Tutorial Hint Banner -->
+      <div id="tutorialBanner" class="hidden bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-2.5 text-xs text-amber-200 flex items-start justify-between gap-3">
+        <div class="leading-relaxed">
+          <strong class="text-amber-300">Citizen Science Tip:</strong> Watch the pixelated detector frame as it blinks across epochs. Stationary background stars stay pinned to the coordinate grid, while nearby brown dwarfs or asteroids (like <span class="font-mono bg-space-950 px-1 rounded text-cyan-300">A1</span>) step steadily across the sky. Click <strong>Flag Moving Object</strong> and tap the moving source to record its coordinates!
+        </div>
+        <button id="closeTutorialBtn" type="button" class="text-amber-300 hover:text-white font-bold text-sm px-1">&times;</button>
+      </div>
+
+      <!-- Main Astronomical Canvas Container -->
+      <div class="relative bg-space-950 border border-space-700 rounded-xl overflow-hidden shadow-2xl select-none">
+        
+        <!-- Top-Left Canvas HUD Overlay -->
+        <div class="absolute top-3 left-3 z-20 pointer-events-none bg-space-950/80 backdrop-blur-md border border-space-700/80 rounded-lg px-3 py-2 text-[11px] font-mono space-y-0.5 shadow-lg">
+          <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-teal-400"></span>
+            <span id="hudFieldName" class="font-bold text-slate-100">WISE 0855-0714 Field</span>
+            <span id="hudEpochSpan" class="text-cyan-400 font-semibold">[2017.5 - 2021.1]</span>
+          </div>
+          <div id="hudRaDec" class="text-slate-400">RA: 133.7862° | Dec: -7.2444°</div>
+          <div id="hudFov" class="text-slate-400">FoV: 5' × 5' (Medium · 176")</div>
+        </div>
+
+        <!-- Top-Right Canvas HUD Overlay -->
+        <div class="absolute top-3 right-3 z-20 pointer-events-none bg-space-950/80 backdrop-blur-md border border-space-700/80 rounded-lg px-3 py-2 text-[11px] font-mono text-right space-y-0.5 shadow-lg">
+          <div id="hudBandLabel" class="font-bold text-teal-400">SPHEREx / W2 · 4.6 µm</div>
+          <div id="hudEpochCounter" class="text-slate-300">Epoch 1 / 6</div>
+        </div>
+
+        <!-- Flagging Mode Active Indicator Pill -->
+        <div id="flagModeIndicator" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 bg-amber-500 text-space-950 font-bold text-xs px-3.5 py-1 rounded-full shadow-lg flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-space-950 animate-ping"></span>
+          Click on the moving target in the sky image to flag it
+        </div>
+
+        <!-- Interactive Pixelated Sky Canvas -->
+        <div id="canvasWrapper" class="w-full aspect-[16/11] min-h-[380px] sm:min-h-[450px] relative">
+          <canvas id="skyCanvas" class="w-full h-full block canvas-grab"></canvas>
+        </div>
+
+        <!-- Bottom-Left Scale Bar -->
+        <div class="absolute bottom-3 left-3 z-20 pointer-events-none bg-space-950/80 backdrop-blur-sm border border-space-700/70 rounded-md px-2.5 py-1 flex items-center gap-2 text-[10px] font-mono text-slate-300">
+          <span class="w-8 h-0.5 bg-slate-200 inline-block"></span>
+          <span id="hudScaleBar">1.0'</span>
+          <span class="text-slate-500">|</span>
+          <span>N ↑ E ←</span>
+        </div>
+
+        <!-- Bottom-Right MJD / Timestamp HUD -->
+        <div class="absolute bottom-3 right-3 z-20 pointer-events-none bg-space-950/80 backdrop-blur-sm border border-space-700/70 rounded-md px-2.5 py-1 text-[10px] font-mono text-amber-300">
+          <span id="hudObsDate">OBS: 2017-06-14 04:18 UTC</span>
+        </div>
+      </div>
+
+      <!-- Bottom Timeline & Playback Scrubber Card -->
+      <div class="bg-space-850/90 border border-space-700/80 rounded-xl p-3.5 shadow-lg space-y-3">
+        <div class="flex items-center justify-between text-xs font-mono">
+          <span id="frameIndicatorLabel" class="font-bold text-cyan-400">Frame 1 of 6</span>
+          <span id="frameTimestampLabel" class="text-slate-400">2017-06-14 04:18 UTC · Exp 132.4 s</span>
+        </div>
+
+        <!-- Interactive Epoch Stepper Track -->
+        <div class="relative py-2 px-2">
+          <div class="absolute left-4 right-4 top-1/2 -translate-y-1/2 h-1 bg-space-700 rounded-full"></div>
+          <div id="timelineProgressFill" class="absolute left-4 top-1/2 -translate-y-1/2 h-1 bg-cyan-400 rounded-full transition-all duration-200" style="width: 0%;"></div>
+          <div id="timelineNodesContainer" class="relative flex items-center justify-between z-10">
+            <!-- Populated dynamically by JS -->
+          </div>
+        </div>
+
+        <!-- Transport Controls & Speed Selector -->
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div class="flex items-center gap-2">
+            <button id="prevFrameBtn" type="button" title="Previous Epoch"
+              class="w-8 h-8 rounded-lg bg-space-800 hover:bg-space-700 border border-space-600 flex items-center justify-center text-slate-200 transition">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="M19 20 9 12l10-8v16zM5 19V5" />
+              </svg>
+            </button>
+
+            <button id="playPauseBtn" type="button"
+              class="px-4 h-8 rounded-lg bg-cyan-400 hover:bg-cyan-300 text-space-950 font-bold text-xs flex items-center gap-1.5 shadow-md shadow-cyan-500/20 transition">
+              <svg id="pauseIcon" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+              <svg id="playIcon" class="w-3.5 h-3.5 hidden" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M5 3l14 9-14 9V3z" />
+              </svg>
+              <span id="playPauseText">Pause</span>
+            </button>
+
+            <button id="nextFrameBtn" type="button" title="Next Epoch"
+              class="w-8 h-8 rounded-lg bg-space-800 hover:bg-space-700 border border-space-600 flex items-center justify-center text-slate-200 transition">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                <path d="m5 4 10 8-10 8V4zM19 5v14" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- Playback Speed Pills -->
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-slate-400">Speed:</span>
+            <div class="inline-flex bg-space-950 p-0.5 rounded-lg border border-space-700 font-mono text-[11px]">
+              <button type="button" data-speed="0.5" class="speed-btn px-2 py-1 rounded-md text-slate-400 hover:text-white transition">0.5x</button>
+              <button type="button" data-speed="1" class="speed-btn px-2 py-1 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold transition">1x</button>
+              <button type="button" data-speed="2" class="speed-btn px-2 py-1 rounded-md text-slate-400 hover:text-white transition">2x</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- RIGHT SIDEBAR: SPHEREx Observations & Citizen Science Guide -->
+    <aside class="lg:col-span-3 xl:col-span-3 flex flex-col gap-4">
+      
+      <!-- SPHEREx Observations Frame List -->
+      <div class="bg-space-850/90 border border-space-700/80 rounded-xl p-3.5 shadow-xl">
+        <div class="flex items-center justify-between mb-1">
+          <div class="flex items-center gap-2">
+            <h2 class="text-sm font-bold text-white">SPHEREx Observations</h2>
+            <span class="px-1.5 py-0.5 text-[10px] font-mono font-bold rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">6</span>
+          </div>
+          <span class="text-[10px] font-mono text-slate-400">MJD / OBS ID</span>
+        </div>
+        <p class="text-[11px] text-slate-400 mb-3">Click any row to inspect that epoch.</p>
+
+        <div id="observationsList" class="space-y-2 max-h-[340px] overflow-y-auto pr-1">
+          <!-- Populated dynamically by JS -->
+        </div>
+      </div>
+
+      <!-- What to Look For Guide Card -->
+      <div class="bg-space-850/90 border border-space-700/80 rounded-xl p-3.5 shadow-xl space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-bold text-white">What to Look For</h2>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30">Brown Dwarf Hunt</span>
+        </div>
+
+        <ul class="space-y-2.5 text-xs text-slate-300 leading-relaxed">
+          <li class="flex items-start gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-slate-400 mt-1.5 shrink-0"></span>
+            <span><strong class="text-white">Stationary stars</strong> stay locked in place while detector noise flickers around them.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0"></span>
+            <span><strong class="text-amber-300">Moving objects</strong> (like nearby brown dwarfs or asteroids) step steadily across the frame from date to date.</span>
+          </li>
+          <li class="flex items-start gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-teal-400 mt-1.5 shrink-0"></span>
+            <span>Click <strong class="text-teal-300">Flag Moving Object</strong> above the image, then tap the moving dot to record its coordinates.</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Flagged Detections Log Card -->
+      <div class="bg-space-850/90 border border-space-700/80 rounded-xl p-3.5 shadow-xl space-y-2.5">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Flagged Detections</h2>
+          <span id="flaggedCountBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-space-950 border border-space-700 text-cyan-300">0 logged</span>
+        </div>
+
+        <div id="flaggedList" class="space-y-1.5 max-h-[160px] overflow-y-auto">
+          <p id="emptyFlagPlaceholder" class="text-[11px] text-slate-500 italic py-2 text-center">No objects flagged yet. Use "+ Flag Moving Object" to mark a candidate.</p>
+        </div>
+      </div>
+
+    </aside>
+
+  </main>
+
+  <!-- FITS Technical Metadata Modal -->
+  <div id="infoModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-space-850 border border-space-700 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-space-700 pb-3">
+        <h3 class="text-base font-bold text-white">FITS Header &amp; Detector Telemetry</h3>
+        <button id="closeInfoModalBtn" type="button" class="text-slate-400 hover:text-white text-lg font-bold">&times;</button>
+      </div>
+      <div class="bg-space-950 border border-space-700 rounded-xl p-3 font-mono text-[11px] text-slate-300 space-y-1 overflow-x-auto">
+        <div>SIMPLE  =                    T / Conforms to FITS standard</div>
+        <div>TELESCOP= 'SPHEREx / WISE'     / Dual-Epoch Cross-Matched Plate</div>
+        <div>INSTRUME= 'LVF-IR-ARRAY'       / Linear Variable Filter Detector</div>
+        <div>CRVAL1  =           133.786245 / [deg] Right Ascension (ICRS)</div>
+        <div>CRVAL2  =            -7.244372 / [deg] Declination (ICRS)</div>
+        <div>PIXSCALE=                 2.75 / [arcsec/pixel] Native Plate Scale</div>
+        <div>BUNIT   = 'MJy/sr  '           / Calibrated Surface Brightness</div>
+      </div>
+      <div class="flex justify-end">
+        <button id="closeInfoModalBtnBottom" type="button" class="px-4 py-2 bg-space-800 hover:bg-space-700 rounded-lg text-xs font-semibold text-white transition">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
 </body>
 </html>
