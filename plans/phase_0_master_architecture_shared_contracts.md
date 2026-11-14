@@ -22,17 +22,17 @@ We are building **Star Hunters (Planet X & SPHEREx Blinker)** — an interactive
 
 ## 2. Team of 5 Parallelization Strategy (12-Hour Window)
 
-Both **Frontend Lead (`@atienosharzy-boop`)** and **Fullstack (`@Eddy-Odero`)** split the React + TypeScript + Vite frontend into two parallel vertical domains so nobody waits on anyone else. **Backend (`@paowuor`)** and **Backend Lead (`@14Emanuel`)** split the scientific data pipeline, SQLite spatial caching, and FastAPI orchestration, while **Fullstack / QA (`@carsonak`)** owns shared foundation contracts (`ISS-01`, `ISS-02` — completed), end-to-end integration (`ISS-21`), PR verification/merging, and Fly.io deployment (`ISS-22`).
+Both **Frontend Lead (`@atienosharzy-boop`)** and **Fullstack (`@Eddy-Odero`)** split the React + TypeScript + Vite frontend into two parallel vertical domains so nobody waits on anyone else. **Backend (`@paowuor`)** and **Backend Lead (`@14Emanuel`)** split the scientific data pipeline, SQLite spatial caching, and FastAPI orchestration, while **Fullstack / QA (`@carsonak`)** owns shared foundation contracts, end-to-end integration, PR verification/merging, and Fly.io deployment.
 
-| Team Member | Preferred Role | Assigned Issues | Primary Ownership |
-| :--- | :--- | :--- | :--- |
-| **`@14Emanuel`** | **Backend Lead** | `ISS-03`, `ISS-05`, `ISS-06`, `ISS-13` | Quantized SQLite spatial cache ($0.05^\circ$ grid + LRU pruning + capital city cache), Earth-to-Sky Zenith coordinate bridge with random capital city fallback, asynchronous multi-mission catalog queries (Gaia DR3, WISE, MOST), and FastAPI progressive 3G binary streaming endpoints. |
-| **`@paowuor`** | **Backend (SPHEREx & Multi-Mission)** | `ISS-04`, `ISS-08`, `ISS-09`, `ISS-12`, `ISS-20` | IRSA CAOM-2 TAP (`spherex.artifact` + `spherex.plane`) cutout ingestion, `IMAGE - ZODI` & `FLAGS` hygiene, adaptive epoch clustering, $256 \times 256$ WCS co-addition, $102$-band forced photometry, WISE/NEOWISE ($W1/W2$) archival cutout fallback & capital city patch caching, and Golden Target batch builder. |
-| **`@Eddy-Odero`** | **Fullstack** | `ISS-07`, `ISS-15`, `ISS-16`, `ISS-17` | Backend known-object multi-epoch trajectory propagator & notable ranking, responsive application shell, 6-Target Tour carousel, *"What's Above Me?"* Zenith flow (with random capital city fallback), viewport controls bar, Known Celestial Objects Checkbox Menu (`Check All` / `Uncheck All`), and Scientist Drawer with 102-band spectrum & CSV export. |
-| **`@atienosharzy-boop`** | **Frontend Lead** | `ISS-10`, `ISS-11`, `ISS-14`, `ISS-18`, `ISS-19` | Two-tier client cache (Memory + IndexedDB) & `Float16`/`Float32` decoder, 60 FPS pixel math & wavelength "Dim & Pop" engine, Aladin Lite v3 sky map & URL sync, multi-spot & overlapped bright-body detector + backward/forward multi-frame tracker with colored tracking squares & edge cases, and interactive $256 \times 256$ Canvas + SVG viewport with pan/zoom (`1x`–`8x`). |
-| **`@carsonak`** | **Fullstack / QA / Integration & Deployment** | `ISS-01` ✅, `ISS-02` ✅, `ISS-21`, `ISS-22` | Completed Phase 1 monorepo scaffolding/contracts (`ISS-01`) and synthetic preset generator (`ISS-02`); owns PR review/verification/merging, end-to-end progressive API wiring (`ISS-21`), and unified Docker + Fly.io `suspend` deployment (`ISS-22`). |
+| Team Member | Preferred Role | Primary Ownership |
+| :--- | :--- | :--- |
+| **`@14Emanuel`** | **Backend Lead** | Quantized SQLite spatial cache ($0.05^\circ$ grid + LRU pruning + capital city cache), Earth-to-Sky Zenith coordinate bridge with random capital city fallback, asynchronous multi-mission catalog queries (Gaia DR3, WISE, MOST), and FastAPI progressive 3G binary streaming endpoints. |
+| **`@paowuor`** | **Backend (SPHEREx & Multi-Mission)** | IRSA CAOM-2 TAP (`spherex.artifact` + `spherex.plane`) cutout ingestion, `IMAGE - ZODI` & `FLAGS` hygiene, adaptive epoch clustering, $256 \times 256$ WCS co-addition, $102$-band forced photometry, WISE/NEOWISE ($W1/W2$) archival cutout fallback & capital city patch caching, and Golden Target batch builder. |
+| **`@Eddy-Odero`** | **Fullstack** | Backend known-object multi-epoch trajectory propagator & notable ranking, responsive application shell, 6-Target Tour carousel, *"What's Above Me?"* Zenith flow (with random capital city fallback), viewport controls bar, Known Celestial Objects Checkbox Menu (`Check All` / `Uncheck All`), and Scientist Drawer with 102-band spectrum & CSV export. |
+| **`@atienosharzy-boop`** | **Frontend Lead** | Two-tier client cache (Memory + IndexedDB) & `Float16`/`Float32` decoder, 60 FPS pixel math & wavelength "Dim & Pop" engine, Aladin Lite v3 sky map & URL sync, multi-spot & overlapped bright-body detector + backward/forward multi-frame tracker with colored tracking squares & edge cases, and interactive $256 \times 256$ Canvas + SVG viewport with pan/zoom (`1x`–`8x`). |
+| **`@carsonak`** | **Fullstack / QA / Integration & Deployment** | Monorepo scaffolding/contracts, synthetic preset generator, PR review/verification/merging, end-to-end progressive API wiring, and unified Docker + Fly.io `suspend` deployment. |
 
-### 12-Hour Execution Phases & Topological Issue Ordering
+### 12-Hour Execution Phases
 ```mermaid
 flowchart LR
   P0["Phase 0\nArchitecture & Contracts"]
@@ -41,10 +41,10 @@ flowchart LR
   P3["Phase 3 (Hours 9–12)\nLive Integration, Fly.io & Verification"]
   P0 --> P1 --> P2 --> P3
 ```
-- All work items are broken into small, single-context-sized issues (`ISS-01` through `ISS-22`) ordered in **strict topological order** with native GitHub `blocked_by` / `blocking` relations in [`/issues/README.md`](file:///home/line/hackathons/star-hunters/issues/README.md).
-- **[Phase 1 (Hours 0–2)](file:///home/line/hackathons/star-hunters/plans/phase_1_foundation_scaffolding_and_presets.md):** Scaffold `/backend` (Python 3.11 + FastAPI) and `/frontend` (React + TypeScript + Vite), lock in shared types/context, generate instant synthetic mock bundles (within 45 mins), and run the Golden Target batch generator for the 6 showcase targets.
-- **[Phase 2 (Hours 2–9)](file:///home/line/hackathons/star-hunters/plans/phase_2_core_parallel_workstreams.md):** All 5 developers build their independent tracks concurrently against the contracts below.
-- **[Phase 3 (Hours 9–12)](file:///home/line/hackathons/star-hunters/plans/phase_3_integration_deployment_and_verification.md):** Connect the progressive live API flow (`Aladin pan` + `/api/v1/catalogs` in ~1–2s $\rightarrow$ `/api/v1/sky-patch` binary epochs cached in IndexedDB $\rightarrow$ `/api/v1/spectrum`), deploy to Fly.io scale-to-zero, and validate all 6 showcase targets plus live Zenith queries.
+- Individual tasks, assignees, statuses, and dependency (`blocked_by` / `blocking`) relations are tracked in GitHub Issues.
+- **[Phase 1 (Hours 0–2)](phase_1_foundation_scaffolding_and_presets.md):** Scaffold `/backend` (Python 3.11 + FastAPI) and `/frontend` (React + TypeScript + Vite), lock in shared types/context, generate instant synthetic mock bundles (within 45 mins), and run the Golden Target batch generator for the 6 showcase targets.
+- **[Phase 2 (Hours 2–9)](phase_2_core_parallel_workstreams.md):** All 5 developers build their independent tracks concurrently against the contracts below.
+- **[Phase 3 (Hours 9–12)](phase_3_integration_deployment_and_verification.md):** Connect the progressive live API flow (`Aladin pan` + `/api/v1/catalogs` in ~1–2s $\rightarrow$ `/api/v1/sky-patch` binary epochs cached in IndexedDB $\rightarrow$ `/api/v1/spectrum`), deploy to Fly.io scale-to-zero, and validate all 6 showcase targets plus live Zenith queries.
 
 ---
 

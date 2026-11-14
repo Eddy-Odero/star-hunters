@@ -5,12 +5,9 @@ Connect the parallel Backend (`Devs 1, 2, 3`) and Frontend (`Devs 4, 5`) tracks 
 
 ---
 
-## 2. Phase 3 Issues (See `/issues/` for Full Topological Specs)
+## 2. Phase 3 Deliverables
 
-### Issue `ISS-21` (`[21]`): End-to-End Progressive API Wiring, 3G Client Cache & Multi-Mission Fallback Integration (`@carsonak`)
-- **Assignee:** `@carsonak` (Fullstack / QA / Integration & Deployment)
-- **Blocked By:** `ISS-10`, `ISS-13`, `ISS-14`, `ISS-15`, `ISS-16`, `ISS-17`, `ISS-19`, `ISS-20`
-- **Blocking:** `ISS-22`
+### `ISS-21`: End-to-End Progressive API Wiring, 3G Client Cache & Multi-Mission Fallback Integration
 - **Goal:** Connect `SkyExplorerProvider` in the frontend to the Two-Tier Client Cache (Memory + IndexedDB), the $0\text{ ms}$ static preset path (`/presets/{slug}/...`), and the progressive live backend path (`/api/v1/earth-to-sky`, `/api/v1/catalogs`, `/api/v1/sky-patch`, `/api/v1/frames/...`, `/api/v1/spectrum`).
 - **What the End Result Looks Like:**
   - **Preset Selection ($0\text{ ms}$):** Clicking any of the 6 showcase presets loads its static `manifest.json`, `.bin` frames, `known_objects`, and `spectrum.json` immediately and caches them in Memory/IndexedDB.
@@ -22,10 +19,7 @@ Connect the parallel Backend (`Devs 1, 2, 3`) and Frontend (`Devs 4, 5`) tracks 
 
 ---
 
-### Issue `ISS-22` (`[22]`): Unified Docker Packaging, Fly.io Scale-to-Zero Deployment & Scientific Verification (`@carsonak`)
-- **Assignee:** `@carsonak` (Fullstack / QA / Integration & Deployment)
-- **Blocked By:** `ISS-13`, `ISS-20`, `ISS-21`
-- **Blocking:** None (`[]`)
+### `ISS-22`: Unified Docker Packaging, Fly.io Scale-to-Zero Deployment & Scientific Verification
 - **Goal:** Package the Vite static frontend build and FastAPI backend into a single multi-stage Docker container and deploy to Fly.io (`iad` region for optimal bandwidth to Caltech/IPAC IRSA) configured with `auto_stop_machines = "suspend"` and a persistent $1\text{ GB}$ SQLite volume.
 - **End-to-End Verification Matrix (Acceptance Criteria):**
   1. **WISE 0855 (`wise_0855`):**
