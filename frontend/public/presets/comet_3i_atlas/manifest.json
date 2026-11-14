@@ -1,0 +1,309 @@
+{
+  "query": {
+    "ra": 295.32,
+    "dec": -18.41,
+    "fov_arcmin": 5.0,
+    "grid_key": "ra295.30_dec-18.40_fov5.0",
+    "cached": false
+  },
+  "target_metadata": {
+    "slug": "comet_3i_atlas",
+    "name": "Comet 3I/ATLAS",
+    "category": "Moving Solar System / Interstellar Comet",
+    "description": "Rapidly shifting comet across exposures with prominent H2O ice/vapor (3.0 um) and CO2 (4.26 um) coma emission peaks.",
+    "constellation": "Sagittarius"
+  },
+  "data_source_summary": {
+    "primary_mission": "SPHEREx",
+    "has_multi_epoch_spherex": true,
+    "uses_wise_fallback": false,
+    "baseline_days": 182.7,
+    "status_note": "2 SPHEREx survey passes (6-month baseline)"
+  },
+  "wcs": {
+    "width": 256,
+    "height": 256,
+    "crval": [
+      295.32,
+      -18.41
+    ],
+    "crpix": [
+      128.0,
+      128.0
+    ],
+    "cdelt": [
+      -0.0003255,
+      0.0003255
+    ]
+  },
+  "epochs": [
+    {
+      "epoch_id": "pass_1",
+      "label": "Pass 1 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60810.5,
+      "iso_date": "2025-05-15T12:00:00Z",
+      "detectors_data_url": "/presets/comet_3i_atlas/pass_1.bin",
+      "flags_mask_url": "/presets/comet_3i_atlas/pass_1_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    },
+    {
+      "epoch_id": "pass_2",
+      "label": "Pass 2 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60993.2,
+      "iso_date": "2025-11-14T04:48:00Z",
+      "detectors_data_url": "/presets/comet_3i_atlas/pass_2.bin",
+      "flags_mask_url": "/presets/comet_3i_atlas/pass_2_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    }
+  ],
+  "default_spectrum_url": "/presets/comet_3i_atlas/spectrum.json",
+  "catalog_overlays": {
+    "known_objects": [
+      {
+        "object_id": "most:3I/ATLAS",
+        "label": "Comet 3I/ATLAS (Solar System Mover)",
+        "catalog": "most",
+        "object_type": "solar_system",
+        "ra": 295.32137,
+        "dec": -18.41065,
+        "x": 124.0,
+        "y": 126.0,
+        "magnitude": 17.6,
+        "proper_motion_arcsec_yr": 19.4,
+        "w1_w2_color": 1.4,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 295.32137,
+            "dec": -18.41065,
+            "x": 124.0,
+            "y": 126.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 295.31863,
+            "dec": -18.40935,
+            "x": 132.0,
+            "y": 130.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038471",
+        "label": "Gaia DR3 57648291038471",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 295.32412,
+        "dec": -18.4141,
+        "x": 116.0,
+        "y": 115.4,
+        "magnitude": 16.4,
+        "proper_motion_arcsec_yr": 0.013,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 295.32412,
+            "dec": -18.4141,
+            "x": 116.0,
+            "y": 115.4
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 295.32412,
+            "dec": -18.4141,
+            "x": 116.0,
+            "y": 115.4
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038472",
+        "label": "Gaia DR3 57648291038472",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 295.30834,
+        "dec": -18.41911,
+        "x": 162.0,
+        "y": 100.0,
+        "magnitude": 15.1,
+        "proper_motion_arcsec_yr": 0.006,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 295.30834,
+            "dec": -18.41911,
+            "x": 162.0,
+            "y": 100.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 295.30834,
+            "dec": -18.41911,
+            "x": 162.0,
+            "y": 100.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038473",
+        "label": "Gaia DR3 57648291038473",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 295.33441,
+        "dec": -18.39991,
+        "x": 86.0,
+        "y": 159.0,
+        "magnitude": 17.2,
+        "proper_motion_arcsec_yr": 0.005,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 295.33441,
+            "dec": -18.39991,
+            "x": 86.0,
+            "y": 159.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 295.33441,
+            "dec": -18.39991,
+            "x": 86.0,
+            "y": 159.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038474",
+        "label": "Gaia DR3 57648291038474",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 295.30353,
+        "dec": -18.39731,
+        "x": 176.0,
+        "y": 167.0,
+        "magnitude": 14.8,
+        "proper_motion_arcsec_yr": 0.002,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 295.30353,
+            "dec": -18.39731,
+            "x": 176.0,
+            "y": 167.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 295.30353,
+            "dec": -18.39731,
+            "x": 176.0,
+            "y": 167.0
+          }
+        ]
+      }
+    ],
+    "gaia_dr3": [
+      {
+        "source_id": "57648291038471",
+        "ra": 295.32412,
+        "dec": -18.4141,
+        "x": 116.0,
+        "y": 115.4,
+        "g_mag": 16.4,
+        "bp_rp": 1.25,
+        "pmra": -12.4,
+        "pmdec": 4.1
+      },
+      {
+        "source_id": "57648291038472",
+        "ra": 295.30834,
+        "dec": -18.41911,
+        "x": 162.0,
+        "y": 100.0,
+        "g_mag": 15.1,
+        "bp_rp": 0.92,
+        "pmra": 3.2,
+        "pmdec": -5.0
+      },
+      {
+        "source_id": "57648291038473",
+        "ra": 295.33441,
+        "dec": -18.39991,
+        "x": 86.0,
+        "y": 159.0,
+        "g_mag": 17.2,
+        "bp_rp": 1.68,
+        "pmra": -4.1,
+        "pmdec": 2.8
+      },
+      {
+        "source_id": "57648291038474",
+        "ra": 295.30353,
+        "dec": -18.39731,
+        "x": 176.0,
+        "y": 167.0,
+        "g_mag": 14.8,
+        "bp_rp": 0.78,
+        "pmra": 1.5,
+        "pmdec": -1.9
+      }
+    ],
+    "wise_sources": [],
+    "most_solar_system": [
+      {
+        "object_name": "3I/ATLAS",
+        "epoch_id": "pass_1",
+        "ra": 295.32137,
+        "dec": -18.41065,
+        "x": 124.0,
+        "y": 126.0,
+        "v_mag": 17.6
+      },
+      {
+        "object_name": "3I/ATLAS",
+        "epoch_id": "pass_2",
+        "ra": 295.31863,
+        "dec": -18.40935,
+        "x": 132.0,
+        "y": 130.0,
+        "v_mag": 17.6
+      }
+    ]
+  }
+}

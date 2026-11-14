@@ -1,0 +1,301 @@
+{
+  "query": {
+    "ra": 76.9565,
+    "dec": 30.4014,
+    "fov_arcmin": 5.0,
+    "grid_key": "ra76.95_dec30.40_fov5.0",
+    "cached": false
+  },
+  "target_metadata": {
+    "slug": "rw_aurigae",
+    "name": "RW Aurigae",
+    "category": "T Tauri Variable Star",
+    "description": "Young variable star with stationary sky coordinates that leaves a strong brightness residual ring in Pass subtraction due to circumstellar disk dimming/flaring.",
+    "constellation": "Auriga"
+  },
+  "data_source_summary": {
+    "primary_mission": "SPHEREx",
+    "has_multi_epoch_spherex": true,
+    "uses_wise_fallback": false,
+    "baseline_days": 182.7,
+    "status_note": "2 SPHEREx survey passes (6-month baseline)"
+  },
+  "wcs": {
+    "width": 256,
+    "height": 256,
+    "crval": [
+      76.9565,
+      30.4014
+    ],
+    "crpix": [
+      128.0,
+      128.0
+    ],
+    "cdelt": [
+      -0.0003255,
+      0.0003255
+    ]
+  },
+  "epochs": [
+    {
+      "epoch_id": "pass_1",
+      "label": "Pass 1 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60810.5,
+      "iso_date": "2025-05-15T12:00:00Z",
+      "detectors_data_url": "/presets/rw_aurigae/pass_1.bin",
+      "flags_mask_url": "/presets/rw_aurigae/pass_1_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    },
+    {
+      "epoch_id": "pass_2",
+      "label": "Pass 2 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60993.2,
+      "iso_date": "2025-11-14T04:48:00Z",
+      "detectors_data_url": "/presets/rw_aurigae/pass_2.bin",
+      "flags_mask_url": "/presets/rw_aurigae/pass_2_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    }
+  ],
+  "default_spectrum_url": "/presets/rw_aurigae/spectrum.json",
+  "catalog_overlays": {
+    "known_objects": [
+      {
+        "object_id": "wise:J00769503040",
+        "label": "RW Aurigae (T Tauri Variable Star)",
+        "catalog": "wise",
+        "object_type": "variable_star",
+        "ra": 76.9565,
+        "dec": 30.4014,
+        "x": 128.0,
+        "y": 128.0,
+        "magnitude": 11.4,
+        "proper_motion_arcsec_yr": 0.02,
+        "w1_w2_color": 1.8,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 76.9565,
+            "dec": 30.4014,
+            "x": 128.0,
+            "y": 128.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 76.9565,
+            "dec": 30.4014,
+            "x": 128.0,
+            "y": 128.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038471",
+        "label": "Gaia DR3 57648291038471",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 76.96103,
+        "dec": 30.3973,
+        "x": 116.0,
+        "y": 115.4,
+        "magnitude": 16.4,
+        "proper_motion_arcsec_yr": 0.013,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 76.96103,
+            "dec": 30.3973,
+            "x": 116.0,
+            "y": 115.4
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 76.96103,
+            "dec": 30.3973,
+            "x": 116.0,
+            "y": 115.4
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038472",
+        "label": "Gaia DR3 57648291038472",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 76.94367,
+        "dec": 30.39229,
+        "x": 162.0,
+        "y": 100.0,
+        "magnitude": 15.1,
+        "proper_motion_arcsec_yr": 0.006,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 76.94367,
+            "dec": 30.39229,
+            "x": 162.0,
+            "y": 100.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 76.94367,
+            "dec": 30.39229,
+            "x": 162.0,
+            "y": 100.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038473",
+        "label": "Gaia DR3 57648291038473",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 76.97235,
+        "dec": 30.41149,
+        "x": 86.0,
+        "y": 159.0,
+        "magnitude": 17.2,
+        "proper_motion_arcsec_yr": 0.005,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 76.97235,
+            "dec": 30.41149,
+            "x": 86.0,
+            "y": 159.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 76.97235,
+            "dec": 30.41149,
+            "x": 86.0,
+            "y": 159.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:57648291038474",
+        "label": "Gaia DR3 57648291038474",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 76.93839,
+        "dec": 30.41409,
+        "x": 176.0,
+        "y": 167.0,
+        "magnitude": 14.8,
+        "proper_motion_arcsec_yr": 0.002,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 76.93839,
+            "dec": 30.41409,
+            "x": 176.0,
+            "y": 167.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 76.93839,
+            "dec": 30.41409,
+            "x": 176.0,
+            "y": 167.0
+          }
+        ]
+      }
+    ],
+    "gaia_dr3": [
+      {
+        "source_id": "57648291038471",
+        "ra": 76.96103,
+        "dec": 30.3973,
+        "x": 116.0,
+        "y": 115.4,
+        "g_mag": 16.4,
+        "bp_rp": 1.25,
+        "pmra": -12.4,
+        "pmdec": 4.1
+      },
+      {
+        "source_id": "57648291038472",
+        "ra": 76.94367,
+        "dec": 30.39229,
+        "x": 162.0,
+        "y": 100.0,
+        "g_mag": 15.1,
+        "bp_rp": 0.92,
+        "pmra": 3.2,
+        "pmdec": -5.0
+      },
+      {
+        "source_id": "57648291038473",
+        "ra": 76.97235,
+        "dec": 30.41149,
+        "x": 86.0,
+        "y": 159.0,
+        "g_mag": 17.2,
+        "bp_rp": 1.68,
+        "pmra": -4.1,
+        "pmdec": 2.8
+      },
+      {
+        "source_id": "57648291038474",
+        "ra": 76.93839,
+        "dec": 30.41409,
+        "x": 176.0,
+        "y": 167.0,
+        "g_mag": 14.8,
+        "bp_rp": 0.78,
+        "pmra": 1.5,
+        "pmdec": -1.9
+      }
+    ],
+    "wise_sources": [
+      {
+        "source_id": "J00769503040",
+        "ra": 76.9565,
+        "dec": 30.4014,
+        "x": 128.0,
+        "y": 128.0,
+        "w1_mag": 13.2,
+        "w2_mag": 11.4,
+        "w1_w2_color": 1.8
+      }
+    ],
+    "most_solar_system": []
+  }
+}
