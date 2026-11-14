@@ -23,7 +23,6 @@ const StarHuntersWorkspace: React.FC = () => {
     manifest,
     loadingState,
     renderSettings,
-    setViewportZoomPan,
     knownObjects,
     selectedObject,
     trackedTargets,
