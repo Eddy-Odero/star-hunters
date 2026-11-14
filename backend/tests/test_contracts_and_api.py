@@ -223,6 +223,38 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertIsNotNone(cached_patch)
         self.assertTrue(cached_patch["query"]["cached"])
 
+        # Regression test: when fallback_seed is None (default production path),
+        # earth coordinates and zenith_icrs coordinates must always match the SAME capital city.
+        for i in range(15):
+            unseeded_fb = self.service.get_earth_to_sky(
+                lat=None,
+                lon=None,
+                iso_time=f"2026-11-14T16:{i:02d}:00Z",
+                fallback_seed=None,
+                prewarm_patch=False,
+            )
+            validate_earth_to_sky_response(unseeded_fb)
+            self.assertTrue(unseeded_fb["earth"]["is_fallback_capital"])
+            self.assertAlmostEqual(
+                unseeded_fb["zenith_icrs"]["dec"],
+                unseeded_fb["earth"]["lat"],
+                places=4,
+            )
+            expected_zenith = compute_zenith_icrs(
+                lat=unseeded_fb["earth"]["lat"],
+                lon=unseeded_fb["earth"]["lon"],
+                iso_time=unseeded_fb["earth"]["iso_time"],
+            )
+            self.assertAlmostEqual(
+                unseeded_fb["zenith_icrs"]["ra"],
+                expected_zenith["zenith_icrs"]["ra"],
+                places=4,
+            )
+            self.assertEqual(
+                unseeded_fb["zenith_icrs"]["constellation"],
+                expected_zenith["zenith_icrs"]["constellation"],
+            )
+
         with self.assertRaises(ValueError):
             compute_zenith_icrs(lat=95.0, lon=0.0)
         with self.assertRaises(ValueError):

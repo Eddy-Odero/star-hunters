@@ -708,11 +708,12 @@ class StarHuntersBackendService:
     ) -> Dict[str, Any]:
         is_fallback = lat is None or lon is None
         city_slug: Optional[str] = None
+        selected_capital: Optional[Dict[str, Any]] = None
         if is_fallback:
-            capital = pick_random_capital_city(seed=fallback_seed)
-            lat = float(capital["lat"])
-            lon = float(capital["lon"])
-            city_slug = str(capital["slug"])
+            selected_capital = pick_random_capital_city(seed=fallback_seed)
+            lat = float(selected_capital["lat"])
+            lon = float(selected_capital["lon"])
+            city_slug = str(selected_capital["slug"])
 
         assert lat is not None and lon is not None
         if not (-90.0 <= lat <= 90.0):
@@ -720,8 +721,20 @@ class StarHuntersBackendService:
         if not (-180.0 <= lon <= 180.0):
             raise ValueError("Longitude must be in [-180.0, 180.0]")
 
-        # Quantize time bucket to 1-minute resolution for SQLite Zenith caching
-        time_bucket = (iso_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"))[:16]
+        if iso_time:
+            clean_iso = iso_time.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+            iso_utc = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            dt = datetime.now(timezone.utc)
+            iso_utc = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Quantize UTC time bucket to 1-minute resolution for SQLite Zenith caching
+        time_bucket = iso_utc[:16]
         cache_key = (
             f"zenith_{city_slug or 'coord'}_lat{lat:.2f}_lon{lon:.2f}_t{time_bucket}_fb{int(is_fallback)}"
         )
@@ -730,20 +743,19 @@ class StarHuntersBackendService:
             validate_earth_to_sky_response(cached_zenith)
             return cached_zenith
 
+        # Pass the resolved (lat, lon) directly so compute_zenith_icrs computes the exact
+        # overhead (RA, Dec, constellation) for the chosen capital city rather than drawing
+        # a second random city when fallback_seed is None.
         payload = compute_zenith_icrs(
-            lat=None if is_fallback else lat,
-            lon=None if is_fallback else lon,
-            iso_time=iso_time,
-            fallback_seed=fallback_seed,
+            lat=lat,
+            lon=lon,
+            iso_time=iso_utc,
         )
-        if is_fallback and city_slug is not None:
-            # Ensure deterministic match with the selected capital
+        if is_fallback and selected_capital is not None:
             payload["earth"]["lat"] = round(lat, 4)
             payload["earth"]["lon"] = round(lon, 4)
-            matched = find_matching_capital_city(lat, lon)
-            if matched:
-                payload["earth"]["city_name"] = str(matched["city_name"])
-                payload["earth"]["country"] = str(matched["country"])
+            payload["earth"]["city_name"] = str(selected_capital["city_name"])
+            payload["earth"]["country"] = str(selected_capital["country"])
             payload["earth"]["is_fallback_capital"] = True
 
         self.cache.put_zenith_response(
@@ -753,7 +765,11 @@ class StarHuntersBackendService:
             payload=payload,
             city_slug=city_slug,
         )
-        if prewarm_patch and (is_fallback or city_slug is not None or find_matching_capital_city(lat, lon) is not None):
+        if prewarm_patch and (
+            is_fallback
+            or city_slug is not None
+            or find_matching_capital_city(lat, lon) is not None
+        ):
             # Cache the capital city's overhead sky patch in SQLite so subsequent patch fetches hit cache
             self.get_sky_patch(
                 ra=payload["zenith_icrs"]["ra"],

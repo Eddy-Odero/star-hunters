@@ -1,5 +1,10 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
+import {
+  computeViewportViewBox,
+  screenToImageCoordinates,
+  type EarthToSkyResponse,
+} from './types/contracts';
 
 const PRESET_SLUGS = [
   { slug: 'wise_0855', label: 'WISE 0855 (Brown Dwarf)' },
@@ -30,14 +35,71 @@ const StarHuntersWorkspace: React.FC = () => {
     removeTrackedTarget,
     clearTrackedTargets,
     selectPreset,
+    navigateToCoordinates,
     inspectPixelOrCoord,
   } = useSkyExplorer();
+
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [zenithBanner, setZenithBanner] = useState<string | null>(null);
 
   useEffect(() => {
     if (activePresetSlug && !manifest && loadingState.stage === 'idle') {
       selectPreset(activePresetSlug);
     }
   }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
+
+  const viewBox = useMemo(
+    () =>
+      computeViewportViewBox(
+        renderSettings.zoom,
+        renderSettings.panX,
+        renderSettings.panY,
+      ),
+    [renderSettings.zoom, renderSettings.panX, renderSettings.panY],
+  );
+
+  const handleViewportClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const mapped = screenToImageCoordinates(
+      e.clientX,
+      e.clientY,
+      rect,
+      renderSettings.zoom,
+      renderSettings.panX,
+      renderSettings.panY,
+    );
+    if (mapped.inBounds) {
+      inspectPixelOrCoord(mapped.x, mapped.y, renderSettings.activeEpochIndex);
+    }
+  };
+
+  const handleWhatsAboveMe = async () => {
+    try {
+      // Request Zenith coordinates (omitting lat/lon triggers the backend's random capital city fallback + SQLite cache)
+      const res = await fetch('/api/v1/earth-to-sky');
+      if (!res.ok) return;
+      const data = (await res.json()) as EarthToSkyResponse;
+      const locLabel = data.earth.is_fallback_capital
+        ? `${data.earth.city_name ?? 'Capital'}, ${data.earth.country ?? ''} (Random Capital Fallback)`
+        : `(${data.earth.lat.toFixed(2)}°, ${data.earth.lon.toFixed(2)}°)`;
+      setZenithBanner(
+        `Zenith over ${locLabel}: RA ${data.zenith_icrs.ra.toFixed(2)}°, Dec ${data.zenith_icrs.dec.toFixed(2)}° (${data.zenith_icrs.constellation})`,
+      );
+      navigateToCoordinates(data.zenith_icrs.ra, data.zenith_icrs.dec, 5.0);
+    } catch {
+      // No-op when running offline without backend server
+    }
+  };
+
+  const checkedKnownObjects = useMemo(
+    () =>
+      knownObjects.filter((obj) =>
+        renderSettings.checkedObjectIds.includes(obj.object_id),
+      ),
+    [knownObjects, renderSettings.checkedObjectIds],
+  );
 
   return (
     <div className="app-shell">
@@ -59,8 +121,21 @@ const StarHuntersWorkspace: React.FC = () => {
               {p.label}
             </button>
           ))}
+          <button
+            type="button"
+            className="preset-btn"
+            onClick={() => void handleWhatsAboveMe()}
+          >
+            What&apos;s Above Me? (Zenith / Capital Fallback)
+          </button>
         </div>
       </header>
+
+      {zenithBanner && (
+        <div className="diagnostic-banner" role="status">
+          {zenithBanner}
+        </div>
+      )}
 
       <main className="workspace-grid">
         <section className="viewport-panel">
@@ -72,7 +147,8 @@ const StarHuntersWorkspace: React.FC = () => {
             <span className="status-badge">
               Stage: {loadingState.stage}
               {loadingState.fromClientCache ? ' (Cached in Browser)' : ''} &bull; Zoom:{' '}
-              {renderSettings.zoom.toFixed(1)}&times;
+              {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: ({renderSettings.panX.toFixed(0)},{' '}
+              {renderSettings.panY.toFixed(0)})
             </span>
           </div>
 
@@ -113,6 +189,32 @@ const StarHuntersWorkspace: React.FC = () => {
             >
               Zoom Out (-)
             </button>
+            <button
+              type="button"
+              className="mode-btn"
+              onClick={() =>
+                setViewportZoomPan(
+                  renderSettings.zoom,
+                  renderSettings.panX - 16,
+                  renderSettings.panY,
+                )
+              }
+            >
+              Pan &larr;
+            </button>
+            <button
+              type="button"
+              className="mode-btn"
+              onClick={() =>
+                setViewportZoomPan(
+                  renderSettings.zoom,
+                  renderSettings.panX + 16,
+                  renderSettings.panY,
+                )
+              }
+            >
+              Pan &rarr;
+            </button>
             <button type="button" className="mode-btn" onClick={resetViewportZoomPan}>
               Reset Pan/Zoom (1&times;)
             </button>
@@ -128,6 +230,102 @@ const StarHuntersWorkspace: React.FC = () => {
                 Clear Tracks ({trackedTargets.length})
               </button>
             )}
+          </div>
+
+          <div
+            ref={viewportRef}
+            className="sky-viewport-stage"
+            onClick={handleViewportClick}
+            style={{
+              position: 'relative',
+              width: 256,
+              height: 256,
+              overflow: 'hidden',
+              border: '1px solid #334155',
+              cursor: 'crosshair',
+              marginBottom: 12,
+            }}
+          >
+            <canvas
+              width={256}
+              height={256}
+              style={{
+                width: '100%',
+                height: '100%',
+                display: 'block',
+                transformOrigin: 'center center',
+                transform: `scale(${renderSettings.zoom}) translate(${-renderSettings.panX}px, ${-renderSettings.panY}px)`,
+              }}
+            />
+            <svg
+              viewBox={viewBox.svgViewBox}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                pointerEvents: 'none',
+              }}
+            >
+              {checkedKnownObjects.map((obj) => {
+                const epPos =
+                  obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
+                return (
+                  <g key={obj.object_id}>
+                    <circle
+                      cx={epPos.x}
+                      cy={epPos.y}
+                      r={4.5}
+                      fill="none"
+                      stroke="#38bdf8"
+                      strokeWidth={1.1}
+                    />
+                    <text
+                      x={epPos.x + 6}
+                      y={epPos.y - 4}
+                      fill="#e2e8f0"
+                      fontSize={7}
+                    >
+                      {obj.label}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {trackedTargets.map((track) => {
+                const activeWp =
+                  track.waypoints[renderSettings.activeEpochIndex] ??
+                  track.waypoints[track.originEpochIndex];
+                if (!activeWp) return null;
+                const pointsAttr = track.waypoints
+                  .filter((w) => w.visible)
+                  .map((w) => `${w.x},${w.y}`)
+                  .join(' ');
+                return (
+                  <g key={track.trackId}>
+                    {pointsAttr && (
+                      <polyline
+                        points={pointsAttr}
+                        fill="none"
+                        stroke={track.color}
+                        strokeWidth={1.2}
+                        strokeDasharray="2 2"
+                      />
+                    )}
+                    <rect
+                      x={activeWp.x - 5}
+                      y={activeWp.y - 5}
+                      width={10}
+                      height={10}
+                      fill="none"
+                      stroke={track.color}
+                      strokeWidth={1.6}
+                      strokeDasharray={activeWp.status === 'tracked' ? undefined : '2 2'}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
           </div>
 
           {lastClickDiagnostic && lastClickDiagnostic.status === 'no_body_found' && (

@@ -58,9 +58,9 @@ By the end of Phase 1:
 
 ---
 
-### Issue `ISS-20` (`[20]`): Golden Target Pre-Computation Batch Script (Real Archive Data + Fallback)
-- **Preferred Role:** Dev 2 (SPHEREx cutouts & spectra) & Dev 3 (WISE/Gaia/MOST known-object tracks & fallback epochs)
-- **Blocked By:** `ISS-02`, `ISS-07`, `ISS-08`, `ISS-09`, `ISS-12`
+### Issue `ISS-20` (`[20]`): Golden Target Pre-Computation Batch Script (Real Archive Data + Fallback) (`@paowuor`)
+- **Assignee:** `@paowuor` (Backend)
+- **Blocked By:** `ISS-07`, `ISS-08`, `ISS-09`, `ISS-12`
 - **Blocking:** `ISS-21`, `ISS-22`
 - **Goal:** Upgrade the preset bundles in `frontend/public/presets/` with real pre-computed astronomical data from IRSA (SPHEREx + WISE/NEOWISE), Gaia DR3, and NASA MOST for the 6 showcase targets (while retaining `--fallback-synthetic` resilience) so judges experience instant $0\text{ ms}$ loading of real space telescope data.
 - **Acceptance Criteria:**

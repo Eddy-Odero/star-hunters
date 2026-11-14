@@ -47,6 +47,35 @@ export const TRACKING_SQUARE_COLORS: readonly string[] = [
   '#FF9F1C', // Gold
 ] as const;
 
+export interface WorldCapitalCity {
+  slug: string;
+  city_name: string;
+  country: string;
+  lat: number;
+  lon: number;
+}
+
+export const WORLD_CAPITAL_CITIES: ReadonlyArray<WorldCapitalCity> = [
+  { slug: 'nairobi', city_name: 'Nairobi', country: 'Kenya', lat: -1.2921, lon: 36.8219 },
+  { slug: 'tokyo', city_name: 'Tokyo', country: 'Japan', lat: 35.6762, lon: 139.6503 },
+  { slug: 'london', city_name: 'London', country: 'United Kingdom', lat: 51.5074, lon: -0.1278 },
+  {
+    slug: 'washington_dc',
+    city_name: 'Washington, D.C.',
+    country: 'United States',
+    lat: 38.9072,
+    lon: -77.0369,
+  },
+  { slug: 'cairo', city_name: 'Cairo', country: 'Egypt', lat: 30.0444, lon: 31.2357 },
+  { slug: 'santiago', city_name: 'Santiago', country: 'Chile', lat: -33.4489, lon: -70.6693 },
+  { slug: 'canberra', city_name: 'Canberra', country: 'Australia', lat: -35.2809, lon: 149.13 },
+  { slug: 'reykjavik', city_name: 'Reykjavik', country: 'Iceland', lat: 64.1466, lon: -21.9426 },
+  { slug: 'new_delhi', city_name: 'New Delhi', country: 'India', lat: 28.6139, lon: 77.209 },
+  { slug: 'brasilia', city_name: 'Brasília', country: 'Brazil', lat: -15.7975, lon: -47.8919 },
+  { slug: 'ottawa', city_name: 'Ottawa', country: 'Canada', lat: 45.4215, lon: -75.6972 },
+  { slug: 'accra', city_name: 'Accra', country: 'Ghana', lat: 5.6037, lon: -0.187 },
+] as const;
+
 export type WaypointTrackingStatus = 'tracked' | 'lost' | 'out_of_bounds' | 'low_snr';
 export type TrackSummaryStatus = 'tracked' | 'partially_lost' | 'no_body_found';
 
@@ -812,28 +841,86 @@ export function detectAndTrackBodiesAtClick(params: {
     return refinedPeaks;
   };
 
-  // Check if a stationary body remains at the origin coordinates across other epochs
-  const checkStationaryAtOrigin = (targetEpochIdx: number): CentroidDetection | null => {
-    const cand = findLocalPeakAndCentroid(
-      compositeFrames[targetEpochIdx],
-      originDetection.x,
-      originDetection.y,
-      2.2,
-    );
-    const dist = Math.hypot(cand.x - originDetection.x, cand.y - originDetection.y);
+  // Check if a stationary body remains at a given (refX, refY) across other epochs
+  const checkStationaryAtSpot = (
+    targetEpochIdx: number,
+    refX: number = originDetection.x,
+    refY: number = originDetection.y,
+    refNetFlux: number = originDetection.netFlux,
+  ): CentroidDetection | null => {
+    const cand = findLocalPeakAndCentroid(compositeFrames[targetEpochIdx], refX, refY, 2.2);
+    const dist = Math.hypot(cand.x - refX, cand.y - refY);
     if (
       dist <= 1.4 &&
       cand.snr >= minSnrThreshold &&
-      cand.netFlux >= Math.max(0.04, 0.15 * originDetection.netFlux)
+      cand.netFlux >= Math.max(0.04, 0.15 * refNetFlux)
     ) {
       return cand;
     }
     return null;
   };
 
+  // Also detect any secondary local peaks within the clicked area (`localRadiusPx`) on `originEpochIndex`
+  // so partially separated / close overlapped bodies in the area of clicking are also tracked.
+  const findSecondaryOriginPeaks = (): CentroidDetection[] => {
+    const originComp = compositeFrames[clampedOrigin];
+    const xMin = Math.max(2, Math.floor(clickX - localRadiusPx));
+    const xMax = Math.min(GRID_WIDTH - 3, Math.ceil(clickX + localRadiusPx));
+    const yMin = Math.max(2, Math.floor(clickY - localRadiusPx));
+    const yMax = Math.min(GRID_HEIGHT - 3, Math.ceil(clickY + localRadiusPx));
+    const rSq = localRadiusPx * localRadiusPx;
+    const minPeakNet = Math.max(0.05, 0.2 * originDetection.netFlux);
+
+    const rawCandidates: { px: number; py: number; val: number }[] = [];
+    for (let py = yMin; py <= yMax; py += 1) {
+      const dy = py - clickY;
+      for (let px = xMin; px <= xMax; px += 1) {
+        const dx = px - clickX;
+        if (dx * dx + dy * dy > rSq) continue;
+        if (Math.hypot(px - originDetection.x, py - originDetection.y) < 2.2) continue;
+        const val = originComp[py * GRID_WIDTH + px];
+        if (val < minPeakNet) continue;
+
+        let isMax = true;
+        for (let ny = py - 1; ny <= py + 1 && isMax; ny += 1) {
+          for (let nx = px - 1; nx <= px + 1; nx += 1) {
+            if (nx === px && ny === py) continue;
+            if (originComp[ny * GRID_WIDTH + nx] > val) {
+              isMax = false;
+              break;
+            }
+          }
+        }
+        if (isMax) {
+          rawCandidates.push({ px, py, val });
+        }
+      }
+    }
+
+    rawCandidates.sort((a, b) => b.val - a.val);
+    const secondaries: CentroidDetection[] = [];
+    for (const c of rawCandidates) {
+      const refined = findLocalPeakAndCentroid(originComp, c.px, c.py, 1.8);
+      if (
+        refined.snr < minSnrThreshold ||
+        refined.netFlux < minPeakNet ||
+        Math.hypot(refined.x - originDetection.x, refined.y - originDetection.y) < 2.2
+      ) {
+        continue;
+      }
+      if (
+        !secondaries.some((s) => Math.hypot(s.x - refined.x, s.y - refined.y) < 2.5)
+      ) {
+        secondaries.push(refined);
+      }
+    }
+    return secondaries;
+  };
+
   // Discover trajectory branches (supporting single body OR overlapped bodies that separate in earlier/later epochs)
   interface BranchSeed {
     kind: 'moving' | 'stationary';
+    originPeak: CentroidDetection;
     seedEpochIdx: number;
     seedDetection: CentroidDetection;
   }
@@ -841,7 +928,8 @@ export function detectAndTrackBodiesAtClick(params: {
   const branchSeeds: BranchSeed[] = [];
 
   if (numEpochs >= 2) {
-    // Pick the reference comparison epoch with the largest number of separated moving peaks
+    const secondaryOriginPeaks = findSecondaryOriginPeaks();
+    const peaksByEpoch = new Map<number, CentroidDetection[]>();
     let bestSepEpochIdx = -1;
     let bestSepPeaks: CentroidDetection[] = [];
     let hasStationaryInAnyOtherEpoch = false;
@@ -849,83 +937,199 @@ export function detectAndTrackBodiesAtClick(params: {
 
     for (let epIdx = 0; epIdx < numEpochs; epIdx += 1) {
       if (epIdx === clampedOrigin) continue;
-      const stat = checkStationaryAtOrigin(epIdx);
+      const stat = checkStationaryAtSpot(epIdx, originDetection.x, originDetection.y, originDetection.netFlux);
       if (stat) {
         hasStationaryInAnyOtherEpoch = true;
-        // Conservation of flux: if a moving body was overlapped with this stationary star at
-        // originEpochIndex and separated in epIdx, the remaining flux at origin must drop (< 85%).
         if (stat.netFlux <= 0.85 * originDetection.netFlux) {
           stationaryDroppedFlux = true;
         }
       }
+      // Also check the departure difference (`originComp - 0.98 * comp[epIdx]`) inside `localRadiusPx`
+      // of `(clickX, clickY)`: if a moving body was blended or partially overlapped with a stationary
+      // star in the clicked area at `originEpochIndex` and departed in `epIdx`, subtracting `comp[epIdx]`
+      // cancels the stationary star and reveals the departing body's positive flux residual in the click area.
+      const originComp = compositeFrames[clampedOrigin];
+      const targetComp = compositeFrames[epIdx];
+      const xMin = Math.max(1, Math.floor(clickX - localRadiusPx));
+      const xMax = Math.min(GRID_WIDTH - 2, Math.ceil(clickX + localRadiusPx));
+      const yMin = Math.max(1, Math.floor(clickY - localRadiusPx));
+      const yMax = Math.min(GRID_HEIGHT - 2, Math.ceil(clickY + localRadiusPx));
+      const rSq = localRadiusPx * localRadiusPx;
+      let maxDepartFlux = 0;
+      for (let py = yMin; py <= yMax; py += 1) {
+        const dy = py - clickY;
+        for (let px = xMin; px <= xMax; px += 1) {
+          const dx = px - clickX;
+          if (dx * dx + dy * dy > rSq) continue;
+          const dep = originComp[py * GRID_WIDTH + px] - 0.98 * targetComp[py * GRID_WIDTH + px];
+          if (dep > maxDepartFlux) {
+            maxDepartFlux = dep;
+          }
+        }
+      }
+      if (maxDepartFlux >= Math.max(0.05, 0.18 * originDetection.netFlux)) {
+        stationaryDroppedFlux = true;
+      }
+
+      const stepFactor = Math.max(1, Math.abs(epIdx - clampedOrigin));
       const peaks = findSeparatedMovingPeaks(
         epIdx,
         originDetection.x,
         originDetection.y,
-        crossEpochSearchRadiusPx,
+        crossEpochSearchRadiusPx * stepFactor,
       );
+      peaksByEpoch.set(epIdx, peaks);
       if (peaks.length > bestSepPeaks.length) {
         bestSepPeaks = peaks;
         bestSepEpochIdx = epIdx;
       }
     }
 
-    if (hasStationaryInAnyOtherEpoch && !stationaryDroppedFlux) {
+    // Helper: check whether a candidate peak in `epIdx` is already explained by an existing moving BranchSeed
+    const isExplainedByExistingMovingSeed = (
+      candPeak: CentroidDetection,
+      epIdx: number,
+    ): boolean => {
+      const mjdTarget = manifest.epochs[epIdx].mjd;
+      const mjdOrigin = manifest.epochs[clampedOrigin].mjd;
+      for (const existing of branchSeeds) {
+        if (existing.kind !== 'moving') continue;
+        if (existing.seedEpochIdx === epIdx) {
+          if (
+            Math.hypot(existing.seedDetection.x - candPeak.x, existing.seedDetection.y - candPeak.y) <
+            3.5
+          ) {
+            return true;
+          }
+          continue;
+        }
+        const dtSeed = manifest.epochs[existing.seedEpochIdx].mjd - mjdOrigin;
+        const dtTarget = mjdTarget - mjdOrigin;
+        if (Math.abs(dtSeed) > 1e-3) {
+          const predX =
+            existing.originPeak.x +
+            ((existing.seedDetection.x - existing.originPeak.x) / dtSeed) * dtTarget;
+          const predY =
+            existing.originPeak.y +
+            ((existing.seedDetection.y - existing.originPeak.y) / dtSeed) * dtTarget;
+          if (Math.hypot(predX - candPeak.x, predY - candPeak.y) < 4.5) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // Match each separated moving peak to the closest origin peak in the clicked area
+    const pickOriginPeakForMover = (
+      moverPeak: CentroidDetection,
+      epIdx: number,
+    ): CentroidDetection => {
+      if (secondaryOriginPeaks.length === 0) return originDetection;
+      const allOriginPeaks = [originDetection, ...secondaryOriginPeaks];
+      // Prefer an origin peak that lost flux in `epIdx` (because the mover departed from it)
+      const departingOrigins = allOriginPeaks.filter((op) => {
+        const st = checkStationaryAtSpot(epIdx, op.x, op.y, op.netFlux);
+        return st === null || st.netFlux <= 0.85 * op.netFlux;
+      });
+      const pool = departingOrigins.length > 0 ? departingOrigins : allOriginPeaks;
+      let bestOp = pool[0];
+      let bestDist = Math.hypot(moverPeak.x - bestOp.x, moverPeak.y - bestOp.y);
+      for (const op of pool.slice(1)) {
+        const d = Math.hypot(moverPeak.x - op.x, moverPeak.y - op.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestOp = op;
+        }
+      }
+      return bestOp;
+    };
+
+    const hasSecondaryDepartingOrigin = secondaryOriginPeaks.some((op) => {
+      for (let epIdx = 0; epIdx < numEpochs; epIdx += 1) {
+        if (epIdx === clampedOrigin) continue;
+        const st = checkStationaryAtSpot(epIdx, op.x, op.y, op.netFlux);
+        if (st === null || st.netFlux <= 0.85 * op.netFlux) return true;
+      }
+      return false;
+    });
+
+    if (
+      hasStationaryInAnyOtherEpoch &&
+      !stationaryDroppedFlux &&
+      !hasSecondaryDepartingOrigin
+    ) {
       // The clicked star remained stationary at (originDetection.x, originDetection.y) with >=85% of its
-      // original flux, so any other moving source in the field was not overlapped with it at origin.
+      // original flux and no secondary moving body was in the clicked area at origin.
       branchSeeds.push({
         kind: 'stationary',
+        originPeak: originDetection,
         seedEpochIdx: clampedOrigin,
         seedDetection: originDetection,
       });
-    } else if (bestSepPeaks.length >= 2 && bestSepEpochIdx >= 0) {
-      // Multiple moving bodies were overlapped at originEpochIndex and separated into distinct peaks!
+    } else if (bestSepPeaks.length >= 1 && bestSepEpochIdx >= 0) {
+      // Seed moving branches from the primary separation epoch
       for (const pk of bestSepPeaks) {
         branchSeeds.push({
           kind: 'moving',
+          originPeak: pickOriginPeakForMover(pk, bestSepEpochIdx),
           seedEpochIdx: bestSepEpochIdx,
           seedDetection: pk,
         });
       }
-      if (hasStationaryInAnyOtherEpoch && stationaryDroppedFlux) {
-        const statSeed = checkStationaryAtOrigin(bestSepEpochIdx);
-        if (statSeed) {
+      // Also reconcile separated moving peaks from other non-origin epochs (e.g., when two bodies cross
+      // at originEpochIndex and Branch A fades in Pass 3 while Branch B fades in Pass 1)
+      if (!hasStationaryInAnyOtherEpoch || stationaryDroppedFlux || hasSecondaryDepartingOrigin) {
+        for (const [epIdx, epPeaks] of peaksByEpoch.entries()) {
+          if (epIdx === bestSepEpochIdx) continue;
+          for (const candPk of epPeaks) {
+            if (!isExplainedByExistingMovingSeed(candPk, epIdx)) {
+              branchSeeds.push({
+                kind: 'moving',
+                originPeak: pickOriginPeakForMover(candPk, epIdx),
+                seedEpochIdx: epIdx,
+                seedDetection: candPk,
+              });
+            }
+          }
+        }
+      }
+      // If a stationary body also remained at originDetection alongside the moving body(s), track it too
+      if (
+        hasStationaryInAnyOtherEpoch &&
+        (stationaryDroppedFlux || hasSecondaryDepartingOrigin)
+      ) {
+        const statSeed =
+          checkStationaryAtSpot(
+            bestSepEpochIdx,
+            originDetection.x,
+            originDetection.y,
+            originDetection.netFlux,
+          ) ?? originDetection;
+        branchSeeds.push({
+          kind: 'stationary',
+          originPeak: originDetection,
+          seedEpochIdx: bestSepEpochIdx,
+          seedDetection: statSeed,
+        });
+      }
+      // Also include any secondary stationary peaks in the clicked area if another body in the click moved
+      for (const secOp of secondaryOriginPeaks) {
+        const secSt = checkStationaryAtSpot(bestSepEpochIdx, secOp.x, secOp.y, secOp.netFlux);
+        if (secSt && secSt.netFlux > 0.85 * secOp.netFlux) {
           branchSeeds.push({
             kind: 'stationary',
+            originPeak: secOp,
             seedEpochIdx: bestSepEpochIdx,
-            seedDetection: statSeed,
+            seedDetection: secSt,
           });
         }
       }
-    } else if (
-      bestSepPeaks.length === 1 &&
-      bestSepEpochIdx >= 0 &&
-      hasStationaryInAnyOtherEpoch &&
-      stationaryDroppedFlux
-    ) {
-      // Overlapped stationary body + moving body at originEpochIndex that separated in other epochs!
-      branchSeeds.push({
-        kind: 'moving',
-        seedEpochIdx: bestSepEpochIdx,
-        seedDetection: bestSepPeaks[0],
-      });
-      const statSeed = checkStationaryAtOrigin(bestSepEpochIdx) ?? originDetection;
-      branchSeeds.push({
-        kind: 'stationary',
-        seedEpochIdx: bestSepEpochIdx,
-        seedDetection: statSeed,
-      });
-    } else if (bestSepPeaks.length === 1 && bestSepEpochIdx >= 0) {
-      // Single moving body
-      branchSeeds.push({
-        kind: 'moving',
-        seedEpochIdx: bestSepEpochIdx,
-        seedDetection: bestSepPeaks[0],
-      });
     } else {
       // Single stationary (or lost) body
       branchSeeds.push({
         kind: 'stationary',
+        originPeak: originDetection,
         seedEpochIdx: clampedOrigin,
         seedDetection: originDetection,
       });
@@ -933,6 +1137,7 @@ export function detectAndTrackBodiesAtClick(params: {
   } else {
     branchSeeds.push({
       kind: 'stationary',
+      originPeak: originDetection,
       seedEpochIdx: clampedOrigin,
       seedDetection: originDetection,
     });
@@ -941,24 +1146,25 @@ export function detectAndTrackBodiesAtClick(params: {
   const isOverlapped = branchSeeds.length > 1;
   const groupId = `group_ep${clampedOrigin}_x${Math.round(originDetection.x)}_y${Math.round(originDetection.y)}`;
   const originEpochMeta = manifest.epochs[clampedOrigin];
-  const originSky = pixelToSkyWcs(originDetection.x, originDetection.y, manifest.wcs);
 
   // Build full multi-epoch TracedObjectSummary for each branch
   const buildBranchSummary = (seed: BranchSeed, branchIndex: number): TracedObjectSummary => {
     const waypoints: TracedWaypoint[] = new Array(numEpochs);
     const lostEpochIds: string[] = [];
+    const branchOrigin = seed.originPeak;
+    const branchOriginSky = pixelToSkyWcs(branchOrigin.x, branchOrigin.y, manifest.wcs);
 
     waypoints[clampedOrigin] = {
       epoch_id: originEpochMeta.epoch_id,
       epoch_index: clampedOrigin,
       mjd: originEpochMeta.mjd,
       iso_date: originEpochMeta.iso_date,
-      x: originDetection.x,
-      y: originDetection.y,
-      ra: originSky.ra,
-      dec: originSky.dec,
-      peak_flux: originDetection.peakFlux,
-      snr: originDetection.snr,
+      x: branchOrigin.x,
+      y: branchOrigin.y,
+      ra: branchOriginSky.ra,
+      dec: branchOriginSky.dec,
+      peak_flux: branchOrigin.peakFlux,
+      snr: branchOrigin.snr,
       status: 'tracked',
       visible: true,
     };
@@ -971,7 +1177,12 @@ export function detectAndTrackBodiesAtClick(params: {
       const epMeta = manifest.epochs[targetEpochIdx];
 
       if (seed.kind === 'stationary') {
-        const stat = checkStationaryAtOrigin(targetEpochIdx);
+        const stat = checkStationaryAtSpot(
+          targetEpochIdx,
+          branchOrigin.x,
+          branchOrigin.y,
+          branchOrigin.netFlux,
+        );
         if (stat) {
           const sky = pixelToSkyWcs(stat.x, stat.y, manifest.wcs);
           return {
@@ -991,7 +1202,7 @@ export function detectAndTrackBodiesAtClick(params: {
         }
       }
 
-      // Compute expected position using linear velocity from origin -> seedEpochIdx if available
+      // Compute expected position using linear velocity from branchOrigin -> seedEpochIdx if available
       let searchX = fallbackX;
       let searchY = fallbackY;
       let searchRadius = crossEpochSearchRadiusPx;
@@ -1018,10 +1229,10 @@ export function detectAndTrackBodiesAtClick(params: {
         const dtTarget = epMeta.mjd - originEpochMeta.mjd;
         if (Math.abs(dtSeed) > 1e-3) {
           searchX =
-            originDetection.x + ((seed.seedDetection.x - originDetection.x) / dtSeed) * dtTarget;
+            branchOrigin.x + ((seed.seedDetection.x - branchOrigin.x) / dtSeed) * dtTarget;
           searchY =
-            originDetection.y + ((seed.seedDetection.y - originDetection.y) / dtSeed) * dtTarget;
-          searchRadius = isOverlapped ? 5.0 : crossEpochSearchRadiusPx;
+            branchOrigin.y + ((seed.seedDetection.y - branchOrigin.y) / dtSeed) * dtTarget;
+          searchRadius = isOverlapped ? 4.0 : crossEpochSearchRadiusPx;
         }
       }
 
@@ -1062,8 +1273,10 @@ export function detectAndTrackBodiesAtClick(params: {
       );
 
       if (
+        diffPeak.netFlux >= Math.max(0.04, 0.12 * branchOrigin.netFlux) &&
+        Math.hypot(refined.x - searchX, refined.y - searchY) <= searchRadius + 0.8 &&
         refined.snr >= minSnrThreshold &&
-        refined.netFlux >= Math.max(0.04, 0.12 * originDetection.netFlux)
+        refined.netFlux >= Math.max(0.04, 0.12 * branchOrigin.netFlux)
       ) {
         const sky = pixelToSkyWcs(refined.x, refined.y, manifest.wcs);
         return {
@@ -1082,7 +1295,7 @@ export function detectAndTrackBodiesAtClick(params: {
         };
       }
 
-      // Fallback: check if source is stationary at fallbackX/Y
+      // Fallback: check if source is stationary at fallbackX/Y (only when not a diverging overlapped moving branch)
       const localCheck = findLocalPeakAndCentroid(
         compositeFrames[targetEpochIdx],
         fallbackX,
@@ -1090,8 +1303,9 @@ export function detectAndTrackBodiesAtClick(params: {
         2.5,
       );
       if (
+        (!isOverlapped || seed.kind === 'stationary') &&
         localCheck.snr >= minSnrThreshold &&
-        localCheck.netFlux >= Math.max(0.04, 0.15 * originDetection.netFlux)
+        localCheck.netFlux >= Math.max(0.04, 0.15 * branchOrigin.netFlux)
       ) {
         const sky = pixelToSkyWcs(localCheck.x, localCheck.y, manifest.wcs);
         return {
@@ -1133,8 +1347,8 @@ export function detectAndTrackBodiesAtClick(params: {
     };
 
     // Track backward (previous frames: originEpochIndex - 1 down to 0)
-    let prevX = originDetection.x;
-    let prevY = originDetection.y;
+    let prevX = branchOrigin.x;
+    let prevY = branchOrigin.y;
     for (let idx = clampedOrigin - 1; idx >= 0; idx -= 1) {
       const wp = locateBranchInEpoch(idx, prevX, prevY);
       waypoints[idx] = wp;
@@ -1145,8 +1359,8 @@ export function detectAndTrackBodiesAtClick(params: {
     }
 
     // Track forward (future frames: originEpochIndex + 1 up to numEpochs - 1)
-    let nextX = originDetection.x;
-    let nextY = originDetection.y;
+    let nextX = branchOrigin.x;
+    let nextY = branchOrigin.y;
     for (let idx = clampedOrigin + 1; idx < numEpochs; idx += 1) {
       let predX = nextX;
       let predY = nextY;
@@ -1198,7 +1412,7 @@ export function detectAndTrackBodiesAtClick(params: {
     for (const obj of knownObjects) {
       const originPos =
         obj.epoch_positions.find((p) => p.epoch_id === originEpochMeta.epoch_id) ?? obj;
-      const dOrigin = Math.hypot(originPos.x - originDetection.x, originPos.y - originDetection.y);
+      const dOrigin = Math.hypot(originPos.x - branchOrigin.x, originPos.y - branchOrigin.y);
       if (dOrigin < bestDist) {
         // When overlapped, disambiguate using the final/seed waypoint position as well
         const lastPos = obj.epoch_positions.find((p) => p.epoch_id === lastWp.epoch_id) ?? obj;
@@ -1237,10 +1451,10 @@ export function detectAndTrackBodiesAtClick(params: {
       originEpochIndex: clampedOrigin,
       clickX,
       clickY,
-      originCentroidX: originDetection.x,
-      originCentroidY: originDetection.y,
-      ra: originSky.ra,
-      dec: originSky.dec,
+      originCentroidX: branchOrigin.x,
+      originCentroidY: branchOrigin.y,
+      ra: branchOriginSky.ra,
+      dec: branchOriginSky.dec,
       x1: waypoints[0].x,
       y1: waypoints[0].y,
       xN: waypoints[numEpochs - 1].x,

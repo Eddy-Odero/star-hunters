@@ -9,6 +9,7 @@ import {
   BINARY_DETECTOR_FLOAT32_BYTES,
   BINARY_FLAGS_UINT8_BYTES,
   TRACKING_SQUARE_COLORS,
+  WORLD_CAPITAL_CITIES,
   clampViewportPanZoom,
   computeDetectorWeights,
   computeGridKey,
@@ -292,6 +293,52 @@ test('Overlapped bodies at the moment of clicking are separated and tracked with
   assert.equal(statPlusMoverRes.tracks.length, 2);
   assert.equal(statPlusMoverRes.tracks[0].color, TRACKING_SQUARE_COLORS[2]);
   assert.equal(statPlusMoverRes.tracks[1].color, TRACKING_SQUARE_COLORS[3]);
+
+  // Case 3: Partially-overlapped close bodies within the clicked area (localRadiusPx = 6) at originEpochIndex
+  // Stationary star at (100, 100) + close moving body at (103.5, 100) when user clicks at (101.5, 100);
+  // in Pass 2 the moving body separates to (110, 104).
+  const epochBuffersClosePair = [
+    makeGaussianEpochPlanes([
+      { x: 100, y: 100, peak: 8.5 },
+      { x: 103.5, y: 100, peak: 7.5 },
+    ]),
+    makeGaussianEpochPlanes([
+      { x: 100, y: 100, peak: 8.5 },
+      { x: 110, y: 104, peak: 7.5 },
+    ]),
+  ];
+  const closePairRes = detectAndTrackBodiesAtClick({
+    clickX: 101.5,
+    clickY: 100,
+    originEpochIndex: 0,
+    epochBuffers: epochBuffersClosePair,
+    manifest: baseManifest,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.equal(closePairRes.isOverlapped, true);
+  assert.equal(closePairRes.tracks.length, 2);
+  assert.notEqual(closePairRes.tracks[0].color, closePairRes.tracks[1].color);
+
+  // Case 4: Two bodies cross at (100, 100) on Pass 2 (originEpochIndex = 1), where
+  // Branch A separates in Pass 1 at (92, 95) and fades in Pass 3, while
+  // Branch B fades in Pass 1 and separates in Pass 3 at (108, 95).
+  const epochBuffersAsyncSep = [
+    makeGaussianEpochPlanes([{ x: 92, y: 95, peak: 9.0 }]),
+    makeGaussianEpochPlanes([{ x: 100, y: 100, peak: 14.0 }]),
+    makeGaussianEpochPlanes([{ x: 108, y: 95, peak: 8.5 }]),
+  ];
+  const asyncSepRes = detectAndTrackBodiesAtClick({
+    clickX: 100,
+    clickY: 100,
+    originEpochIndex: 1,
+    epochBuffers: epochBuffersAsyncSep,
+    manifest: manifest3,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.equal(asyncSepRes.isOverlapped, true);
+  assert.equal(asyncSepRes.tracks.length, 2);
+  assert.equal(asyncSepRes.status, 'partially_lost');
+  assert.equal(WORLD_CAPITAL_CITIES.length, 12);
 });
 
 test('Edge cases: clicking empty sky returns no_body_found, and fading or exiting bodies report lost/out_of_bounds waypoints', () => {
