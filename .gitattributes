@@ -1,0 +1,4 @@
+# Mark binary data files so Git skips text diffs and line-ending conversions
+*.bin binary
+*.fits binary
+*.db binary
