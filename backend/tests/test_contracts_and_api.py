@@ -520,6 +520,96 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertIsNone(pin_cache.get_manifest(m_custom["query"]["grid_key"]))
         self.assertIsNotNone(pin_cache.get_manifest(m_custom2["query"]["grid_key"]))
 
+    def test_fastapi_progressive_endpoints_gzip_binary_streaming_and_admin_clear(self) -> None:
+        try:
+            from fastapi.middleware.gzip import GZipMiddleware
+            from fastapi.testclient import TestClient
+        except ImportError:  # pragma: no cover
+            self.skipTest("FastAPI TestClient is unavailable.")
+
+        import app.main as main_module
+
+        # Verify GZipMiddleware is configured on the FastAPI app
+        self.assertTrue(
+            any(m.cls is GZipMiddleware for m in main_module.app.user_middleware),
+            "GZipMiddleware must be registered on FastAPI app",
+        )
+
+        with patch.object(main_module, "backend_service", self.service):
+            client = TestClient(main_module.app)
+
+            # 1. /api/v1/catalogs
+            cat_resp = client.get(
+                "/api/v1/catalogs",
+                params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
+            )
+            self.assertEqual(cat_resp.status_code, 200)
+            self.assertEqual(cat_resp.headers.get("cache-control"), "public, max-age=3600")
+            validate_catalogs_response(cat_resp.json())
+
+            # 2. /api/v1/sky-patch
+            patch_resp = client.get(
+                "/api/v1/sky-patch",
+                params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
+            )
+            self.assertEqual(patch_resp.status_code, 200)
+            self.assertEqual(patch_resp.headers.get("cache-control"), "public, max-age=3600")
+            manifest = patch_resp.json()
+            validate_sky_patch_manifest(manifest)
+            grid_key = manifest["query"]["grid_key"]
+
+            # 3. /api/v1/frames/{grid_key}/pass_1.bin?precision=float16 (786,432 bytes)
+            f16_resp = client.get(
+                f"/api/v1/frames/{grid_key}/pass_1.bin",
+                params={"precision": "float16"},
+            )
+            self.assertEqual(f16_resp.status_code, 200)
+            self.assertEqual(len(f16_resp.content), 786_432)
+            self.assertEqual(f16_resp.headers.get("x-binary-dtype"), "float16")
+            self.assertEqual(
+                f16_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
+            )
+
+            # 4. /api/v1/frames/{grid_key}/pass_1.bin?precision=float32 (1,572,864 bytes)
+            f32_resp = client.get(
+                f"/api/v1/frames/{grid_key}/pass_1.bin",
+                params={"precision": "float32"},
+            )
+            self.assertEqual(f32_resp.status_code, 200)
+            self.assertEqual(len(f32_resp.content), 1_572_864)
+            self.assertEqual(f32_resp.headers.get("x-binary-dtype"), "float32")
+            self.assertEqual(
+                f32_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
+            )
+
+            # 5. /api/v1/frames/{grid_key}/pass_1_flags.bin (uint8)
+            flags_resp = client.get(f"/api/v1/frames/{grid_key}/pass_1_flags.bin")
+            self.assertEqual(flags_resp.status_code, 200)
+            self.assertEqual(len(flags_resp.content), BINARY_FLAGS_UINT8_BYTES)
+            self.assertEqual(flags_resp.headers.get("x-binary-dtype"), "uint8")
+
+            # 6. /api/v1/earth-to-sky
+            e2s_resp = client.get("/api/v1/earth-to-sky")
+            self.assertEqual(e2s_resp.status_code, 200)
+            validate_earth_to_sky_response(e2s_resp.json())
+
+            # 7. POST /api/v1/admin/clear-cache (403 without valid token, 200 with valid token)
+            self.assertEqual(client.post("/api/v1/admin/clear-cache").status_code, 403)
+            self.assertEqual(
+                client.post(
+                    "/api/v1/admin/clear-cache",
+                    headers={"X-Admin-Token": "wrong-token"},
+                ).status_code,
+                403,
+            )
+            clear_resp = client.post(
+                "/api/v1/admin/clear-cache",
+                headers={"X-Admin-Token": self.service.admin_token},
+            )
+            self.assertEqual(clear_resp.status_code, 200)
+            self.assertEqual(clear_resp.json(), {"status": "cleared"})
+            self.assertIsNone(self.cache.get_manifest(grid_key))
+
 
 if __name__ == "__main__":
     unittest.main()
