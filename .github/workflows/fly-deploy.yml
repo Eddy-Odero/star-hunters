@@ -1,0 +1,55 @@
+name: Fly.io Auto-Deploy (main)
+
+on:
+  workflow_run:
+    workflows: ["Star Hunters CI (Lint, Typecheck & Tests)"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-fly:
+    name: Deploy to Fly.io
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Check Fly.io deploy token configuration
+        id: fly_token_check
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::notice::FLY_API_TOKEN secret is not set. Skipping Fly.io deployment. Run: flyctl tokens create deploy -a star-hunters-spherex -x 999999h | gh secret set FLY_API_TOKEN --repo ${{ github.repository }}"
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout verified commit
+        if: steps.fly_token_check.outputs.has_token == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Setup flyctl
+        if: steps.fly_token_check.outputs.has_token == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        if: steps.fly_token_check.outputs.has_token == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
