@@ -8,7 +8,7 @@ import math
 import os
 import random
 import struct
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,6 +37,8 @@ from .services.spatial_cache import (
     angular_separation_deg,
     compute_grid_key,
 )
+from .services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
+from .services.wise_fallback import fetch_wise_fallback
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Query, Response
@@ -185,6 +187,12 @@ def compute_zenith_icrs(
     }
     validate_earth_to_sky_response(payload)
     return payload
+
+
+def mjd_to_iso(mjd: float) -> str:
+    """Convert a Modified Julian Date to an ISO-8601 UTC timestamp."""
+    epoch = datetime(1858, 11, 17, tzinfo=UTC)
+    return (epoch + timedelta(days=float(mjd))).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def build_wcs_header(ra: float, dec: float, fov_arcmin: float = 5.0) -> dict[str, Any]:
@@ -1177,10 +1185,22 @@ def _merge_pipeline_overlays(
 class StarHuntersBackendService:
     """Core request handler used by both FastAPI routes and standalone tests."""
 
-    def __init__(self, cache: SpatialSqliteCache | None = None) -> None:
+    def __init__(
+        self,
+        cache: SpatialSqliteCache | None = None,
+        enable_archival_data: bool | None = None,
+        wise_fallback_fetcher: Any = fetch_wise_fallback,
+    ) -> None:
         self.cache = cache or SpatialSqliteCache()
         self.admin_token = os.environ.get("ADMIN_TOKEN", "star-hunters-dev-token")
         self.catalog_pipeline = AutomatedCelestialPipeline(cache=self.cache)
+        # Keep offline tests/local development deterministic. Enable live IRSA
+        # ingestion explicitly with ENABLE_ARCHIVAL_DATA=true in deployment.
+        if enable_archival_data is None:
+            configured = os.environ.get("ENABLE_ARCHIVAL_DATA", "false").strip().lower()
+            enable_archival_data = configured in {"1", "true", "yes", "on"}
+        self.enable_archival_data = enable_archival_data
+        self.wise_fallback_fetcher = wise_fallback_fetcher
 
     def prewarm_known_data(self) -> int:
         """Aggressively pre-warm all showcase manifests, spectra, frames, and search index."""
@@ -1322,6 +1342,19 @@ class StarHuntersBackendService:
         cached_zenith = self.cache.get_zenith_response(cache_key)
         if cached_zenith is not None:
             validate_earth_to_sky_response(cached_zenith)
+            if prewarm_patch:
+                cached_ra = float(cached_zenith["zenith_icrs"]["ra"])
+                cached_dec = float(cached_zenith["zenith_icrs"]["dec"])
+                cached_grid_key, _, _ = compute_grid_key(cached_ra, cached_dec, 5.0)
+                cached_patch = self.cache.get_manifest(cached_grid_key)
+                cached_summary = (cached_patch or {}).get("data_source_summary", {})
+                cached_note = str(cached_summary.get("status_note", ""))
+                needs_archival_refresh = (
+                    self.enable_archival_data
+                    and cached_note == "2 SPHEREx survey passes (6-month baseline)"
+                )
+                if cached_patch is None or needs_archival_refresh:
+                    self.get_sky_patch(cached_ra, cached_dec, fov=5.0)
             return cached_zenith
 
         # Pass the resolved (lat, lon) directly so compute_zenith_icrs computes the exact
@@ -1430,8 +1463,14 @@ class StarHuntersBackendService:
         grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
         cached_manifest = self.cache.get_manifest(grid_key)
         if cached_manifest is not None:
-            validate_sky_patch_manifest(cached_manifest)
-            return cached_manifest
+            # Do not let pre-ISS-12 synthetic demo patches mask the archival
+            # fetch path after the backend is upgraded/configured for real data.
+            cached_summary = cached_manifest.get("data_source_summary", {})
+            cached_note = str(cached_summary.get("status_note", ""))
+            is_legacy_demo = cached_note == "2 SPHEREx survey passes (6-month baseline)"
+            if not (self.enable_archival_data and is_legacy_demo):
+                validate_sky_patch_manifest(cached_manifest)
+                return cached_manifest
 
         manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
         manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
@@ -1439,6 +1478,108 @@ class StarHuntersBackendService:
         if slug in SHOWCASE_TARGETS:
             self.cache.pin_grid_key(grid_key)
         frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
+
+        if self.enable_archival_data:
+            try:
+                from .services.spherex_coadd import (
+                    build_target_wcs_header,
+                    coadd_spherex_epochs,
+                )
+                from .services.spherex_ingest import ingest_spherex_cutouts
+
+                fov_deg = float(fov) / 60.0
+                try:
+                    cutouts = ingest_spherex_cutouts(
+                        ra=ra, dec=dec, fov_arcmin=fov, allow_synthetic_fallback=False
+                    )
+                except Exception:
+                    # An empty SPHEREx result is exactly the condition ISS-12
+                    # is intended to recover from; proceed to archival WISE.
+                    cutouts = []
+                coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
+                epoch_entries: list[dict[str, Any]] = []
+                actual_frames: dict[str, bytes] = {}
+                epoch_mjds: list[float] = []
+                for index, epoch in enumerate(coadd.epochs, start=1):
+                    filename = f"pass_{index}.bin"
+                    flags_filename = f"pass_{index}_flags.bin"
+                    actual_frames[filename] = epoch.detector_buffer
+                    actual_frames[flags_filename] = epoch.flags_buffer
+                    epoch_mjds.append(float(epoch.mjd))
+                    epoch_entries.append(
+                        {
+                            "epoch_id": epoch.epoch_id,
+                            "label": f"Pass {index} (SPHEREx)",
+                            "mission": "SPHEREx",
+                            "mjd": float(epoch.mjd),
+                            "iso_date": mjd_to_iso(epoch.mjd),
+                            "detectors_data_url": (f"/api/v1/frames/{grid_key}/{filename}"),
+                            "flags_mask_url": (f"/api/v1/frames/{grid_key}/{flags_filename}"),
+                            "available_detectors": epoch.available_detectors or [1],
+                            "binary_dtype": "float32",
+                        }
+                    )
+
+                if coadd.needs_wise_fallback:
+                    target_header = build_target_wcs_header(ra, dec, fov_deg)
+                    wise = self.wise_fallback_fetcher(
+                        ra=ra, dec=dec, fov_arcmin=fov, target_wcs_header=target_header
+                    )
+                    wise_data_name = "wise_fallback.bin"
+                    wise_flags_name = "wise_fallback_flags.bin"
+                    actual_frames[wise_data_name] = wise.detector_buffer
+                    actual_frames[wise_flags_name] = wise.flags_buffer
+                    epoch_entries.append(
+                        {
+                            "epoch_id": "wise_fallback",
+                            "label": "WISE/NEOWISE archival fallback (W1/W2)",
+                            "mission": "WISE",
+                            "mjd": float(wise.mjd),
+                            "iso_date": mjd_to_iso(wise.mjd),
+                            "detectors_data_url": (f"/api/v1/frames/{grid_key}/{wise_data_name}"),
+                            "flags_mask_url": (f"/api/v1/frames/{grid_key}/{wise_flags_name}"),
+                            "available_detectors": wise.available_detectors or [4, 5, 6],
+                            "binary_dtype": "float32",
+                        }
+                    )
+                    all_mjds = epoch_mjds + [
+                        float(wise.mjd_start),
+                        float(wise.mjd_end),
+                    ]
+                    baseline_days = (
+                        max(all_mjds) - min(all_mjds) if all_mjds else wise.baseline_days
+                    )
+                    manifest["data_source_summary"] = {
+                        "primary_mission": "WISE",
+                        "has_multi_epoch_spherex": False,
+                        "uses_wise_fallback": True,
+                        "baseline_days": max(float(wise.baseline_days), float(baseline_days)),
+                        "status_note": (
+                            f"WISE/NEOWISE W1/W2 fallback; {len(coadd.epochs)} SPHEREx epoch(s)"
+                        ),
+                    }
+                    manifest["epochs"] = epoch_entries
+                    frames = actual_frames
+                elif len(coadd.epochs) >= 2:
+                    manifest["epochs"] = epoch_entries
+                    manifest["data_source_summary"] = {
+                        "primary_mission": "SPHEREx",
+                        "has_multi_epoch_spherex": True,
+                        "uses_wise_fallback": False,
+                        "baseline_days": float(coadd.baseline_days),
+                        "status_note": f"{len(coadd.epochs)} real SPHEREx comparison epoch(s)",
+                    }
+                    frames = actual_frames
+            except Exception as exc:
+                # A missing IRSA dependency/network response must not fabricate WISE
+                # measurements or label a synthetic fixture as archival data.
+                # Preserve the existing demo patch, but keep its source summary intact.
+                manifest["data_source_summary"]["status_note"] = (
+                    "Archival SPHEREx/WISE data unavailable; demo patch returned "
+                    f"({type(exc).__name__})"
+                )
+
+        validate_sky_patch_manifest(manifest)
         self.cache.put_sky_patch(
             grid_key=grid_key,
             ra_center=ra_q,
@@ -1586,6 +1727,47 @@ class StarHuntersBackendService:
             "Content-Type": "application/octet-stream",
         }
         return body, headers
+
+    def get_forced_spectrum(
+        self,
+        ra: float,
+        dec: float,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Ingest SPHEREx cutouts and measure the selected sky position.
+
+        Wavelength-resolved planes are used directly when supplied. Otherwise the
+        six detector-band cutouts are measured with aperture photometry and
+        interpolated onto the 102-channel contract grid. The ISS-04 synthetic
+        fixture fallback keeps this endpoint available when IRSA is offline.
+        """
+        spectrum_key = f"spec_forced_ra{round(ra, 4):.4f}_dec{round(dec, 4):.4f}"
+        cached_spec = self.cache.get_spectrum(spectrum_key)
+        if cached_spec is not None:
+            validate_spectrum_payload(cached_spec)
+            return cached_spec
+
+        try:
+            from .services.spherex_ingest import ingest_spherex_cutouts
+
+            cutouts = ingest_spherex_cutouts(
+                ra=ra,
+                dec=dec,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=True,
+            )
+        except ImportError as exc:
+            raise SpectrumExtractionError(
+                "SPHEREx ingestion dependencies are unavailable; install backend/requirements.txt."
+            ) from exc
+        payload = extract_forced_spectrum(
+            ra=ra,
+            dec=dec,
+            cutouts=cutouts,
+            source_label=label or "Selected sky position",
+        )
+        self.cache.put_spectrum(spectrum_key=spectrum_key, ra=ra, dec=dec, payload=payload)
+        return payload
 
     def get_spectrum(
         self,
@@ -1751,7 +1933,14 @@ if HAS_FASTAPI:
         dec: float = Query(..., ge=-90.0, le=90.0),
     ) -> dict[str, Any]:
         response.headers["Cache-Control"] = "public, max-age=3600"
-        return backend_service.get_spectrum(ra=ra, dec=dec)
+        try:
+            return backend_service.get_forced_spectrum(ra=ra, dec=dec)
+        except SpectrumExtractionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"SPHEREx spectrum unavailable: {exc}"
+            ) from exc
 
     @app.post("/api/v1/admin/clear-cache")
     async def clear_cache(
