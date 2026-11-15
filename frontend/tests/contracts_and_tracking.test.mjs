@@ -453,11 +453,16 @@ test('Click-to-Track detects bright body on origin frame and tracks both forward
   const p2 = decodeDetectorBinaryBuffer(
     readArrayBuffer(path.join(PRESETS_DIR, slug, 'pass_2.bin')),
   );
+  const primary = manifest.catalog_overlays.known_objects.find((obj) =>
+    obj.object_id.startsWith('wise:'),
+  );
+  const pass1Pos = primary.epoch_positions.find((pos) => pos.epoch_id === 'pass_1');
+  const pass2Pos = primary.epoch_positions.find((pos) => pos.epoch_id === 'pass_2');
 
-  // Case A: Click slightly off-center at (123, 125) on Pass 1 (originEpochIndex = 0) -> tracks FORWARD to Pass 2
+  // Case A: Click slightly off-center on Pass 1 (originEpochIndex = 0) -> tracks FORWARD to Pass 2
   const forwardTrace = detectAndTrackBrightBodyAcrossEpochs({
-    clickX: 123,
-    clickY: 125,
+    clickX: pass1Pos.x - 1,
+    clickY: pass1Pos.y - 1,
     originEpochIndex: 0,
     epochBuffers: [p1, p2],
     manifest,
@@ -467,23 +472,28 @@ test('Click-to-Track detects bright body on origin frame and tracks both forward
   assert.equal(forwardTrace.status, 'tracked');
   assert.equal(forwardTrace.originEpochIndex, 0);
   assert.ok(
-    Math.hypot(forwardTrace.originCentroidX - 124.0, forwardTrace.originCentroidY - 126.0) < 0.6,
+    Math.hypot(
+      forwardTrace.originCentroidX - pass1Pos.x,
+      forwardTrace.originCentroidY - pass1Pos.y,
+    ) < 0.6,
   );
   assert.equal(forwardTrace.waypoints.length, 2);
   assert.ok(
-    Math.hypot(forwardTrace.waypoints[0].x - 124.0, forwardTrace.waypoints[0].y - 126.0) < 0.6,
+    Math.hypot(forwardTrace.waypoints[0].x - pass1Pos.x, forwardTrace.waypoints[0].y - pass1Pos.y) <
+      0.6,
   );
   assert.ok(
-    Math.hypot(forwardTrace.waypoints[1].x - 132.0, forwardTrace.waypoints[1].y - 130.0) < 0.8,
+    Math.hypot(forwardTrace.waypoints[1].x - pass2Pos.x, forwardTrace.waypoints[1].y - pass2Pos.y) <
+      0.8,
   );
   assert.ok(forwardTrace.properMotionArcsecPerYr > 5.0);
   assert.equal(forwardTrace.matchedCatalog, 'wise');
   assert.equal(forwardTrace.isUncatalogedMover, false);
 
-  // Case B: Click slightly off-center at (133, 131) on Pass 2 (originEpochIndex = 1) -> tracks BACKWARD to Pass 1
+  // Case B: Click slightly off-center on Pass 2 (originEpochIndex = 1) -> tracks BACKWARD to Pass 1
   const backwardTrace = detectAndTrackBrightBodyAcrossEpochs({
-    clickX: 133,
-    clickY: 131,
+    clickX: pass2Pos.x + 1,
+    clickY: pass2Pos.y + 1,
     originEpochIndex: 1,
     epochBuffers: [p1, p2],
     manifest,
@@ -493,13 +503,22 @@ test('Click-to-Track detects bright body on origin frame and tracks both forward
   assert.equal(backwardTrace.status, 'tracked');
   assert.equal(backwardTrace.originEpochIndex, 1);
   assert.ok(
-    Math.hypot(backwardTrace.originCentroidX - 132.0, backwardTrace.originCentroidY - 130.0) < 0.6,
+    Math.hypot(
+      backwardTrace.originCentroidX - pass2Pos.x,
+      backwardTrace.originCentroidY - pass2Pos.y,
+    ) < 0.6,
   );
   assert.ok(
-    Math.hypot(backwardTrace.waypoints[0].x - 124.0, backwardTrace.waypoints[0].y - 126.0) < 0.8,
+    Math.hypot(
+      backwardTrace.waypoints[0].x - pass1Pos.x,
+      backwardTrace.waypoints[0].y - pass1Pos.y,
+    ) < 0.8,
   );
   assert.ok(
-    Math.hypot(backwardTrace.waypoints[1].x - 132.0, backwardTrace.waypoints[1].y - 130.0) < 0.6,
+    Math.hypot(
+      backwardTrace.waypoints[1].x - pass2Pos.x,
+      backwardTrace.waypoints[1].y - pass2Pos.y,
+    ) < 0.6,
   );
 });
 
