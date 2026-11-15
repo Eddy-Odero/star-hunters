@@ -3,15 +3,52 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
 import zlib
 from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
+DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+_MJD_EPOCH = datetime(1858, 11, 17, 0, 0, 0, tzinfo=UTC)
+
+
+def quantize_bucket(
+    value: float, step: float = DEFAULT_GRID_STEP_DEG, wrap_360: bool = False
+) -> float:
+    """Quantize a celestial coordinate to a spatial bucket step in degrees."""
+    val = float(value)
+    if wrap_360:
+        val = val % 360.0
+    else:
+        val = max(-90.0, min(90.0, val))
+    q = round(round(val / step) * step, 4)
+    return q % 360.0 if wrap_360 else max(-90.0, min(90.0, q))
+
+
+def mjd_to_date_bucket(mjd: float) -> str:
+    """Convert Modified Julian Date (MJD) to ISO UTC date bucket YYYY-MM-DD."""
+    dt = _MJD_EPOCH + timedelta(days=float(mjd))
+    return dt.date().isoformat()
+
+
+def angular_separation_deg(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
+    """Great-circle angular separation between two ICRS coordinates in degrees."""
+    ra1_r = math.radians(ra1)
+    dec1_r = math.radians(dec1)
+    ra2_r = math.radians(ra2)
+    dec2_r = math.radians(dec2)
+    dra = ra2_r - ra1_r
+    ddec = dec2_r - dec1_r
+    sin_ddec = math.sin(ddec / 2.0)
+    sin_dra = math.sin(dra / 2.0)
+    a = sin_ddec * sin_ddec + math.cos(dec1_r) * math.cos(dec2_r) * sin_dra * sin_dra
+    return math.degrees(2.0 * math.asin(min(1.0, math.sqrt(max(0.0, a)))))
 
 
 def compute_grid_key(
@@ -37,10 +74,16 @@ class SpatialSqliteCache:
         self,
         db_path: str | None = None,
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
+        pinned_grid_keys: set[str] | None = None,
     ) -> None:
         self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
         self.max_cache_bytes = max_cache_bytes
+        self.pinned_grid_keys: set[str] = set(pinned_grid_keys or ())
         self._init_db()
+
+    def pin_grid_key(self, grid_key: str) -> None:
+        """Pin a known showcase grid_key so LRU eviction prefers evicting non-pinned patches."""
+        self.pinned_grid_keys.add(grid_key)
 
     def _connect(self) -> sqlite3.Connection:
         parent = os.path.dirname(os.path.abspath(self.db_path))
@@ -96,6 +139,41 @@ class SpatialSqliteCache:
                     created_at REAL NOT NULL,
                     last_accessed REAL NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS catalog_region_cache (
+                    region_key TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    ra_bucket REAL NOT NULL,
+                    dec_bucket REAL NOT NULL,
+                    radius_bucket REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    byte_size INTEGER NOT NULL,
+                    fetched_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    last_accessed REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_catalog_region_lookup
+                ON catalog_region_cache(source, ra_bucket, dec_bucket, radius_bucket);
+
+                CREATE TABLE IF NOT EXISTS solar_system_ephemeris (
+                    naif_id TEXT NOT NULL,
+                    body_name TEXT NOT NULL,
+                    body_class TEXT NOT NULL,
+                    date_bucket TEXT NOT NULL,
+                    mjd REAL NOT NULL,
+                    ra REAL NOT NULL,
+                    dec REAL NOT NULL,
+                    vmag REAL,
+                    ra_bucket REAL NOT NULL,
+                    dec_bucket REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    fetched_at REAL NOT NULL,
+                    PRIMARY KEY (naif_id, date_bucket)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ephem_lookup
+                ON solar_system_ephemeris(date_bucket, ra_bucket, dec_bucket);
                 """
             )
 
@@ -286,6 +364,291 @@ class SpatialSqliteCache:
                 (cache_key, city_slug, lat, lon, payload_str, now, now),
             )
 
+    @staticmethod
+    def _catalog_region_key(
+        source: str,
+        ra: float,
+        dec: float,
+        radius_deg: float,
+    ) -> tuple[str, float, float, float]:
+        ra_b = quantize_bucket(ra, DEFAULT_GRID_STEP_DEG, wrap_360=True)
+        dec_b = quantize_bucket(dec, DEFAULT_GRID_STEP_DEG, wrap_360=False)
+        rad_b = round(max(0.01, float(radius_deg)), 3)
+        key = f"{source}:ra{ra_b:.2f}:dec{dec_b:.2f}:r{rad_b:.3f}"
+        return key, ra_b, dec_b, rad_b
+
+    def get_cached_catalog_region(
+        self,
+        source: str,
+        ra: float,
+        dec: float,
+        radius_deg: float,
+        allow_stale: bool = False,
+    ) -> dict[str, Any] | None:
+        """Fetch cached SIMBAD/Gaia/MOST region payload if present (unless stale/missing)."""
+        now = time.time()
+        region_key, _, _, _ = self._catalog_region_key(source, ra, dec, radius_deg)
+        with closing(self._connect()) as conn, conn:
+            row = conn.execute(
+                """
+                SELECT payload_json, expires_at
+                FROM catalog_region_cache
+                WHERE region_key = ?
+                """,
+                (region_key,),
+            ).fetchone()
+            if not row:
+                return None
+            is_expired = float(row["expires_at"]) < now
+            if is_expired and not allow_stale:
+                return None
+            conn.execute(
+                "UPDATE catalog_region_cache SET last_accessed = ? WHERE region_key = ?",
+                (now, region_key),
+            )
+            payload: dict[str, Any] = json.loads(row["payload_json"])
+            payload["cache_hit"] = True
+            payload["stale"] = is_expired
+            return payload
+
+    def put_cached_catalog_region(
+        self,
+        source: str,
+        ra: float,
+        dec: float,
+        radius_deg: float,
+        payload: dict[str, Any],
+        ttl_seconds: float = DEFAULT_CATALOG_TTL_SECONDS,
+    ) -> None:
+        """Persist a quantized catalog query response in SQLite with TTL + LRU pruning."""
+        now = time.time()
+        expires_at = now + max(60.0, float(ttl_seconds))
+        region_key, ra_b, dec_b, rad_b = self._catalog_region_key(source, ra, dec, radius_deg)
+        payload_str = json.dumps(payload, separators=(",", ":"))
+        byte_size = len(payload_str.encode("utf-8"))
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO catalog_region_cache (
+                    region_key, source, ra_bucket, dec_bucket, radius_bucket,
+                    payload_json, byte_size, fetched_at, expires_at, last_accessed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    region_key,
+                    source,
+                    ra_b,
+                    dec_b,
+                    rad_b,
+                    payload_str,
+                    byte_size,
+                    now,
+                    expires_at,
+                    now,
+                ),
+            )
+            self._prune_if_needed(conn)
+
+    def upsert_ephemeris_points(self, points: list[dict[str, Any]]) -> int:
+        """Upsert JPL Horizons / MOST rows indexed by (date_bucket, ra_bucket, dec_bucket)."""
+        if not points:
+            return 0
+        now = time.time()
+        rows_to_insert: list[tuple[Any, ...]] = []
+        for pt in points:
+            ra_val = float(pt["ra"]) % 360.0
+            dec_val = max(-90.0, min(90.0, float(pt["dec"])))
+            mjd_val = float(pt["mjd"])
+            date_bucket = str(pt.get("date_bucket") or mjd_to_date_bucket(mjd_val))
+            ra_b = quantize_bucket(ra_val, DEFAULT_GRID_STEP_DEG, wrap_360=True)
+            dec_b = quantize_bucket(dec_val, DEFAULT_GRID_STEP_DEG, wrap_360=False)
+            vmag_val = float(pt["vmag"]) if pt.get("vmag") is not None else None
+            rows_to_insert.append(
+                (
+                    str(pt["naif_id"]),
+                    str(pt["body_name"]),
+                    str(pt.get("body_class", "solar_system")),
+                    date_bucket,
+                    mjd_val,
+                    ra_val,
+                    dec_val,
+                    vmag_val,
+                    ra_b,
+                    dec_b,
+                    str(pt.get("source", "jpl_horizons")),
+                    float(pt.get("fetched_at", now)),
+                )
+            )
+        with closing(self._connect()) as conn, conn:
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO solar_system_ephemeris (
+                    naif_id, body_name, body_class, date_bucket, mjd,
+                    ra, dec, vmag, ra_bucket, dec_bucket, source, fetched_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows_to_insert,
+            )
+        return len(rows_to_insert)
+
+    def query_ephemeris_in_fov(
+        self,
+        mjd: float,
+        ra: float,
+        dec: float,
+        radius_deg: float,
+    ) -> list[dict[str, Any]]:
+        """Query Solar System bodies in or traversing the FOV around `mjd` via index lookup.
+
+        Linearly interpolates daily ephemeris positions around `mjd` (covering +/- 1 day so
+        fast movers near day boundaries are caught accurately).
+        """
+        norm_ra = float(ra) % 360.0
+        clamped_dec = max(-90.0, min(90.0, float(dec)))
+        target_mjd = float(mjd)
+        date_prev = mjd_to_date_bucket(target_mjd - 1.0)
+        date_curr = mjd_to_date_bucket(target_mjd)
+        date_next = mjd_to_date_bucket(target_mjd + 1.0)
+
+        # Pad bounding box generously (+2.0 deg) to catch fast motion prior to interpolation
+        pad_deg = max(2.0, float(radius_deg) + 1.5)
+        dec_min = max(-90.0, clamped_dec - pad_deg)
+        dec_max = min(90.0, clamped_dec + pad_deg)
+
+        cos_dec = math.cos(math.radians(clamped_dec))
+        if abs(clamped_dec) + pad_deg >= 89.0 or cos_dec < 0.05:
+            ra_clause = "1 = 1"
+            ra_params: tuple[Any, ...] = ()
+        else:
+            dra = min(180.0, pad_deg / cos_dec)
+            ra_low = (norm_ra - dra) % 360.0
+            ra_high = (norm_ra + dra) % 360.0
+            if norm_ra - dra >= 0.0 and norm_ra + dra < 360.0:
+                ra_clause = "ra_bucket BETWEEN ? AND ?"
+                ra_params = (ra_low, ra_high)
+            else:
+                ra_clause = "(ra_bucket >= ? OR ra_bucket <= ?)"
+                ra_params = (ra_low, ra_high)
+
+        sql = f"""
+            SELECT naif_id, body_name, body_class, date_bucket, mjd, ra, dec, vmag, source
+            FROM solar_system_ephemeris
+            WHERE date_bucket IN (?, ?, ?)
+              AND dec_bucket BETWEEN ? AND ?
+              AND {ra_clause}
+            ORDER BY naif_id ASC, mjd ASC
+        """
+        params: tuple[Any, ...] = (date_prev, date_curr, date_next, dec_min, dec_max, *ra_params)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["naif_id"]), []).append(row)
+
+        matches: list[dict[str, Any]] = []
+        for naif_id, body_rows in grouped.items():
+            body_rows.sort(key=lambda r: float(r["mjd"]))
+            interp_ra, interp_dec, interp_vmag = self._interpolate_ephemeris_rows(
+                body_rows, target_mjd
+            )
+            sep_deg = angular_separation_deg(norm_ra, clamped_dec, interp_ra, interp_dec)
+            if sep_deg <= float(radius_deg):
+                first = body_rows[0]
+                matches.append(
+                    {
+                        "naif_id": naif_id,
+                        "body_name": str(first["body_name"]),
+                        "body_class": str(first["body_class"]),
+                        "mjd": target_mjd,
+                        "ra": round(interp_ra, 6),
+                        "dec": round(interp_dec, 6),
+                        "vmag": round(interp_vmag, 3) if interp_vmag is not None else None,
+                        "angular_sep_deg": round(sep_deg, 6),
+                        "source": str(first["source"]),
+                    }
+                )
+        matches.sort(key=lambda item: float(item["angular_sep_deg"]))
+        return matches
+
+    @staticmethod
+    def _interpolate_ephemeris_rows(
+        rows: list[sqlite3.Row],
+        target_mjd: float,
+    ) -> tuple[float, float, float | None]:
+        if len(rows) == 1:
+            r0 = rows[0]
+            vmag = float(r0["vmag"]) if r0["vmag"] is not None else None
+            return float(r0["ra"]) % 360.0, float(r0["dec"]), vmag
+
+        before = rows[0]
+        after = rows[-1]
+        for idx in range(len(rows) - 1):
+            m1 = float(rows[idx]["mjd"])
+            m2 = float(rows[idx + 1]["mjd"])
+            if m1 <= target_mjd <= m2:
+                before = rows[idx]
+                after = rows[idx + 1]
+                break
+        if target_mjd <= float(rows[0]["mjd"]):
+            r0 = rows[0]
+            vmag = float(r0["vmag"]) if r0["vmag"] is not None else None
+            return float(r0["ra"]) % 360.0, float(r0["dec"]), vmag
+        if target_mjd >= float(rows[-1]["mjd"]):
+            r_last = rows[-1]
+            vmag = float(r_last["vmag"]) if r_last["vmag"] is not None else None
+            return float(r_last["ra"]) % 360.0, float(r_last["dec"]), vmag
+
+        m1 = float(before["mjd"])
+        m2 = float(after["mjd"])
+        span = m2 - m1
+        t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (target_mjd - m1) / span))
+        ra1 = float(before["ra"]) % 360.0
+        ra2 = float(after["ra"]) % 360.0
+        # Shortest wrapped angular interpolation in RA
+        dra = (ra2 - ra1 + 540.0) % 360.0 - 180.0
+        interp_ra = (ra1 + t * dra) % 360.0
+        interp_dec = float(before["dec"]) + t * (float(after["dec"]) - float(before["dec"]))
+        v1 = before["vmag"]
+        v2 = after["vmag"]
+        if v1 is not None and v2 is not None:
+            interp_vmag: float | None = float(v1) + t * (float(v2) - float(v1))
+        elif v1 is not None:
+            interp_vmag = float(v1)
+        elif v2 is not None:
+            interp_vmag = float(v2)
+        else:
+            interp_vmag = None
+        return interp_ra, interp_dec, interp_vmag
+
+    def get_ephemeris_stats(self) -> dict[str, Any]:
+        """Return count of stored ephemeris rows and distinct Solar System bodies."""
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       COUNT(DISTINCT naif_id) AS body_count,
+                       MIN(date_bucket) AS min_date,
+                       MAX(date_bucket) AS max_date
+                FROM solar_system_ephemeris
+                """
+            ).fetchone()
+            cat_row = conn.execute(
+                """
+                SELECT COUNT(*) AS region_count,
+                       COALESCE(SUM(byte_size), 0) AS catalog_bytes
+                FROM catalog_region_cache
+                """
+            ).fetchone()
+        return {
+            "ephemeris_rows": int(row["row_count"]) if row else 0,
+            "distinct_bodies": int(row["body_count"]) if row else 0,
+            "min_date": row["min_date"] if row else None,
+            "max_date": row["max_date"] if row else None,
+            "catalog_regions": int(cat_row["region_count"]) if cat_row else 0,
+            "catalog_bytes": int(cat_row["catalog_bytes"]) if cat_row else 0,
+        }
+
     def _prune_if_needed(
         self,
         conn: sqlite3.Connection,
@@ -294,8 +657,45 @@ class SpatialSqliteCache:
         row = conn.execute(
             "SELECT COALESCE(SUM(byte_size), 0) AS total_bytes FROM sky_patches"
         ).fetchone()
-        total_bytes = int(row["total_bytes"]) if row else 0
+        cat_row = conn.execute(
+            "SELECT COALESCE(SUM(byte_size), 0) AS total_bytes FROM catalog_region_cache"
+        ).fetchone()
+        patch_bytes = int(row["total_bytes"]) if row else 0
+        cat_bytes = int(cat_row["total_bytes"]) if cat_row else 0
+        total_bytes = patch_bytes + cat_bytes
         evicted = 0
+        if total_bytes <= self.max_cache_bytes:
+            return evicted
+
+        # Pass 0: Purge expired catalog_region_cache rows first, then oldest catalog rows if needed
+        if cat_bytes > 0:
+            now = time.time()
+            expired = conn.execute(
+                "SELECT region_key, byte_size FROM catalog_region_cache WHERE expires_at < ?",
+                (now,),
+            ).fetchall()
+            for r in expired:
+                conn.execute(
+                    "DELETE FROM catalog_region_cache WHERE region_key = ?",
+                    (r["region_key"],),
+                )
+                total_bytes -= int(r["byte_size"])
+                evicted += 1
+            if total_bytes > self.max_cache_bytes:
+                cat_rows = conn.execute(
+                    "SELECT region_key, byte_size FROM catalog_region_cache "
+                    "ORDER BY last_accessed ASC, rowid ASC"
+                ).fetchall()
+                for r in cat_rows:
+                    if total_bytes <= self.max_cache_bytes:
+                        break
+                    conn.execute(
+                        "DELETE FROM catalog_region_cache WHERE region_key = ?",
+                        (r["region_key"],),
+                    )
+                    total_bytes -= int(r["byte_size"])
+                    evicted += 1
+
         if total_bytes <= self.max_cache_bytes:
             return evicted
 
@@ -303,14 +703,29 @@ class SpatialSqliteCache:
             "SELECT grid_key, byte_size FROM sky_patches ORDER BY last_accessed ASC, rowid ASC"
         )
         rows = cursor.fetchall()
+        # Pass 1: Evict non-pinned sky patches first so known showcase targets stay cached
         for r in rows:
             if total_bytes <= self.max_cache_bytes:
                 break
             if preserve_grid_key and r["grid_key"] == preserve_grid_key:
                 continue
+            if r["grid_key"] in self.pinned_grid_keys:
+                continue
             conn.execute("DELETE FROM sky_patches WHERE grid_key = ?", (r["grid_key"],))
             total_bytes -= int(r["byte_size"])
             evicted += 1
+        # Pass 2: Only if pinned patches alone exceed max_cache_bytes, evict oldest pinned patches
+        if total_bytes > self.max_cache_bytes:
+            for r in rows:
+                if total_bytes <= self.max_cache_bytes:
+                    break
+                if preserve_grid_key and r["grid_key"] == preserve_grid_key:
+                    continue
+                if r["grid_key"] not in self.pinned_grid_keys:
+                    continue
+                conn.execute("DELETE FROM sky_patches WHERE grid_key = ?", (r["grid_key"],))
+                total_bytes -= int(r["byte_size"])
+                evicted += 1
         return evicted
 
     def clear(self) -> None:
@@ -319,3 +734,5 @@ class SpatialSqliteCache:
             conn.execute("DELETE FROM sky_patches")
             conn.execute("DELETE FROM spectra_cache")
             conn.execute("DELETE FROM capital_zenith_cache")
+            conn.execute("DELETE FROM catalog_region_cache")
+            conn.execute("DELETE FROM solar_system_ephemeris")

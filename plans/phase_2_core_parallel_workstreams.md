@@ -80,13 +80,13 @@ flowchart TD
 
 ---
 
-### `ISS-06`: Asynchronous Multi-Mission Catalog Queries (Gaia DR3, WISE & NASA MOST)
-- **Goal:** Asynchronously query Gaia DR3, WISE/NEOWISE, and NASA's MOST Solar System service in parallel (`asyncio.gather` with per-archive timeouts) for all cataloged objects inside the sky patch and project their coordinates onto the $256 \times 256$ WCS pixel grid `(x, y)`.
+### `ISS-06`: Asynchronous Multi-Mission Catalog Queries (SIMBAD, Gaia DR3, JPL Horizons & NASA MOST)
+- **Goal:** Asynchronously query SIMBAD TAP (`simbad.idia.ac.za` primary, `simbad.cfa.harvard.edu` fallback — zero `cds.unistra.fr`), ESA Gaia DR3 (`gea.esac.esa.int` with ARI/VizieR CfA fallbacks), SQLite JPL Horizons ephemerides, and NASA/IPAC IRSA MOST (`output_mode=Brief`) for all cataloged objects inside the sky patch and project their coordinates onto the $256 \times 256$ WCS pixel grid `(x, y)`.
 
 ---
 
 ### `ISS-07`: Backend Multi-Epoch Known-Object Trajectory Propagator & Default Selection Ranking
-- **Goal:** Synthesize the raw Gaia DR3, WISE, and MOST catalog results into the unified `catalog_overlays.known_objects` array (`KnownCelestialObject[]`), propagating each object's expected `(ra, dec, x, y)` position across every observation epoch (`epoch_positions`) and computing `default_checked` so only notable/moving objects are checked initially (keeping visual noise low).
+- **Goal:** Synthesize SIMBAD, Gaia DR3 (`J2016.0` proper-motion propagated to each pass MJD accounting for `cos(dec)`), WISE, JPL Horizons, and MOST catalog results into the unified `catalog_overlays.known_objects` array (`KnownCelestialObject[]`), propagating each object's expected `(ra, dec, x, y)` position across every observation epoch (`epoch_positions`), attaching `object_class` + `motion_vector`, and computing `default_checked` so only notable/moving objects are checked initially (keeping visual noise low).
 - **What the End Result Looks Like:**
   - Propagates Gaia DR3 proper motions (`pmra`, `pmdec`) and MOST ephemerides to the exact MJD of each epoch (`pass_1`, `pass_2`, ...), storing `epoch_positions` in pixel coordinates `(x, y)` on the $256 \times 256$ WCS grid.
   - Cross-matches WISE infrared sources with Gaia DR3 within $2.5''$ to identify optical+IR stars vs. infrared-only brown dwarf candidates ($W1 - W2 \ge 0.8$ with no bright optical counterpart).
@@ -139,7 +139,7 @@ flowchart TD
 - **What the End Result Looks Like:**
   - **Interactive Panning & Zooming:** Synchronized `<canvas>` and `<svg>` zoom (`1.0..8.0`) and pan (`panX, panY`) via `clampViewportPanZoom`, `computeViewportViewBox`, and inverse click mapping `screenToImageCoordinates`.
   - **Non-Looping Time-Lapse Playback:** `isLooping` defaults to `false`, advancing from Pass 1 through Pass $N$ and pausing on the final frame.
-  - **Checked Known-Object Highlighting & Labeling:** Renders markers, labels, and epoch-to-epoch motion tracks on the `<svg>` overlay for every object in `knownObjects` whose `object_id` is in `renderSettings.checkedObjectIds`.
+  - **Checked Known-Object Highlighting & Labeling:** Renders `object_class`-specific markers (orbital rings for Solar System bodies, diamonds for brown dwarfs, ellipses for galaxies/nebulae, circles for stars), toggleable labels (`Labels: ON/OFF`), and epoch-to-epoch motion trails on the `<svg>` overlay for every object in `knownObjects` whose `object_id` is in `renderSettings.checkedObjectIds`, synchronized with multi-band `renderEpochBuffersToRgba` `<canvas>` rendering.
   - **Multi-Target & Overlapped Colored Tracking Squares:** Renders a colored tracking square (`stroke={track.color}`) for each target/branch in `trackedTargets` at its per-epoch waypoint `(wp.x, wp.y)` (with dashed ghost squares when `wp.status !== 'tracked'`).
 
 ---
@@ -156,8 +156,13 @@ flowchart TD
   - **Comparison Mode, Pan/Zoom & Epoch Combination Controls:** Segmented controls for **Blink Epochs**, **Subtract ($\text{Pass } B - \text{Pass } A$)** (with epoch $A/B$ selectors), **Co-Add Stack** (with multi-epoch checkboxes), and pan/zoom buttons (`Zoom In`, `Zoom Out`, `Reset 1x`).
   - **Wavelength Range Slider ($0.75\text{–}5.0\ \mu\text{m}$) & Quick-Filter Pills:** Instant client-side wavelength filtering across Detectors $1\text{–}6$.
   - **Known Celestial Objects Checkbox Dropdown / Modal:**
-    - Displays all `knownObjects` in the current view with catalog badges (`Gaia DR3`, `WISE`, `MOST`), object type, magnitude, and proper motion ($\text{arcsec/yr}$).
+    - Displays all SPHEREx-trackable `knownObjects` in the current view with distinct highlighter color swatches (`objectHighlighterColors`), catalog badges (`Gaia DR3`, `WISE`, `MOST`, `SIMBAD`, `JPL Horizons`), `object_class` badges (`Planet`, `Moon`, `Comet`, `Asteroid`, `Brown Dwarf`, `Galaxy`, etc.), magnitude, and proper motion ($\text{arcsec/yr}$).
     - Provides one-click **Check All**, **Uncheck All**, and **Reset to Notable Movers** buttons, plus individual checkboxes bound to `renderSettings.checkedObjectIds` (`toggleKnownObject`, `checkAllKnownObjects`, `uncheckAllKnownObjects`) so users can selectively highlight and label known objects across every epoch image without triggering any backend calls.
+
+---
+
+### `ISS-23`: Fuzzy Celestial Object Search, One-Click Tracking Activation, 20-Color Highlighter Palette & Auto-List Sync
+- **Goal:** Allow users to fuzzy-search celestial objects by name, catalog designation, object type, or constellation across both the active sky patch and the global showcase catalogue (`/api/v1/catalogs/search` and `/presets/global_known_objects.json`), activate multi-epoch tracking directly from search results (`focusAndTrackKnownObject`), assign randomly selected distinct highlighter colors from a $\ge 16$-color palette (`TRACKING_SQUARE_COLORS`, 20 colors) to all tracked objects in the viewport, and automatically enable list tracking (`checkedObjectIds`) with official catalog labels whenever a user clicks an unchecked known object on the viewport.
 
 ---
 

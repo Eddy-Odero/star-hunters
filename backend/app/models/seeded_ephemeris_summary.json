@@ -1,0 +1,209 @@
+{
+  "db_filename": "star_hunters_cache.db",
+  "ephemeris": {
+    "Mercury": {
+      "naif_id": "199",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Venus": {
+      "naif_id": "299",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Mars": {
+      "naif_id": "499",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Jupiter": {
+      "naif_id": "599",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Saturn": {
+      "naif_id": "699",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Uranus": {
+      "naif_id": "799",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Neptune": {
+      "naif_id": "899",
+      "body_class": "planet",
+      "rows": 610
+    },
+    "Io": {
+      "naif_id": "501",
+      "body_class": "moon",
+      "rows": 610
+    },
+    "Europa": {
+      "naif_id": "502",
+      "body_class": "moon",
+      "rows": 610
+    },
+    "Ganymede": {
+      "naif_id": "503",
+      "body_class": "moon",
+      "rows": 610
+    },
+    "Callisto": {
+      "naif_id": "504",
+      "body_class": "moon",
+      "rows": 610
+    },
+    "Titan": {
+      "naif_id": "606",
+      "body_class": "moon",
+      "rows": 610
+    },
+    "3I/ATLAS (C/2025 N1)": {
+      "naif_id": "C/2025 N1",
+      "body_class": "comet",
+      "rows": 610
+    },
+    "(1) Ceres": {
+      "naif_id": "1",
+      "body_class": "asteroid",
+      "rows": 610
+    },
+    "(4) Vesta": {
+      "naif_id": "4",
+      "body_class": "asteroid",
+      "rows": 610
+    }
+  },
+  "regions": {
+    "wise_0855": {
+      "ra": 133.7951,
+      "dec": -7.2451,
+      "simbad_count": 4,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 35,
+      "gaia_status": "live:gaia_ari"
+    },
+    "barnards_star": {
+      "ra": 269.4521,
+      "dec": 4.6934,
+      "simbad_count": 12,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 189,
+      "gaia_status": "live:gaia_ari"
+    },
+    "epsilon_indi_b": {
+      "ra": 331.0438,
+      "dec": -56.7827,
+      "simbad_count": 3,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 29,
+      "gaia_status": "live:gaia_ari"
+    },
+    "rw_aurigae": {
+      "ra": 76.9565,
+      "dec": 30.4014,
+      "simbad_count": 9,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 124,
+      "gaia_status": "live:gaia_ari"
+    },
+    "r_draconis": {
+      "ra": 248.1676,
+      "dec": 66.7548,
+      "simbad_count": 2,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 22,
+      "gaia_status": "live:gaia_ari"
+    },
+    "comet_3i_atlas": {
+      "ra": 295.32,
+      "dec": -18.41,
+      "simbad_count": 3,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 110,
+      "gaia_status": "live:gaia_ari"
+    },
+    "luhman_16": {
+      "ra": 162.3282,
+      "dec": -53.3194,
+      "simbad_count": 8,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 283,
+      "gaia_status": "live:gaia_ari"
+    },
+    "wolf_359": {
+      "ra": 164.1203,
+      "dec": 7.0147,
+      "simbad_count": 22,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 12,
+      "gaia_status": "live:gaia_ari"
+    },
+    "teegardens_star": {
+      "ra": 43.2535,
+      "dec": 16.8814,
+      "simbad_count": 5,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 11,
+      "gaia_status": "live:gaia_ari"
+    },
+    "cw_leonis": {
+      "ra": 146.9892,
+      "dec": 13.2788,
+      "simbad_count": 16,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 19,
+      "gaia_status": "live:gaia_ari"
+    },
+    "t_tauri": {
+      "ra": 65.4976,
+      "dec": 19.5351,
+      "simbad_count": 27,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 12,
+      "gaia_status": "live:gaia_ari"
+    },
+    "ceres_asteroid": {
+      "ra": 192.45,
+      "dec": 7.82,
+      "simbad_count": 2,
+      "simbad_status": "live:simbad_idia",
+      "gaia_count": 5,
+      "gaia_status": "live:gaia_ari"
+    }
+  },
+  "most": {
+    "3I": {
+      "status": "ok",
+      "matches": 364
+    },
+    "20000001:NID": {
+      "status": "ok",
+      "matches": 326
+    },
+    "20000004:NID": {
+      "status": "ok",
+      "matches": 319
+    },
+    "Mars": {
+      "status": "no_match",
+      "matches": 0
+    },
+    "Jupiter": {
+      "status": "ok",
+      "matches": 232
+    }
+  },
+  "prewarmed_patches": 12,
+  "cache_stats": {
+    "ephemeris_rows": 9150,
+    "distinct_bodies": 15,
+    "min_date": "2025-05-01",
+    "max_date": "2026-12-31",
+    "catalog_regions": 28,
+    "catalog_bytes": 611454
+  }
+}

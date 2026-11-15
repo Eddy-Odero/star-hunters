@@ -17,8 +17,10 @@ Star Hunters turns this workflow into a fast, browser-based discovery tool with 
 ### Astronomical Data Sources
 - **[NASA SPHEREx](https://spherex.caltech.edu/)** (*Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer*) — Multi-epoch near-infrared spectral images ($0.75\text{–}5.0\ \mu\text{m}$) queried via the [NASA/IPAC IRSA](https://irsa.ipac.caltech.edu/Missions/spherex.html) (*Infrared Processing and Analysis Center / Infrared Science Archive*) [TAP](https://irsa.ipac.caltech.edu/TAP) (*Table Access Protocol*) service.
 - **[WISE / NEOWISE](https://irsa.ipac.caltech.edu/Missions/wise.html)** (*Wide-field Infrared Survey Explorer / Near-Earth Object WISE*) — Archival $W1$ ($3.4\ \mu\text{m}$) and $W2$ ($4.6\ \mu\text{m}$) infrared cutouts used to supplement sparse SPHEREx coverage with a 10–15 year time baseline.
-- **[ESA Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3)** (*European Space Agency Gaia Data Release 3*) — High-precision optical star positions and proper motions for catalog overlays and epoch-to-epoch position propagation.
-- **[NASA/IPAC MOST](https://irsa.ipac.caltech.edu/applications/MOST/)** (*Moving Object Search Tool*) — Known Solar System asteroid and comet ephemerides.
+- **[SIMBAD TAP (IDIA & Harvard CfA Mirrors)](https://simbad.idia.ac.za/simbad/sim-tap/sync)** — Canonical astronomical object identifiers (`main_id`) and object classifications (`otype`), routed through official IDIA (`simbad.idia.ac.za`) and Harvard CfA (`simbad.cfa.harvard.edu`) mirrors (avoiding `cds.unistra.fr`).
+- **[ESA Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3)** (*European Space Agency Gaia Data Release 3*) — High-precision optical astrometry and proper motions (`J2016.0` propagated to SPHEREx pass epochs), queried via ESA TAP (`gea.esac.esa.int`) with automatic ARI Heidelberg TAP and VizieR Harvard CfA TSV fallbacks.
+- **[NASA/JPL Horizons](https://ssd.jpl.nasa.gov/api/horizons.api)** — Daily geocentric ephemerides for major planets, Galilean/Saturnian moons, comets (`3I/ATLAS`), and main-belt asteroids (`(1) Ceres`, `(4) Vesta`) indexed in SQLite for sub-millisecond FOV intersection lookups.
+- **[NASA/IPAC MOST](https://irsa.ipac.caltech.edu/applications/MOST/)** (*Moving Object Search Tool*) — Solar System object intersections against specific SPHEREx exposures (`output_mode=Brief`).
 
 ### Tech Stack
 - **Backend:** [Python 3.11+](https://www.python.org/), [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [Pydantic](https://docs.pydantic.dev/), [NumPy](https://numpy.org/), [Astropy](https://www.astropy.org/), [Reproject](https://reproject.readthedocs.io/), [Astroquery](https://astroquery.readthedocs.io/), and [SQLite](https://www.sqlite.org/) (using Write-Ahead Logging / `WAL` mode for spatial caching).
@@ -33,12 +35,12 @@ Star Hunters turns this workflow into a fast, browser-based discovery tool with 
 star-hunters/
 ├── backend/                  # Python 3.11+ FastAPI backend & scientific data pipeline
 │   ├── app/
-│   │   ├── main.py           # FastAPI routes, binary frame streaming & static SPA serving
-│   │   ├── models/           # Shared Pydantic/JSON data contracts
-│   │   └── services/         # Quantized SQLite spatial cache (WAL + LRU pruning)
-│   └── tests/                # Backend contract, binary buffer & cache test suite
+│   │   ├── main.py           # FastAPI routes (/api/v1/* & /api/* aliases), binary streaming & SPA serving
+│   │   ├── models/           # Shared contracts, JSON schemas & seeded catalog/ephemeris metadata
+│   │   └── services/         # Quantized SQLite spatial/ephemeris cache & SIMBAD/Gaia/Horizons/MOST pipeline
+│   └── tests/                # Backend contract, ingestion, coadd & catalog pipeline test suite
 ├── frontend/                 # React + TypeScript + Vite single-page application
-│   ├── public/presets/       # Pre-computed static bundles for the 6 showcase targets
+│   ├── public/presets/       # Pre-computed static bundles for the 12 showcase targets + global search index
 │   ├── src/
 │   │   ├── context/          # SkyExplorerContext shared application state
 │   │   ├── services/         # Two-tier client cache (in-memory + IndexedDB)
@@ -77,15 +79,19 @@ pnpm dev
 ```
 Open `http://localhost:5173` in your browser. Vite automatically proxies `/api` and `/health` requests to `http://127.0.0.1:8000`.
 
-### 3. Optional: Regenerate Presets & Run Tests
+### 3. Optional: Seed Cache, Regenerate Presets & Run Tests
 ```bash
-# Regenerate static preset bundles for the 6 showcase targets
+# Pre-seed SQLite with JPL Horizons ephemerides (planets/moons/comets/asteroids),
+# SIMBAD/Gaia DR3 regions, and IRSA MOST SPHEREx matches
+backend/.venv/bin/python scripts/seed_celestial_cache.py --db-path /tmp/star_hunters_cache.db
+
+# Regenerate static preset bundles for the 12 showcase targets
 python3 scripts/generate_synthetic_presets.py
 
-# Run backend tests (from repository root)
-PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v
+# Run backend tests
+(cd backend && .venv/bin/pytest -v)
 
-# Run frontend tests
+# Run frontend tests & build
 cd frontend && pnpm test
 ```
 

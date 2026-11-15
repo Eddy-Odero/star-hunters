@@ -14,9 +14,11 @@ import {
   decodeFlagsBinaryBuffer,
   detectAndTrackBodiesAtClick,
   getDefaultCheckedObjectIds,
+  pickDistinctHighlighterColors,
   type BinaryDtype,
   type CatalogsResponse,
   type ClickDiagnosticInfo,
+  type GlobalKnownObjectEntry,
   type KnownCelestialObject,
   type SkyExplorerContextValue,
   type SkyPatchManifest,
@@ -74,13 +76,60 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [lastClickDiagnostic, setLastClickDiagnostic] = useState<ClickDiagnosticInfo | null>(null);
   const [activeSpectrum, setActiveSpectrum] = useState<SpectrumPayload | null>(null);
   const [isSpectrumLoading, setIsSpectrumLoading] = useState<boolean>(false);
+  const [globalKnownObjects, setGlobalKnownObjects] = useState<GlobalKnownObjectEntry[]>([]);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const pendingFocusObjectIdRef = useRef<string | null>(null);
 
   const knownObjects: KnownCelestialObject[] = useMemo(
     () => manifest?.catalog_overlays?.known_objects ?? [],
     [manifest],
   );
+
+  // Randomly assign a distinct highlighter color from the 20-color palette to each object in the patch
+  const objectHighlighterColors: Record<string, string> = useMemo(() => {
+    if (knownObjects.length === 0) return {};
+    const palette = pickDistinctHighlighterColors(knownObjects.length);
+    const map: Record<string, string> = {};
+    knownObjects.forEach((obj, idx) => {
+      map[obj.object_id] = palette[idx];
+    });
+    return map;
+  }, [knownObjects]);
+
+  // Aggressively load and cache the global known celestial objects index on mount
+  useEffect(() => {
+    let cancelled = false;
+    const loadGlobalIndex = async () => {
+      try {
+        const res = await fetch('/presets/global_known_objects.json');
+        if (res.ok) {
+          const data = (await res.json()) as GlobalKnownObjectEntry[];
+          if (!cancelled && Array.isArray(data)) {
+            setGlobalKnownObjects(data);
+            return;
+          }
+        }
+      } catch {
+        // Fall back to API endpoint if static bundle not served
+      }
+      try {
+        const apiRes = await fetch('/api/v1/catalogs/search?limit=200');
+        if (apiRes.ok) {
+          const payload = (await apiRes.json()) as { results?: GlobalKnownObjectEntry[] };
+          if (!cancelled && Array.isArray(payload.results)) {
+            setGlobalKnownObjects(payload.results);
+          }
+        }
+      } catch {
+        // Ignore offline fallback errors in unit tests
+      }
+    };
+    void loadGlobalIndex();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateRenderSettings = useCallback((partial: Partial<ViewportRenderSettings>) => {
     setRenderSettings((prev) => {
@@ -506,17 +555,113 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           return prevTargets;
         }
 
-        setSelectedObject(result.tracks[0]);
+        // Gather all highlighter colors currently active in the viewport
+        const usedColors = new Set<string>(prevTargets.map((t) => t.color));
+        for (const checkedId of renderSettings.checkedObjectIds) {
+          const c = objectHighlighterColors[checkedId];
+          if (c) usedColors.add(c);
+        }
+
+        const matchedKnownIdsToAutoCheck: string[] = [];
+        const enrichedTracks = result.tracks.map((track) => {
+          if (track.matchedObjectId) {
+            matchedKnownIdsToAutoCheck.push(track.matchedObjectId);
+            const matchedObj = knownObjects.find((o) => o.object_id === track.matchedObjectId);
+            const knownColor =
+              objectHighlighterColors[track.matchedObjectId] ??
+              pickDistinctHighlighterColors(1, usedColors)[0];
+            usedColors.add(knownColor);
+            return {
+              ...track,
+              color: knownColor,
+              matchedLabel: matchedObj?.label ?? track.matchedLabel,
+              matchedCatalog: matchedObj?.catalog ?? track.matchedCatalog,
+            };
+          }
+          const randomColor = pickDistinctHighlighterColors(1, usedColors)[0];
+          usedColors.add(randomColor);
+          return {
+            ...track,
+            color: randomColor,
+          };
+        });
+
+        // If the user clicked a known celestial object that wasn't checked in the Known Objects list,
+        // automatically turn on its tracking from the list instead of giving it an arbitrary label.
+        if (matchedKnownIdsToAutoCheck.length > 0) {
+          setRenderSettings((prev) => {
+            const nextChecked = new Set(prev.checkedObjectIds);
+            let changed = false;
+            for (const id of matchedKnownIdsToAutoCheck) {
+              if (!nextChecked.has(id)) {
+                nextChecked.add(id);
+                changed = true;
+              }
+            }
+            return changed ? { ...prev, checkedObjectIds: Array.from(nextChecked) } : prev;
+          });
+        }
+
+        setSelectedObject(enrichedTracks[0]);
         setIsSpectrumLoading(false);
 
-        // Append newly detected tracks (avoiding duplicate groupId if clicking the exact same spot)
-        const incomingGroupId = result.tracks[0].groupId;
-        const filteredPrev = prevTargets.filter((t) => t.groupId !== incomingGroupId);
-        return [...filteredPrev, ...result.tracks];
+        // Append newly detected tracks (avoiding duplicate groupId or duplicate matchedObjectId)
+        const incomingGroupId = enrichedTracks[0].groupId;
+        const incomingMatchedIds = new Set(
+          enrichedTracks.map((t) => t.matchedObjectId).filter((id): id is string => Boolean(id)),
+        );
+        const filteredPrev = prevTargets.filter(
+          (t) =>
+            t.groupId !== incomingGroupId &&
+            (!t.matchedObjectId || !incomingMatchedIds.has(t.matchedObjectId)),
+        );
+        return [...filteredPrev, ...enrichedTracks];
       });
     },
-    [manifest, epochBuffers, renderSettings.activeEpochIndex, renderSettings.wavelengthRangeUm],
+    [
+      manifest,
+      epochBuffers,
+      knownObjects,
+      objectHighlighterColors,
+      renderSettings.activeEpochIndex,
+      renderSettings.checkedObjectIds,
+      renderSettings.wavelengthRangeUm,
+    ],
   );
+
+  const focusAndTrackKnownObject = useCallback(
+    (obj: KnownCelestialObject | GlobalKnownObjectEntry, targetSlug?: string) => {
+      const resolvedSlug = targetSlug ?? (obj as GlobalKnownObjectEntry).target_slug;
+      if (resolvedSlug && resolvedSlug !== activePresetSlug) {
+        pendingFocusObjectIdRef.current = obj.object_id;
+        selectPreset(resolvedSlug);
+        return;
+      }
+
+      setRenderSettings((prev) => ({
+        ...prev,
+        checkedObjectIds: prev.checkedObjectIds.includes(obj.object_id)
+          ? prev.checkedObjectIds
+          : [...prev.checkedObjectIds, obj.object_id],
+      }));
+
+      const epIdx = renderSettings.activeEpochIndex;
+      const epPos = obj.epoch_positions?.[Math.min(epIdx, obj.epoch_positions.length - 1)] ?? obj;
+      inspectPixelOrCoord(epPos.x, epPos.y, epIdx);
+    },
+    [activePresetSlug, selectPreset, renderSettings.activeEpochIndex, inspectPixelOrCoord],
+  );
+
+  // Fulfill pending focus-and-track request after switching to another showcase preset
+  useEffect(() => {
+    const pendingId = pendingFocusObjectIdRef.current;
+    if (!pendingId || loadingState.stage !== 'ready' || !manifest || !epochBuffers) return;
+    const targetObj = knownObjects.find((o) => o.object_id === pendingId);
+    if (!targetObj) return;
+    pendingFocusObjectIdRef.current = null;
+    const epPos = targetObj.epoch_positions?.[0] ?? targetObj;
+    inspectPixelOrCoord(epPos.x, epPos.y, 0);
+  }, [loadingState.stage, manifest, epochBuffers, knownObjects, inspectPixelOrCoord]);
 
   const value: SkyExplorerContextValue = useMemo(
     () => ({
@@ -531,10 +676,13 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setViewportZoomPan,
       resetViewportZoomPan,
       knownObjects,
+      objectHighlighterColors,
+      globalKnownObjects,
       toggleKnownObject,
       checkAllKnownObjects,
       uncheckAllKnownObjects,
       resetDefaultKnownObjects,
+      focusAndTrackKnownObject,
       playback: {
         isPlaying,
         isLooping,
@@ -569,10 +717,13 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setViewportZoomPan,
       resetViewportZoomPan,
       knownObjects,
+      objectHighlighterColors,
+      globalKnownObjects,
       toggleKnownObject,
       checkAllKnownObjects,
       uncheckAllKnownObjects,
       resetDefaultKnownObjects,
+      focusAndTrackKnownObject,
       isPlaying,
       isLooping,
       fps,

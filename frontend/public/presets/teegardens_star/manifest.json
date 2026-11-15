@@ -1,0 +1,2194 @@
+{
+  "query": {
+    "ra": 43.2535,
+    "dec": 16.8814,
+    "fov_arcmin": 5.0,
+    "grid_key": "ra43.25_dec16.90_fov5.0",
+    "cached": false
+  },
+  "target_metadata": {
+    "slug": "teegardens_star",
+    "name": "Teegarden's Star",
+    "category": "Ultracool M7V Exoplanet Host",
+    "description": "Nearby high-proper-motion M7V red dwarf (12.5 ly, 5.12 arcsec/yr) hosting temperate Earth-mass planets discovered via infrared sky surveys.",
+    "constellation": "Aries"
+  },
+  "data_source_summary": {
+    "primary_mission": "SPHEREx",
+    "has_multi_epoch_spherex": true,
+    "uses_wise_fallback": false,
+    "baseline_days": 182.7,
+    "status_note": "2 SPHEREx survey passes (6-month baseline)"
+  },
+  "wcs": {
+    "width": 256,
+    "height": 256,
+    "crval": [
+      43.2535,
+      16.8814
+    ],
+    "crpix": [
+      128.0,
+      128.0
+    ],
+    "cdelt": [
+      -0.0003255,
+      0.0003255
+    ]
+  },
+  "epochs": [
+    {
+      "epoch_id": "pass_1",
+      "label": "Pass 1 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60810.5,
+      "iso_date": "2025-05-15T12:00:00Z",
+      "detectors_data_url": "/presets/teegardens_star/pass_1.bin",
+      "flags_mask_url": "/presets/teegardens_star/pass_1_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    },
+    {
+      "epoch_id": "pass_2",
+      "label": "Pass 2 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60993.2,
+      "iso_date": "2025-11-14T04:48:00Z",
+      "detectors_data_url": "/presets/teegardens_star/pass_2.bin",
+      "flags_mask_url": "/presets/teegardens_star/pass_2_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "binary_dtype": "float32"
+    }
+  ],
+  "default_spectrum_url": "/presets/teegardens_star/spectrum.json",
+  "catalog_overlays": {
+    "known_objects": [
+      {
+        "object_id": "gaia:35227046884571776",
+        "label": "Teegarden's Star (SO J0253+1652 \u2014 Ultracool M7V Exoplanet Host)",
+        "catalog": "gaia_dr3",
+        "object_type": "high_pm_star",
+        "ra": 43.25486,
+        "dec": 16.88075,
+        "x": 124.0,
+        "y": 126.0,
+        "magnitude": 12.9,
+        "proper_motion_arcsec_yr": 5.12,
+        "w1_w2_color": 0.56,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25486,
+            "dec": 16.88075,
+            "x": 124.0,
+            "y": 126.0
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25214,
+            "dec": 16.88205,
+            "x": 132.0,
+            "y": 130.0
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35227837157880320",
+        "label": "Gaia DR3 35227837157880320",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.2488,
+        "dec": 16.89624,
+        "x": 141.81,
+        "y": 173.59,
+        "magnitude": 12.58,
+        "proper_motion_arcsec_yr": 0.004,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.2488,
+            "dec": 16.89624,
+            "x": 141.81,
+            "y": 173.59
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.2488,
+            "dec": 16.89624,
+            "x": 141.81,
+            "y": 173.59
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35227429136688896",
+        "label": "Gaia DR3 35227429136688896",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.22656,
+        "dec": 16.8837,
+        "x": 207.2,
+        "y": 135.08,
+        "magnitude": 15.01,
+        "proper_motion_arcsec_yr": 0.024,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.22656,
+            "dec": 16.8837,
+            "x": 207.2,
+            "y": 135.08
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.22656,
+            "dec": 16.8837,
+            "x": 207.2,
+            "y": 135.08
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35226673222445440",
+        "label": "Gaia DR3 35226673222445440",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.24978,
+        "dec": 16.86868,
+        "x": 138.95,
+        "y": 88.92,
+        "magnitude": 16.88,
+        "proper_motion_arcsec_yr": 0.014,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24978,
+            "dec": 16.86868,
+            "x": 138.95,
+            "y": 88.92
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24978,
+            "dec": 16.86868,
+            "x": 138.95,
+            "y": 88.92
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35227910173232384",
+        "label": "Gaia DR3 35227910173232384",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.23704,
+        "dec": 16.91013,
+        "x": 176.38,
+        "y": 216.25,
+        "magnitude": 16.93,
+        "proper_motion_arcsec_yr": 0.007,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23704,
+            "dec": 16.91013,
+            "x": 176.38,
+            "y": 216.25
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23704,
+            "dec": 16.91013,
+            "x": 176.38,
+            "y": 216.25
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35227394776951680",
+        "label": "Gaia DR3 35227394776951680",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.21418,
+        "dec": 16.87099,
+        "x": 243.58,
+        "y": 96.03,
+        "magnitude": 17.19,
+        "proper_motion_arcsec_yr": 0.004,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.21418,
+            "dec": 16.87099,
+            "x": 243.58,
+            "y": 96.03
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.21418,
+            "dec": 16.87099,
+            "x": 243.58,
+            "y": 96.03
+          }
+        ]
+      },
+      {
+        "object_id": "gaia:35226462768523136",
+        "label": "Gaia DR3 35226462768523136",
+        "catalog": "gaia_dr3",
+        "object_type": "star",
+        "ra": 43.23145,
+        "dec": 16.84952,
+        "x": 192.81,
+        "y": 30.05,
+        "magnitude": 18.69,
+        "proper_motion_arcsec_yr": 0.006,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23145,
+            "dec": 16.84952,
+            "x": 192.81,
+            "y": 30.05
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23145,
+            "dec": 16.84952,
+            "x": 192.81,
+            "y": 30.05
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025303.34+165213.2",
+        "label": "AllWISE J025303.34+165213.2",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.26394,
+        "dec": 16.87036,
+        "x": 97.32,
+        "y": 94.07,
+        "magnitude": 6.98,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.16,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26394,
+            "dec": 16.87036,
+            "x": 97.32,
+            "y": 94.07
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26394,
+            "dec": 16.87036,
+            "x": 97.32,
+            "y": 94.07
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025259.37+165312.6",
+        "label": "AllWISE J025259.37+165312.6",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.2474,
+        "dec": 16.88685,
+        "x": 145.92,
+        "y": 144.73,
+        "magnitude": 14.38,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.19,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.2474,
+            "dec": 16.88685,
+            "x": 145.92,
+            "y": 144.73
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.2474,
+            "dec": 16.88685,
+            "x": 145.92,
+            "y": 144.73
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025303.09+165429.1",
+        "label": "AllWISE J025303.09+165429.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.2629,
+        "dec": 16.90811,
+        "x": 100.38,
+        "y": 210.05,
+        "magnitude": 14.63,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.13,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.2629,
+            "dec": 16.90811,
+            "x": 100.38,
+            "y": 210.05
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.2629,
+            "dec": 16.90811,
+            "x": 100.38,
+            "y": 210.05
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025258.41+165413.4",
+        "label": "AllWISE J025258.41+165413.4 (Red IR Candidate)",
+        "catalog": "wise",
+        "object_type": "brown_dwarf_candidate",
+        "ra": 43.2434,
+        "dec": 16.90374,
+        "x": 157.69,
+        "y": 196.63,
+        "magnitude": 14.77,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.88,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.2434,
+            "dec": 16.90374,
+            "x": 157.69,
+            "y": 196.63
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.2434,
+            "dec": 16.90374,
+            "x": 157.69,
+            "y": 196.63
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025301.89+165146.4",
+        "label": "AllWISE J025301.89+165146.4",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.25791,
+        "dec": 16.8629,
+        "x": 115.03,
+        "y": 71.15,
+        "magnitude": 14.84,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.66,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25791,
+            "dec": 16.8629,
+            "x": 115.03,
+            "y": 71.15
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25791,
+            "dec": 16.8629,
+            "x": 115.03,
+            "y": 71.15
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025302.98+165503.0",
+        "label": "AllWISE J025302.98+165503.0",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.26246,
+        "dec": 16.91752,
+        "x": 101.67,
+        "y": 238.96,
+        "magnitude": 15.38,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.07,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26246,
+            "dec": 16.91752,
+            "x": 101.67,
+            "y": 238.96
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26246,
+            "dec": 16.91752,
+            "x": 101.67,
+            "y": 238.96
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025302.75+165444.9",
+        "label": "AllWISE J025302.75+165444.9",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.26148,
+        "dec": 16.91248,
+        "x": 104.54,
+        "y": 223.49,
+        "magnitude": 15.47,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.13,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26148,
+            "dec": 16.91248,
+            "x": 104.54,
+            "y": 223.49
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26148,
+            "dec": 16.91248,
+            "x": 104.54,
+            "y": 223.49
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025301.06+165319.6",
+        "label": "AllWISE J025301.06+165319.6",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.25445,
+        "dec": 16.8888,
+        "x": 125.22,
+        "y": 150.74,
+        "magnitude": 15.49,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.05,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25445,
+            "dec": 16.8888,
+            "x": 125.22,
+            "y": 150.74
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25445,
+            "dec": 16.8888,
+            "x": 125.22,
+            "y": 150.74
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025259.40+165449.4",
+        "label": "AllWISE J025259.40+165449.4",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24753,
+        "dec": 16.91374,
+        "x": 145.55,
+        "y": 227.34,
+        "magnitude": 15.8,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.24,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24753,
+            "dec": 16.91374,
+            "x": 145.55,
+            "y": 227.34
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24753,
+            "dec": 16.91374,
+            "x": 145.55,
+            "y": 227.34
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025306.28+165227.1",
+        "label": "AllWISE J025306.28+165227.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.27617,
+        "dec": 16.87422,
+        "x": 61.34,
+        "y": 105.95,
+        "magnitude": 15.86,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.08,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27617,
+            "dec": 16.87422,
+            "x": 61.34,
+            "y": 105.95
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27617,
+            "dec": 16.87422,
+            "x": 61.34,
+            "y": 105.95
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025304.57+165304.7",
+        "label": "AllWISE J025304.57+165304.7",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.26908,
+        "dec": 16.88465,
+        "x": 82.21,
+        "y": 137.99,
+        "magnitude": 15.91,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.11,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26908,
+            "dec": 16.88465,
+            "x": 82.21,
+            "y": 137.99
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26908,
+            "dec": 16.88465,
+            "x": 82.21,
+            "y": 137.99
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025308.22+165202.4",
+        "label": "AllWISE J025308.22+165202.4",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.28426,
+        "dec": 16.86736,
+        "x": 37.56,
+        "y": 84.87,
+        "magnitude": 15.91,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.09,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.28426,
+            "dec": 16.86736,
+            "x": 37.56,
+            "y": 84.87
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.28426,
+            "dec": 16.86736,
+            "x": 37.56,
+            "y": 84.87
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025306.97+165052.0",
+        "label": "AllWISE J025306.97+165052.0",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.27906,
+        "dec": 16.84779,
+        "x": 52.86,
+        "y": 24.74,
+        "magnitude": 15.91,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.03,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27906,
+            "dec": 16.84779,
+            "x": 52.86,
+            "y": 24.74
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27906,
+            "dec": 16.84779,
+            "x": 52.86,
+            "y": 24.74
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025301.94+165432.9",
+        "label": "AllWISE J025301.94+165432.9",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.25812,
+        "dec": 16.90915,
+        "x": 114.42,
+        "y": 213.24,
+        "magnitude": 16.11,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.26,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25812,
+            "dec": 16.90915,
+            "x": 114.42,
+            "y": 213.24
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25812,
+            "dec": 16.90915,
+            "x": 114.42,
+            "y": 213.24
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025254.15+165118.4",
+        "label": "AllWISE J025254.15+165118.4",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.22566,
+        "dec": 16.85514,
+        "x": 209.85,
+        "y": 47.32,
+        "magnitude": 16.25,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.13,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.22566,
+            "dec": 16.85514,
+            "x": 209.85,
+            "y": 47.32
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.22566,
+            "dec": 16.85514,
+            "x": 209.85,
+            "y": 47.32
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025305.98+165310.1",
+        "label": "AllWISE J025305.98+165310.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.27493,
+        "dec": 16.88615,
+        "x": 65.0,
+        "y": 142.58,
+        "magnitude": 16.27,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.64,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27493,
+            "dec": 16.88615,
+            "x": 65.0,
+            "y": 142.58
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27493,
+            "dec": 16.88615,
+            "x": 65.0,
+            "y": 142.58
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025305.89+165456.6",
+        "label": "AllWISE J025305.89+165456.6",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.27456,
+        "dec": 16.91572,
+        "x": 66.1,
+        "y": 233.45,
+        "magnitude": 16.28,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.45,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27456,
+            "dec": 16.91572,
+            "x": 66.1,
+            "y": 233.45
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27456,
+            "dec": 16.91572,
+            "x": 66.1,
+            "y": 233.45
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025304.50+165427.7",
+        "label": "AllWISE J025304.50+165427.7 (Red IR Candidate)",
+        "catalog": "wise",
+        "object_type": "brown_dwarf_candidate",
+        "ra": 43.26876,
+        "dec": 16.90772,
+        "x": 83.15,
+        "y": 208.85,
+        "magnitude": 16.28,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.81,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26876,
+            "dec": 16.90772,
+            "x": 83.15,
+            "y": 208.85
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26876,
+            "dec": 16.90772,
+            "x": 83.15,
+            "y": 208.85
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025301.90+165257.7",
+        "label": "AllWISE J025301.90+165257.7",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.25794,
+        "dec": 16.8827,
+        "x": 114.96,
+        "y": 131.98,
+        "magnitude": 16.33,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.4,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25794,
+            "dec": 16.8827,
+            "x": 114.96,
+            "y": 131.98
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25794,
+            "dec": 16.8827,
+            "x": 114.96,
+            "y": 131.98
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025259.19+165356.9",
+        "label": "AllWISE J025259.19+165356.9",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24663,
+        "dec": 16.89916,
+        "x": 148.19,
+        "y": 182.56,
+        "magnitude": 16.33,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.29,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24663,
+            "dec": 16.89916,
+            "x": 148.19,
+            "y": 182.56
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24663,
+            "dec": 16.89916,
+            "x": 148.19,
+            "y": 182.56
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025257.69+165128.2",
+        "label": "AllWISE J025257.69+165128.2",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24041,
+        "dec": 16.85784,
+        "x": 166.48,
+        "y": 55.61,
+        "magnitude": 16.35,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.32,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24041,
+            "dec": 16.85784,
+            "x": 166.48,
+            "y": 55.61
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24041,
+            "dec": 16.85784,
+            "x": 166.48,
+            "y": 55.61
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025256.84+165411.1",
+        "label": "AllWISE J025256.84+165411.1 (Red IR Candidate)",
+        "catalog": "wise",
+        "object_type": "brown_dwarf_candidate",
+        "ra": 43.23688,
+        "dec": 16.9031,
+        "x": 176.87,
+        "y": 194.68,
+        "magnitude": 16.46,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 1.02,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23688,
+            "dec": 16.9031,
+            "x": 176.87,
+            "y": 194.68
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23688,
+            "dec": 16.9031,
+            "x": 176.87,
+            "y": 194.68
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025308.99+165229.1",
+        "label": "AllWISE J025308.99+165229.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.28747,
+        "dec": 16.87478,
+        "x": 28.12,
+        "y": 107.65,
+        "magnitude": 16.5,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.15,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.28747,
+            "dec": 16.87478,
+            "x": 28.12,
+            "y": 107.65
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.28747,
+            "dec": 16.87478,
+            "x": 28.12,
+            "y": 107.65
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025308.60+165121.4",
+        "label": "AllWISE J025308.60+165121.4",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.28584,
+        "dec": 16.85597,
+        "x": 32.93,
+        "y": 49.87,
+        "magnitude": 16.52,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.34,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.28584,
+            "dec": 16.85597,
+            "x": 32.93,
+            "y": 49.87
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.28584,
+            "dec": 16.85597,
+            "x": 32.93,
+            "y": 49.87
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025255.44+165404.2",
+        "label": "AllWISE J025255.44+165404.2",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23104,
+        "dec": 16.90118,
+        "x": 194.03,
+        "y": 188.78,
+        "magnitude": 16.52,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.16,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23104,
+            "dec": 16.90118,
+            "x": 194.03,
+            "y": 188.78
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23104,
+            "dec": 16.90118,
+            "x": 194.03,
+            "y": 188.78
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025256.24+165155.5",
+        "label": "AllWISE J025256.24+165155.5 (Red IR Candidate)",
+        "catalog": "wise",
+        "object_type": "brown_dwarf_candidate",
+        "ra": 43.23436,
+        "dec": 16.86544,
+        "x": 184.26,
+        "y": 78.98,
+        "magnitude": 16.54,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 1.01,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23436,
+            "dec": 16.86544,
+            "x": 184.26,
+            "y": 78.98
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23436,
+            "dec": 16.86544,
+            "x": 184.26,
+            "y": 78.98
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025300.08+165420.8",
+        "label": "AllWISE J025300.08+165420.8",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.25034,
+        "dec": 16.9058,
+        "x": 137.28,
+        "y": 202.95,
+        "magnitude": 16.54,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.5,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.25034,
+            "dec": 16.9058,
+            "x": 137.28,
+            "y": 202.95
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.25034,
+            "dec": 16.9058,
+            "x": 137.28,
+            "y": 202.95
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025256.45+165108.7",
+        "label": "AllWISE J025256.45+165108.7",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23524,
+        "dec": 16.85244,
+        "x": 181.67,
+        "y": 39.02,
+        "magnitude": 16.54,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.15,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23524,
+            "dec": 16.85244,
+            "x": 181.67,
+            "y": 39.02
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23524,
+            "dec": 16.85244,
+            "x": 181.67,
+            "y": 39.02
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025255.55+165119.0",
+        "label": "AllWISE J025255.55+165119.0",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23149,
+        "dec": 16.85529,
+        "x": 192.71,
+        "y": 47.78,
+        "magnitude": 16.63,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.41,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23149,
+            "dec": 16.85529,
+            "x": 192.71,
+            "y": 47.78
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23149,
+            "dec": 16.85529,
+            "x": 192.71,
+            "y": 47.78
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025306.83+165417.7",
+        "label": "AllWISE J025306.83+165417.7 (Red IR Candidate)",
+        "catalog": "wise",
+        "object_type": "brown_dwarf_candidate",
+        "ra": 43.27847,
+        "dec": 16.90493,
+        "x": 54.58,
+        "y": 200.3,
+        "magnitude": 16.63,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.78,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27847,
+            "dec": 16.90493,
+            "x": 54.58,
+            "y": 200.3
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27847,
+            "dec": 16.90493,
+            "x": 54.58,
+            "y": 200.3
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025258.00+165241.0",
+        "label": "AllWISE J025258.00+165241.0",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24168,
+        "dec": 16.87806,
+        "x": 162.75,
+        "y": 117.75,
+        "magnitude": 16.65,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.73,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24168,
+            "dec": 16.87806,
+            "x": 162.75,
+            "y": 117.75
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24168,
+            "dec": 16.87806,
+            "x": 162.75,
+            "y": 117.75
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025256.16+165141.6",
+        "label": "AllWISE J025256.16+165141.6",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23404,
+        "dec": 16.86158,
+        "x": 185.21,
+        "y": 67.1,
+        "magnitude": 16.65,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.56,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23404,
+            "dec": 16.86158,
+            "x": 185.21,
+            "y": 67.1
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23404,
+            "dec": 16.86158,
+            "x": 185.21,
+            "y": 67.1
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025256.11+165225.7",
+        "label": "AllWISE J025256.11+165225.7",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23383,
+        "dec": 16.87381,
+        "x": 185.83,
+        "y": 104.69,
+        "magnitude": 16.67,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.4,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23383,
+            "dec": 16.87381,
+            "x": 185.83,
+            "y": 104.69
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23383,
+            "dec": 16.87381,
+            "x": 185.83,
+            "y": 104.69
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025252.73+165157.1",
+        "label": "AllWISE J025252.73+165157.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.21974,
+        "dec": 16.86587,
+        "x": 227.25,
+        "y": 80.29,
+        "magnitude": 16.67,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.12,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.21974,
+            "dec": 16.86587,
+            "x": 227.25,
+            "y": 80.29
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.21974,
+            "dec": 16.86587,
+            "x": 227.25,
+            "y": 80.29
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025253.03+165413.5",
+        "label": "AllWISE J025253.03+165413.5",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.221,
+        "dec": 16.90376,
+        "x": 223.54,
+        "y": 196.7,
+        "magnitude": 16.7,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.1,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.221,
+            "dec": 16.90376,
+            "x": 223.54,
+            "y": 196.7
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.221,
+            "dec": 16.90376,
+            "x": 223.54,
+            "y": 196.7
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025258.22+165201.5",
+        "label": "AllWISE J025258.22+165201.5",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24262,
+        "dec": 16.86708,
+        "x": 159.98,
+        "y": 84.02,
+        "magnitude": 16.72,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.44,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24262,
+            "dec": 16.86708,
+            "x": 159.98,
+            "y": 84.02
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24262,
+            "dec": 16.86708,
+            "x": 159.98,
+            "y": 84.02
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025257.22+165219.1",
+        "label": "AllWISE J025257.22+165219.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23842,
+        "dec": 16.872,
+        "x": 172.32,
+        "y": 99.12,
+        "magnitude": 16.73,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.11,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23842,
+            "dec": 16.872,
+            "x": 172.32,
+            "y": 99.12
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23842,
+            "dec": 16.872,
+            "x": 172.32,
+            "y": 99.12
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025308.69+165404.1",
+        "label": "AllWISE J025308.69+165404.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.28624,
+        "dec": 16.90116,
+        "x": 31.76,
+        "y": 188.7,
+        "magnitude": 16.73,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.28,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.28624,
+            "dec": 16.90116,
+            "x": 31.76,
+            "y": 188.7
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.28624,
+            "dec": 16.90116,
+            "x": 31.76,
+            "y": 188.7
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025307.47+165311.5",
+        "label": "AllWISE J025307.47+165311.5",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.28115,
+        "dec": 16.88653,
+        "x": 46.72,
+        "y": 143.76,
+        "magnitude": 16.73,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.01,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.28115,
+            "dec": 16.88653,
+            "x": 46.72,
+            "y": 143.76
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.28115,
+            "dec": 16.88653,
+            "x": 46.72,
+            "y": 143.76
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025305.03+165358.2",
+        "label": "AllWISE J025305.03+165358.2",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.27099,
+        "dec": 16.89952,
+        "x": 76.58,
+        "y": 183.66,
+        "magnitude": 16.77,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": 0.17,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.27099,
+            "dec": 16.89952,
+            "x": 76.58,
+            "y": 183.66
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.27099,
+            "dec": 16.89952,
+            "x": 76.58,
+            "y": 183.66
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025257.36+165354.3",
+        "label": "AllWISE J025257.36+165354.3",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.23902,
+        "dec": 16.89844,
+        "x": 170.56,
+        "y": 180.34,
+        "magnitude": 16.78,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.08,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.23902,
+            "dec": 16.89844,
+            "x": 170.56,
+            "y": 180.34
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.23902,
+            "dec": 16.89844,
+            "x": 170.56,
+            "y": 180.34
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025303.70+165419.6",
+        "label": "AllWISE J025303.70+165419.6",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.26545,
+        "dec": 16.90545,
+        "x": 92.86,
+        "y": 201.89,
+        "magnitude": 16.78,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.18,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.26545,
+            "dec": 16.90545,
+            "x": 92.86,
+            "y": 201.89
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.26545,
+            "dec": 16.90545,
+            "x": 92.86,
+            "y": 201.89
+          }
+        ]
+      },
+      {
+        "object_id": "wise:J025259.10+165111.1",
+        "label": "AllWISE J025259.10+165111.1",
+        "catalog": "wise",
+        "object_type": "infrared_source",
+        "ra": 43.24625,
+        "dec": 16.85311,
+        "x": 149.3,
+        "y": 41.09,
+        "magnitude": 16.8,
+        "proper_motion_arcsec_yr": 0.015,
+        "w1_w2_color": -0.28,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60810.5,
+            "ra": 43.24625,
+            "dec": 16.85311,
+            "x": 149.3,
+            "y": 41.09
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60993.2,
+            "ra": 43.24625,
+            "dec": 16.85311,
+            "x": 149.3,
+            "y": 41.09
+          }
+        ]
+      }
+    ],
+    "gaia_dr3": [
+      {
+        "source_id": "35227046884571776",
+        "ra": 43.25486,
+        "dec": 16.88075,
+        "x": 124.0,
+        "y": 126.0,
+        "g_mag": 12.9,
+        "bp_rp": 4.35,
+        "pmra": 3429.0,
+        "pmdec": -3805.0
+      },
+      {
+        "source_id": "35227837157880320",
+        "ra": 43.2488,
+        "dec": 16.89624,
+        "x": 141.81,
+        "y": 173.59,
+        "g_mag": 12.58,
+        "bp_rp": 0.88,
+        "pmra": -3.09,
+        "pmdec": -3.12
+      },
+      {
+        "source_id": "35227429136688896",
+        "ra": 43.22656,
+        "dec": 16.8837,
+        "x": 207.2,
+        "y": 135.08,
+        "g_mag": 15.01,
+        "bp_rp": 1.62,
+        "pmra": 12.2,
+        "pmdec": -20.25
+      },
+      {
+        "source_id": "35226673222445440",
+        "ra": 43.24978,
+        "dec": 16.86868,
+        "x": 138.95,
+        "y": 88.92,
+        "g_mag": 16.88,
+        "bp_rp": 1.37,
+        "pmra": 8.79,
+        "pmdec": -11.3
+      },
+      {
+        "source_id": "35227910173232384",
+        "ra": 43.23704,
+        "dec": 16.91013,
+        "x": 176.38,
+        "y": 216.25,
+        "g_mag": 16.93,
+        "bp_rp": 1.43,
+        "pmra": 5.85,
+        "pmdec": -4.16
+      },
+      {
+        "source_id": "35227394776951680",
+        "ra": 43.21418,
+        "dec": 16.87099,
+        "x": 243.58,
+        "y": 96.03,
+        "g_mag": 17.19,
+        "bp_rp": 1.02,
+        "pmra": 3.55,
+        "pmdec": -2.26
+      },
+      {
+        "source_id": "35226462768523136",
+        "ra": 43.23145,
+        "dec": 16.84952,
+        "x": 192.81,
+        "y": 30.05,
+        "g_mag": 18.69,
+        "bp_rp": 2.38,
+        "pmra": 5.97,
+        "pmdec": -1.72
+      }
+    ],
+    "wise_sources": [
+      {
+        "source_id": "J025303.34+165213.2",
+        "ra": 43.26394,
+        "dec": 16.87036,
+        "x": 97.32,
+        "y": 94.07,
+        "w1_mag": 7.14,
+        "w2_mag": 6.98,
+        "w1_w2_color": 0.16
+      },
+      {
+        "source_id": "J025259.37+165312.6",
+        "ra": 43.2474,
+        "dec": 16.88685,
+        "x": 145.92,
+        "y": 144.73,
+        "w1_mag": 14.57,
+        "w2_mag": 14.38,
+        "w1_w2_color": 0.19
+      },
+      {
+        "source_id": "J025303.09+165429.1",
+        "ra": 43.2629,
+        "dec": 16.90811,
+        "x": 100.38,
+        "y": 210.05,
+        "w1_mag": 14.76,
+        "w2_mag": 14.63,
+        "w1_w2_color": 0.13
+      },
+      {
+        "source_id": "J025258.41+165413.4",
+        "ra": 43.2434,
+        "dec": 16.90374,
+        "x": 157.69,
+        "y": 196.63,
+        "w1_mag": 15.65,
+        "w2_mag": 14.77,
+        "w1_w2_color": 0.88
+      },
+      {
+        "source_id": "J025301.89+165146.4",
+        "ra": 43.25791,
+        "dec": 16.8629,
+        "x": 115.03,
+        "y": 71.15,
+        "w1_mag": 15.5,
+        "w2_mag": 14.84,
+        "w1_w2_color": 0.66
+      },
+      {
+        "source_id": "J025302.98+165503.0",
+        "ra": 43.26246,
+        "dec": 16.91752,
+        "x": 101.67,
+        "y": 238.96,
+        "w1_mag": 15.45,
+        "w2_mag": 15.38,
+        "w1_w2_color": 0.07
+      },
+      {
+        "source_id": "J025302.75+165444.9",
+        "ra": 43.26148,
+        "dec": 16.91248,
+        "x": 104.54,
+        "y": 223.49,
+        "w1_mag": 15.6,
+        "w2_mag": 15.47,
+        "w1_w2_color": 0.13
+      },
+      {
+        "source_id": "J025301.06+165319.6",
+        "ra": 43.25445,
+        "dec": 16.8888,
+        "x": 125.22,
+        "y": 150.74,
+        "w1_mag": 15.44,
+        "w2_mag": 15.49,
+        "w1_w2_color": -0.05
+      },
+      {
+        "source_id": "J025259.40+165449.4",
+        "ra": 43.24753,
+        "dec": 16.91374,
+        "x": 145.55,
+        "y": 227.34,
+        "w1_mag": 16.04,
+        "w2_mag": 15.8,
+        "w1_w2_color": 0.24
+      },
+      {
+        "source_id": "J025306.28+165227.1",
+        "ra": 43.27617,
+        "dec": 16.87422,
+        "x": 61.34,
+        "y": 105.95,
+        "w1_mag": 15.78,
+        "w2_mag": 15.86,
+        "w1_w2_color": -0.08
+      },
+      {
+        "source_id": "J025304.57+165304.7",
+        "ra": 43.26908,
+        "dec": 16.88465,
+        "x": 82.21,
+        "y": 137.99,
+        "w1_mag": 15.8,
+        "w2_mag": 15.91,
+        "w1_w2_color": -0.11
+      },
+      {
+        "source_id": "J025308.22+165202.4",
+        "ra": 43.28426,
+        "dec": 16.86736,
+        "x": 37.56,
+        "y": 84.87,
+        "w1_mag": 16.0,
+        "w2_mag": 15.91,
+        "w1_w2_color": 0.09
+      },
+      {
+        "source_id": "J025306.97+165052.0",
+        "ra": 43.27906,
+        "dec": 16.84779,
+        "x": 52.86,
+        "y": 24.74,
+        "w1_mag": 15.88,
+        "w2_mag": 15.91,
+        "w1_w2_color": -0.03
+      },
+      {
+        "source_id": "J025301.94+165432.9",
+        "ra": 43.25812,
+        "dec": 16.90915,
+        "x": 114.42,
+        "y": 213.24,
+        "w1_mag": 16.37,
+        "w2_mag": 16.11,
+        "w1_w2_color": 0.26
+      },
+      {
+        "source_id": "J025254.15+165118.4",
+        "ra": 43.22566,
+        "dec": 16.85514,
+        "x": 209.85,
+        "y": 47.32,
+        "w1_mag": 16.12,
+        "w2_mag": 16.25,
+        "w1_w2_color": -0.13
+      },
+      {
+        "source_id": "J025305.98+165310.1",
+        "ra": 43.27493,
+        "dec": 16.88615,
+        "x": 65.0,
+        "y": 142.58,
+        "w1_mag": 16.91,
+        "w2_mag": 16.27,
+        "w1_w2_color": 0.64
+      },
+      {
+        "source_id": "J025305.89+165456.6",
+        "ra": 43.27456,
+        "dec": 16.91572,
+        "x": 66.1,
+        "y": 233.45,
+        "w1_mag": 16.73,
+        "w2_mag": 16.28,
+        "w1_w2_color": 0.45
+      },
+      {
+        "source_id": "J025304.50+165427.7",
+        "ra": 43.26876,
+        "dec": 16.90772,
+        "x": 83.15,
+        "y": 208.85,
+        "w1_mag": 17.09,
+        "w2_mag": 16.28,
+        "w1_w2_color": 0.81
+      },
+      {
+        "source_id": "J025301.90+165257.7",
+        "ra": 43.25794,
+        "dec": 16.8827,
+        "x": 114.96,
+        "y": 131.98,
+        "w1_mag": 15.93,
+        "w2_mag": 16.33,
+        "w1_w2_color": -0.4
+      },
+      {
+        "source_id": "J025259.19+165356.9",
+        "ra": 43.24663,
+        "dec": 16.89916,
+        "x": 148.19,
+        "y": 182.56,
+        "w1_mag": 16.62,
+        "w2_mag": 16.33,
+        "w1_w2_color": 0.29
+      },
+      {
+        "source_id": "J025257.69+165128.2",
+        "ra": 43.24041,
+        "dec": 16.85784,
+        "x": 166.48,
+        "y": 55.61,
+        "w1_mag": 16.03,
+        "w2_mag": 16.35,
+        "w1_w2_color": -0.32
+      },
+      {
+        "source_id": "J025256.84+165411.1",
+        "ra": 43.23688,
+        "dec": 16.9031,
+        "x": 176.87,
+        "y": 194.68,
+        "w1_mag": 17.48,
+        "w2_mag": 16.46,
+        "w1_w2_color": 1.02
+      },
+      {
+        "source_id": "J025308.99+165229.1",
+        "ra": 43.28747,
+        "dec": 16.87478,
+        "x": 28.12,
+        "y": 107.65,
+        "w1_mag": 16.65,
+        "w2_mag": 16.5,
+        "w1_w2_color": 0.15
+      },
+      {
+        "source_id": "J025308.60+165121.4",
+        "ra": 43.28584,
+        "dec": 16.85597,
+        "x": 32.93,
+        "y": 49.87,
+        "w1_mag": 16.18,
+        "w2_mag": 16.52,
+        "w1_w2_color": -0.34
+      },
+      {
+        "source_id": "J025255.44+165404.2",
+        "ra": 43.23104,
+        "dec": 16.90118,
+        "x": 194.03,
+        "y": 188.78,
+        "w1_mag": 16.68,
+        "w2_mag": 16.52,
+        "w1_w2_color": 0.16
+      },
+      {
+        "source_id": "J025256.24+165155.5",
+        "ra": 43.23436,
+        "dec": 16.86544,
+        "x": 184.26,
+        "y": 78.98,
+        "w1_mag": 17.55,
+        "w2_mag": 16.54,
+        "w1_w2_color": 1.01
+      },
+      {
+        "source_id": "J025300.08+165420.8",
+        "ra": 43.25034,
+        "dec": 16.9058,
+        "x": 137.28,
+        "y": 202.95,
+        "w1_mag": 17.04,
+        "w2_mag": 16.54,
+        "w1_w2_color": 0.5
+      },
+      {
+        "source_id": "J025256.45+165108.7",
+        "ra": 43.23524,
+        "dec": 16.85244,
+        "x": 181.67,
+        "y": 39.02,
+        "w1_mag": 16.69,
+        "w2_mag": 16.54,
+        "w1_w2_color": 0.15
+      },
+      {
+        "source_id": "J025255.55+165119.0",
+        "ra": 43.23149,
+        "dec": 16.85529,
+        "x": 192.71,
+        "y": 47.78,
+        "w1_mag": 17.04,
+        "w2_mag": 16.63,
+        "w1_w2_color": 0.41
+      },
+      {
+        "source_id": "J025306.83+165417.7",
+        "ra": 43.27847,
+        "dec": 16.90493,
+        "x": 54.58,
+        "y": 200.3,
+        "w1_mag": 17.41,
+        "w2_mag": 16.63,
+        "w1_w2_color": 0.78
+      },
+      {
+        "source_id": "J025258.00+165241.0",
+        "ra": 43.24168,
+        "dec": 16.87806,
+        "x": 162.75,
+        "y": 117.75,
+        "w1_mag": 17.38,
+        "w2_mag": 16.65,
+        "w1_w2_color": 0.73
+      },
+      {
+        "source_id": "J025256.16+165141.6",
+        "ra": 43.23404,
+        "dec": 16.86158,
+        "x": 185.21,
+        "y": 67.1,
+        "w1_mag": 17.21,
+        "w2_mag": 16.65,
+        "w1_w2_color": 0.56
+      },
+      {
+        "source_id": "J025256.11+165225.7",
+        "ra": 43.23383,
+        "dec": 16.87381,
+        "x": 185.83,
+        "y": 104.69,
+        "w1_mag": 17.07,
+        "w2_mag": 16.67,
+        "w1_w2_color": 0.4
+      },
+      {
+        "source_id": "J025252.73+165157.1",
+        "ra": 43.21974,
+        "dec": 16.86587,
+        "x": 227.25,
+        "y": 80.29,
+        "w1_mag": 16.79,
+        "w2_mag": 16.67,
+        "w1_w2_color": 0.12
+      },
+      {
+        "source_id": "J025253.03+165413.5",
+        "ra": 43.221,
+        "dec": 16.90376,
+        "x": 223.54,
+        "y": 196.7,
+        "w1_mag": 16.8,
+        "w2_mag": 16.7,
+        "w1_w2_color": 0.1
+      },
+      {
+        "source_id": "J025258.22+165201.5",
+        "ra": 43.24262,
+        "dec": 16.86708,
+        "x": 159.98,
+        "y": 84.02,
+        "w1_mag": 17.16,
+        "w2_mag": 16.72,
+        "w1_w2_color": 0.44
+      },
+      {
+        "source_id": "J025257.22+165219.1",
+        "ra": 43.23842,
+        "dec": 16.872,
+        "x": 172.32,
+        "y": 99.12,
+        "w1_mag": 16.84,
+        "w2_mag": 16.73,
+        "w1_w2_color": 0.11
+      },
+      {
+        "source_id": "J025308.69+165404.1",
+        "ra": 43.28624,
+        "dec": 16.90116,
+        "x": 31.76,
+        "y": 188.7,
+        "w1_mag": 16.45,
+        "w2_mag": 16.73,
+        "w1_w2_color": -0.28
+      },
+      {
+        "source_id": "J025307.47+165311.5",
+        "ra": 43.28115,
+        "dec": 16.88653,
+        "x": 46.72,
+        "y": 143.76,
+        "w1_mag": 16.72,
+        "w2_mag": 16.73,
+        "w1_w2_color": -0.01
+      },
+      {
+        "source_id": "J025305.03+165358.2",
+        "ra": 43.27099,
+        "dec": 16.89952,
+        "x": 76.58,
+        "y": 183.66,
+        "w1_mag": 16.94,
+        "w2_mag": 16.77,
+        "w1_w2_color": 0.17
+      },
+      {
+        "source_id": "J025257.36+165354.3",
+        "ra": 43.23902,
+        "dec": 16.89844,
+        "x": 170.56,
+        "y": 180.34,
+        "w1_mag": 16.7,
+        "w2_mag": 16.78,
+        "w1_w2_color": -0.08
+      },
+      {
+        "source_id": "J025303.70+165419.6",
+        "ra": 43.26545,
+        "dec": 16.90545,
+        "x": 92.86,
+        "y": 201.89,
+        "w1_mag": 16.6,
+        "w2_mag": 16.78,
+        "w1_w2_color": -0.18
+      },
+      {
+        "source_id": "J025259.10+165111.1",
+        "ra": 43.24625,
+        "dec": 16.85311,
+        "x": 149.3,
+        "y": 41.09,
+        "w1_mag": 16.52,
+        "w2_mag": 16.8,
+        "w1_w2_color": -0.28
+      }
+    ],
+    "most_solar_system": []
+  }
+}

@@ -18,6 +18,7 @@ import {
   detectAndTrackBodiesAtClick,
   detectAndTrackBrightBodyAcrossEpochs,
   getDefaultCheckedObjectIds,
+  pickDistinctHighlighterColors,
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
 import { ClientPatchCache } from '../src/services/clientPatchCache.ts';
@@ -27,7 +28,13 @@ import {
   clearCheckedObjectIds,
   formatMagnitude,
   formatProperMotion,
+  fuzzyScoreText,
+  fuzzySearchKnownObjects,
+  inferObjectClass,
+  isMovingSolarSystemObject,
   isWavelengthPresetActive,
+  objectClassBadgeLabel,
+  renderEpochBuffersToRgba,
   selectAllObjectIds,
   toggleObjectId,
 } from '../src/utils/knownObjectSelection.ts';
@@ -507,7 +514,7 @@ test('ClientPatchCache caches sky patches in memory and evicts oldest entry on L
   assert.ok((await cache.getPatch('k3')) !== null);
 });
 
-test('Click-to-Track accurately tracks both stationary field stars and moving targets across all 6 presets and epochs', () => {
+test('Click-to-Track accurately tracks both stationary field stars and moving targets across all 12 presets and epochs', () => {
   const slugs = [
     'wise_0855',
     'barnards_star',
@@ -515,6 +522,12 @@ test('Click-to-Track accurately tracks both stationary field stars and moving ta
     'rw_aurigae',
     'r_draconis',
     'comet_3i_atlas',
+    'luhman_16',
+    'wolf_359',
+    'teegardens_star',
+    'cw_leonis',
+    't_tauri',
+    'ceres_asteroid',
   ];
 
   assert.equal(computeGridKey(133.7951, -7.2451, 5.0), 'ra133.80_dec-7.25_fov5.0');
@@ -559,7 +572,7 @@ test('Click-to-Track accurately tracks both stationary field stars and moving ta
 });
 
 // ---------------------------------------------------------------------------
-// ISS-16: Viewport Controls Bar & Known Celestial Objects Checkbox UI
+// ISS-16 & ISS-23: Viewport Controls Bar, Known Celestial Objects & Fuzzy Search
 // ---------------------------------------------------------------------------
 
 function loadPresetKnownObjects(slug) {
@@ -575,7 +588,7 @@ const PRESET_SLUGS = fs
   .map((entry) => entry.name);
 
 test('ISS-16: default selection checks notable movers and leaves stationary field stars unchecked', () => {
-  assert.equal(PRESET_SLUGS.length, 6);
+  assert.equal(PRESET_SLUGS.length, 12);
   for (const slug of PRESET_SLUGS) {
     const known = loadPresetKnownObjects(slug);
     const defaults = getDefaultCheckedObjectIds(known);
@@ -592,6 +605,25 @@ test('ISS-16: default selection checks notable movers and leaves stationary fiel
       `${slug}: expected stationary background stars to start unchecked`,
     );
   }
+});
+
+test('ISS-23: highlighter color palette has >=16 distinct colors and fuzzy search matches typos and catalog designations', () => {
+  assert.ok(TRACKING_SQUARE_COLORS.length >= 16);
+  assert.equal(new Set(TRACKING_SQUARE_COLORS).size, TRACKING_SQUARE_COLORS.length);
+
+  // Sampling 16 colors without replacement produces 16 distinct colors
+  const sampled = pickDistinctHighlighterColors(16);
+  assert.equal(sampled.length, 16);
+  assert.equal(new Set(sampled).size, 16);
+
+  // Fuzzy search ranks exact, substring, subsequence, and typo queries accurately
+  assert.ok(fuzzyScoreText('barnrd', "Barnard's Star (GJ 699)") >= 0.45);
+  assert.ok(fuzzyScoreText('w0855', 'WISE 0855-0714') >= 0.5);
+
+  const barnardKnown = loadPresetKnownObjects('barnards_star');
+  const matches = fuzzySearchKnownObjects(barnardKnown, 'barnrd');
+  assert.ok(matches.length >= 1);
+  assert.ok(matches[0].label.includes("Barnard's Star"));
 });
 
 test('ISS-16: Check All selects every object, Uncheck All clears to [], Notable Only restores defaults', () => {
@@ -673,4 +705,75 @@ test('ISS-16: known-object rows show a catalog badge, magnitude and proper motio
       assert.ok(!/NaN|undefined|null/.test(row), `${slug}/${obj.object_id}: bad row "${row}"`);
     }
   }
+});
+
+test('Automated pipeline UI helpers: catalog/class badges, mover detection, and canvas pixel rendering', () => {
+  assert.equal(catalogBadgeLabel('simbad'), 'SIMBAD');
+  assert.equal(catalogBadgeLabel('jpl_horizons'), 'JPL Horizons');
+
+  const planetObj = {
+    object_id: 'ephem:599',
+    label: 'Jupiter',
+    catalog: 'jpl_horizons',
+    object_type: 'solar_system',
+    object_class: 'planet',
+    ra: 120.0,
+    dec: 20.0,
+    x: 128,
+    y: 128,
+    magnitude: -2.3,
+    proper_motion_arcsec_yr: null,
+    w1_w2_color: null,
+    default_checked: true,
+    epoch_positions: [
+      { epoch_id: 'pass_1', mjd: 60800, ra: 120.0, dec: 20.0, x: 110, y: 120 },
+      { epoch_id: 'pass_2', mjd: 60900, ra: 120.02, dec: 20.01, x: 145, y: 132 },
+    ],
+  };
+  assert.equal(inferObjectClass(planetObj), 'planet');
+  assert.equal(objectClassBadgeLabel('planet'), 'Planet');
+  assert.equal(isMovingSolarSystemObject(planetObj), true);
+
+  const bdObj = {
+    ...planetObj,
+    object_id: 'simbad:WISE_0855',
+    catalog: 'simbad',
+    object_type: 'brown_dwarf_candidate',
+    object_class: null,
+    epoch_positions: [{ epoch_id: 'pass_1', mjd: 60800, ra: 133.7, dec: -7.2, x: 128, y: 128 }],
+  };
+  assert.equal(inferObjectClass(bdObj), 'brown_dwarf');
+  assert.equal(objectClassBadgeLabel('brown_dwarf'), 'Brown Dwarf');
+
+  // Render 6-detector preset pass_1 + pass_2 buffers to 256x256 RGBA bytes
+  const wiseDir = path.join(PRESETS_DIR, 'wise_0855');
+  const p1Raw = fs.readFileSync(path.join(wiseDir, 'pass_1.bin'));
+  const p2Raw = fs.readFileSync(path.join(wiseDir, 'pass_2.bin'));
+  const p1 = decodeDetectorBinaryBuffer(
+    p1Raw.buffer.slice(p1Raw.byteOffset, p1Raw.byteOffset + p1Raw.byteLength),
+    'float32',
+  );
+  const p2 = decodeDetectorBinaryBuffer(
+    p2Raw.buffer.slice(p2Raw.byteOffset, p2Raw.byteOffset + p2Raw.byteLength),
+    'float32',
+  );
+
+  const blinkRgba = renderEpochBuffersToRgba({
+    epochBuffers: [p1, p2],
+    activeEpochIndex: 0,
+    comparisonMode: 'blink',
+    contrastStretch: 'asinh',
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.equal(blinkRgba.length, 256 * 256 * 4);
+  assert.equal(blinkRgba[3], 255);
+
+  const diffRgba = renderEpochBuffersToRgba({
+    epochBuffers: [p1, p2],
+    activeEpochIndex: 1,
+    comparisonMode: 'subtract',
+    contrastStretch: 'zscale',
+    wavelengthRangeUm: [3.8, 5.0],
+  });
+  assert.equal(diffRgba.length, 256 * 256 * 4);
 });

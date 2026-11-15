@@ -10,12 +10,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.main import (  # noqa: E402
+from app.main import (
     build_sky_patch_manifest_payload,
     build_spectrum_payload,
     generate_synthetic_epoch_frames,
+    get_global_known_objects_index,
 )
-from app.models.contracts import (  # noqa: E402
+from app.models.contracts import (
     SHOWCASE_TARGETS,
     validate_detector_binary_buffer,
     validate_flags_binary_buffer,
@@ -25,7 +26,7 @@ from app.models.contracts import (  # noqa: E402
 
 
 def generate_all_presets(output_root: Path | None = None) -> list[str]:
-    """Generate and validate all 6 showcase presets into frontend/public/presets/."""
+    """Generate and validate all showcase presets into frontend/public/presets/."""
     presets_dir = output_root or (REPO_ROOT / "frontend" / "public" / "presets")
     presets_dir.mkdir(parents=True, exist_ok=True)
     generated_slugs: list[str] = []
@@ -51,7 +52,7 @@ def generate_all_presets(output_root: Path | None = None) -> list[str]:
         )
         validate_spectrum_payload(spectrum)
 
-        frames = generate_synthetic_epoch_frames(slug=slug)
+        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
         for fname, raw_bytes in frames.items():
             if fname.endswith("_flags.bin"):
                 validate_flags_binary_buffer(raw_bytes)
@@ -67,6 +68,10 @@ def generate_all_presets(output_root: Path | None = None) -> list[str]:
         )
         generated_slugs.append(slug)
 
+    global_index = get_global_known_objects_index()
+    (presets_dir / "global_known_objects.json").write_text(
+        json.dumps(global_index, indent=2) + "\n", encoding="utf-8"
+    )
     return generated_slugs
 
 

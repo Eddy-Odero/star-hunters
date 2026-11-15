@@ -67,6 +67,29 @@ DEFAULT_MOLECULAR_FEATURES: list[dict[str, Any]] = [
     {"molecule": "CO", "min_um": 4.55, "max_um": 4.80, "label": "Carbon Monoxide"},
 ]
 
+TRACKING_SQUARE_COLORS: tuple[str, ...] = (
+    "#00F5D4",  # Cyan-Mint
+    "#FFBE0B",  # Solar Amber
+    "#FF006E",  # Magenta Pulse
+    "#3A86FF",  # Azure Blue
+    "#FB5607",  # Neon Tangerine
+    "#8338EC",  # Ultraviolet
+    "#06D6A0",  # Emerald
+    "#FF9F1C",  # Gold
+    "#AACC00",  # Electric Lime
+    "#FF4D6D",  # Coral Red
+    "#F72585",  # Hot Pink
+    "#4CC9F0",  # Sky Cyan
+    "#80ED99",  # Mint Green
+    "#C77DFF",  # Orchid Violet
+    "#FFEA00",  # Laser Yellow
+    "#00BBF9",  # Cerulean
+    "#FF6B6B",  # Salmon Rose
+    "#72EFDD",  # Aquamarine
+    "#F15BB5",  # Bubblegum Magenta
+    "#FEE440",  # Starlight Yellow
+)
+
 
 def _slugify_capital(city_name: str) -> str:
     """Convert a capital city name to an ASCII snake_case slug."""
@@ -169,6 +192,78 @@ SHOWCASE_TARGETS: dict[str, dict[str, Any]] = {
         ),
         "constellation": "Sagittarius",
     },
+    "luhman_16": {
+        "slug": "luhman_16",
+        "name": "Luhman 16 AB",
+        "ra": 162.3282,
+        "dec": -53.3194,
+        "category": "Closest Binary Brown Dwarf (L7.5 + T0.5)",
+        "description": (
+            "Third-closest known system to the Sun (6.5 ly, 2.76 arcsec/yr); benchmark L/T "
+            "transition brown dwarf pair with patchy silicate clouds and strong H2O/CH4 bands."
+        ),
+        "constellation": "Vela",
+    },
+    "wolf_359": {
+        "slug": "wolf_359",
+        "name": "Wolf 359",
+        "ra": 164.1203,
+        "dec": 7.0147,
+        "category": "High-PM M6.5V Flare Star",
+        "description": (
+            "One of the nearest and fastest low-mass red dwarfs (7.9 ly, 4.70 arcsec/yr) "
+            "exhibiting deep steam (H2O) and CO bands across SPHEREx NIR detectors."
+        ),
+        "constellation": "Leo",
+    },
+    "teegardens_star": {
+        "slug": "teegardens_star",
+        "name": "Teegarden's Star",
+        "ra": 43.2535,
+        "dec": 16.8814,
+        "category": "Ultracool M7V Exoplanet Host",
+        "description": (
+            "Nearby high-proper-motion M7V red dwarf (12.5 ly, 5.12 arcsec/yr) hosting "
+            "temperate Earth-mass planets discovered via infrared sky surveys."
+        ),
+        "constellation": "Aries",
+    },
+    "cw_leonis": {
+        "slug": "cw_leonis",
+        "name": "CW Leonis (IRC +10216)",
+        "ra": 146.9892,
+        "dec": 13.2788,
+        "category": "Carbon-Rich AGB Dust Shell Star",
+        "description": (
+            "Archetypal carbon-rich asymptotic giant branch star shrouded in a dense dust "
+            "envelope; blazes in SPHEREx Detectors 4-6 with strong CO and C2H2 absorption."
+        ),
+        "constellation": "Leo",
+    },
+    "t_tauri": {
+        "slug": "t_tauri",
+        "name": "T Tauri",
+        "ra": 65.4976,
+        "dec": 19.5351,
+        "category": "Prototype Young Stellar Object (YSO)",
+        "description": (
+            "Prototype pre-main-sequence variable star system embedded in Hind's Variable "
+            "Nebula with warm circumstellar disk emission and 3.0 um water-ice absorption."
+        ),
+        "constellation": "Taurus",
+    },
+    "ceres_asteroid": {
+        "slug": "ceres_asteroid",
+        "name": "(1) Ceres",
+        "ra": 192.4500,
+        "dec": 7.8200,
+        "category": "Water-Ice & Carbonate Dwarf Planet",
+        "description": (
+            "Largest body in the main asteroid belt moving rapidly across survey passes with "
+            "diagnostic 3.0-3.5 um ammoniated phyllosilicate and carbonate absorption."
+        ),
+        "constellation": "Virgo",
+    },
 }
 
 
@@ -251,7 +346,10 @@ KNOWN_CELESTIAL_OBJECT_SCHEMA: dict[str, Any] = {
     "properties": {
         "object_id": {"type": "string", "minLength": 1},
         "label": {"type": "string", "minLength": 1},
-        "catalog": {"type": "string", "enum": ["gaia_dr3", "wise", "most"]},
+        "catalog": {
+            "type": "string",
+            "enum": ["gaia_dr3", "wise", "most", "simbad", "jpl_horizons"],
+        },
         "object_type": {
             "type": "string",
             "enum": [
@@ -263,18 +361,51 @@ KNOWN_CELESTIAL_OBJECT_SCHEMA: dict[str, Any] = {
                 "infrared_source",
             ],
         },
+        "object_class": {
+            "type": ["string", "null"],
+            "enum": [
+                "star",
+                "brown_dwarf",
+                "planet",
+                "moon",
+                "comet",
+                "asteroid",
+                "galaxy",
+                "nebula",
+                "variable_star",
+                "infrared_source",
+                None,
+            ],
+        },
+        "canonical_name": {"type": ["string", "null"]},
+        "otype": {"type": ["string", "null"]},
         "ra": {"type": "number", "minimum": 0.0, "maximum": 360.0},
         "dec": {"type": "number", "minimum": -90.0, "maximum": 90.0},
         "x": {"type": "number"},
         "y": {"type": "number"},
         "magnitude": {"type": ["number", "null"]},
         "proper_motion_arcsec_yr": {"type": ["number", "null"], "minimum": 0.0},
+        "pmra_mas_yr": {"type": ["number", "null"]},
+        "pmdec_mas_yr": {"type": ["number", "null"]},
+        "parallax_mas": {"type": ["number", "null"]},
         "w1_w2_color": {"type": ["number", "null"]},
         "default_checked": {"type": "boolean"},
         "epoch_positions": {
             "type": "array",
             "items": KNOWN_OBJECT_EPOCH_POSITION_SCHEMA,
         },
+        "motion_vector": {
+            "type": ["object", "null"],
+            "required": ["dx_px", "dy_px", "dra_arcsec", "ddec_arcsec"],
+            "properties": {
+                "dx_px": {"type": "number"},
+                "dy_px": {"type": "number"},
+                "dra_arcsec": {"type": "number"},
+                "ddec_arcsec": {"type": "number"},
+            },
+            "additionalProperties": False,
+        },
+        "data_source": {"type": ["string", "null"]},
     },
     "additionalProperties": False,
 }
@@ -286,6 +417,10 @@ CATALOG_OVERLAYS_SCHEMA: dict[str, Any] = {
         "known_objects": {
             "type": "array",
             "items": KNOWN_CELESTIAL_OBJECT_SCHEMA,
+        },
+        "source_status": {
+            "type": ["object", "null"],
+            "additionalProperties": {"type": "string"},
         },
         "gaia_dr3": {
             "type": "array",
@@ -633,7 +768,7 @@ class KnownCelestialObject(_ContractModelMixin):
     SCHEMA = KNOWN_CELESTIAL_OBJECT_SCHEMA
     object_id: str
     label: str
-    catalog: Literal["gaia_dr3", "wise", "most"]
+    catalog: Literal["gaia_dr3", "wise", "most", "simbad", "jpl_horizons"]
     object_type: Literal[
         "star",
         "high_pm_star",
@@ -651,6 +786,28 @@ class KnownCelestialObject(_ContractModelMixin):
     w1_w2_color: float | None
     default_checked: bool
     epoch_positions: list[KnownObjectEpochPosition] = field(default_factory=list)
+    object_class: (
+        Literal[
+            "star",
+            "brown_dwarf",
+            "planet",
+            "moon",
+            "comet",
+            "asteroid",
+            "galaxy",
+            "nebula",
+            "variable_star",
+            "infrared_source",
+        ]
+        | None
+    ) = None
+    canonical_name: str | None = None
+    otype: str | None = None
+    pmra_mas_yr: float | None = None
+    pmdec_mas_yr: float | None = None
+    parallax_mas: float | None = None
+    motion_vector: dict[str, float] | None = None
+    data_source: str | None = None
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> KnownCelestialObject:
@@ -706,6 +863,7 @@ class CatalogOverlays(_ContractModelMixin):
     wise_sources: list[WiseSource] = field(default_factory=list)
     most_solar_system: list[MostSolarSystemObject] = field(default_factory=list)
     known_objects: list[KnownCelestialObject] = field(default_factory=list)
+    source_status: dict[str, str] | None = None
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> CatalogOverlays:
@@ -726,6 +884,7 @@ class CatalogOverlays(_ContractModelMixin):
                 KnownCelestialObject._from_dict(item) if isinstance(item, dict) else item
                 for item in data.get("known_objects", [])
             ],
+            source_status=data.get("source_status"),
         )
 
 
