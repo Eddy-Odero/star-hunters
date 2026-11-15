@@ -1,12 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
-import {
-  computeViewportViewBox,
-  screenToImageCoordinates,
-  type EarthToSkyResponse,
-} from './types/contracts';
+import { computeViewportViewBox, screenToImageCoordinates } from './types/contracts';
+import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
 import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
+import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 import {
   catalogBadgeLabel,
   inferObjectClass,
@@ -14,21 +12,6 @@ import {
   objectClassBadgeLabel,
   renderEpochBuffersToRgba,
 } from './utils/knownObjectSelection';
-
-const PRESET_SLUGS = [
-  { slug: 'wise_0855', label: 'WISE 0855 (Brown Dwarf)' },
-  { slug: 'barnards_star', label: "Barnard's Star (Fast Mover)" },
-  { slug: 'epsilon_indi_b', label: 'Epsilon Indi B (T-Dwarf Pair)' },
-  { slug: 'rw_aurigae', label: 'RW Aurigae (Variable Star)' },
-  { slug: 'r_draconis', label: 'R Draconis (Mira Giant)' },
-  { slug: 'comet_3i_atlas', label: 'Comet 3I/ATLAS (Solar System)' },
-  { slug: 'luhman_16', label: 'Luhman 16 AB (Binary Brown Dwarf)' },
-  { slug: 'wolf_359', label: 'Wolf 359 (Nearby Flare Star)' },
-  { slug: 'teegardens_star', label: "Teegarden's Star (Ultracool M-Dwarf)" },
-  { slug: 'cw_leonis', label: 'CW Leonis (Carbon AGB Star)' },
-  { slug: 't_tauri', label: 'T Tauri (Prototype YSO)' },
-  { slug: 'ceres_asteroid', label: '(1) Ceres (Dwarf Planet)' },
-];
 
 const StarHuntersWorkspace: React.FC = () => {
   const {
@@ -46,13 +29,11 @@ const StarHuntersWorkspace: React.FC = () => {
     removeTrackedTarget,
     clearTrackedTargets,
     selectPreset,
-    navigateToCoordinates,
     inspectPixelOrCoord,
   } = useSkyExplorer();
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [zenithBanner, setZenithBanner] = useState<string | null>(null);
   const [showLabels, setShowLabels] = useState<boolean>(true);
 
   useEffect(() => {
@@ -107,23 +88,6 @@ const StarHuntersWorkspace: React.FC = () => {
     }
   };
 
-  const handleWhatsAboveMe = async () => {
-    try {
-      const res = await fetch('/api/v1/earth-to-sky');
-      if (!res.ok) return;
-      const data = (await res.json()) as EarthToSkyResponse;
-      const locLabel = data.earth.is_fallback_capital
-        ? `${data.earth.city_name ?? 'Capital'}, ${data.earth.country ?? ''} (Random Capital Fallback)`
-        : `(${data.earth.lat.toFixed(2)}°, ${data.earth.lon.toFixed(2)}°)`;
-      setZenithBanner(
-        `Zenith over ${locLabel}: RA ${data.zenith_icrs.ra.toFixed(2)}°, Dec ${data.zenith_icrs.dec.toFixed(2)}° (${data.zenith_icrs.constellation})`,
-      );
-      navigateToCoordinates(data.zenith_icrs.ra, data.zenith_icrs.dec, 5.0);
-    } catch {
-      // Offline fallback
-    }
-  };
-
   const checkedKnownObjects = useMemo(
     () => knownObjects.filter((obj) => renderSettings.checkedObjectIds.includes(obj.object_id)),
     [knownObjects, renderSettings.checkedObjectIds],
@@ -139,28 +103,29 @@ const StarHuntersWorkspace: React.FC = () => {
             DR3 + MOST
           </p>
         </div>
-        <div className="preset-bar">
-          {PRESET_SLUGS.map((p) => (
-            <button
-              key={p.slug}
-              type="button"
-              className={activePresetSlug === p.slug ? 'preset-btn active' : 'preset-btn'}
-              onClick={() => selectPreset(p.slug)}
-            >
-              {p.label}
-            </button>
-          ))}
-          <button type="button" className="preset-btn" onClick={() => void handleWhatsAboveMe()}>
-            What&apos;s Above Me? (Zenith / Capital Fallback)
-          </button>
+
+        {/* Telemetry Header Banner */}
+        <div className="header-telemetry">
+          {manifest?.data_source_summary && (
+            <span className="telemetry-badge" title={manifest.data_source_summary.status_note}>
+              🛰️ Baseline: {manifest.data_source_summary.baseline_days} days |{' '}
+              {manifest.data_source_summary.uses_wise_fallback
+                ? 'WISE Fallback'
+                : 'Primary SPHEREx'}
+            </span>
+          )}
+          <span className="telemetry-badge">
+            ⚡ Stage: {loadingState.stage}
+            {loadingState.fromClientCache ? ' (3G Browser Cache Hit)' : ' (Live Stream)'}
+          </span>
         </div>
       </header>
 
-      {zenithBanner && (
-        <div className="diagnostic-banner" role="status">
-          {zenithBanner}
-        </div>
-      )}
+      {/* Target Tour Carousel Component */}
+      <TargetTourBar />
+
+      {/* What's Above Me Zenith Discovery Flow */}
+      <WhatsAboveMeBar />
 
       <main className="workspace-grid">
         <section className="viewport-panel">
@@ -170,14 +135,11 @@ const StarHuntersWorkspace: React.FC = () => {
               {manifest ? `— ${manifest.target_metadata.name}` : ''}
             </h2>
             <span className="status-badge">
-              Stage: {loadingState.stage}
-              {loadingState.fromClientCache ? ' (Cached in Browser)' : ''} &bull; Zoom:{' '}
-              {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: ({renderSettings.panX.toFixed(0)},{' '}
-              {renderSettings.panY.toFixed(0)})
+              Zoom: {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: (
+              {renderSettings.panX.toFixed(0)}, {renderSettings.panY.toFixed(0)})
             </span>
           </div>
 
-          {/* Viewport Controls Bar Component */}
           <ViewportControlsBar />
 
           <div className="secondary-action-bar">
@@ -430,7 +392,6 @@ const StarHuntersWorkspace: React.FC = () => {
           )}
         </section>
 
-        {/* Known Celestial Objects Checkbox Menu Component */}
         <KnownObjectsCheckboxMenu />
       </main>
     </div>
