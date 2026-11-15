@@ -278,6 +278,9 @@ button.active {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+  text-align: left;
+  font: inherit;
+  width: 100%;
 }
 
 .tour-card:hover {
@@ -399,4 +402,21 @@ button.active {
   border-radius: 6px;
   font-size: 0.85rem;
   margin-top: 0.5rem;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+@media (max-width: 900px) {
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wam-manual-form {
+    flex-wrap: wrap;
+  }
 }

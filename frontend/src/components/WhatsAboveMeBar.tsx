@@ -43,7 +43,9 @@ export const WhatsAboveMeBar: React.FC<{
       onZenithResolved?.(banner);
       navigateToCoordinates(data.zenith_icrs.ra, data.zenith_icrs.dec, 5.0);
     } catch (err) {
-      setStatusMessage(err instanceof Error ? err.message : 'Failed to resolve zenith coordinates.');
+      setStatusMessage(
+        err instanceof Error ? err.message : 'Failed to resolve zenith coordinates.',
+      );
     } finally {
       setLoading(false);
     }
@@ -82,9 +84,10 @@ export const WhatsAboveMeBar: React.FC<{
   return (
     <div className="whats-above-me-bar" role="region" aria-label="What's Above Me Discovery Flow">
       <div className="wam-header">
-        <h4> &ldquo;What&apos;s Above Me?&rdquo; Zenith Discovery</h4>
+        <h4>&ldquo;What&apos;s Above Me?&rdquo; Zenith Discovery</h4>
         <p className="wam-subtitle">
-          Point your viewport directly at the night sky zenith above your location or a random world capital.
+          Point your viewport directly at the night sky zenith above your location or a random world
+          capital.
         </p>
       </div>
 
@@ -95,7 +98,7 @@ export const WhatsAboveMeBar: React.FC<{
           onClick={handleBrowserGeolocation}
           disabled={loading}
         >
-          {loading ? 'Resolving...' : ' Use My Location (or Random Capital Fallback)'}
+          {loading ? 'Resolving...' : 'Use My Location (or Random Capital Fallback)'}
         </button>
 
         <div className="wam-presets">
@@ -116,6 +119,9 @@ export const WhatsAboveMeBar: React.FC<{
           <input
             type="number"
             step="any"
+            min={-90}
+            max={90}
+            aria-label="Latitude (-90 to 90 degrees)"
             placeholder="Lat (-90..90)"
             value={latInput}
             onChange={(e) => setLatInput(e.target.value)}
@@ -124,6 +130,9 @@ export const WhatsAboveMeBar: React.FC<{
           <input
             type="number"
             step="any"
+            min={-180}
+            max={180}
+            aria-label="Longitude (-180 to 180 degrees)"
             placeholder="Lon (-180..180)"
             value={lonInput}
             onChange={(e) => setLonInput(e.target.value)}
