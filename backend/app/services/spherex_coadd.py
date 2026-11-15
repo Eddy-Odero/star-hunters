@@ -219,12 +219,7 @@ def _reproject_cutout(
     flags = np.asarray(cutout.flags_mask, dtype=np.uint8)
     source_wcs = _source_wcs(cutout)
 
-    valid = (
-        np.isfinite(image)
-        & np.isfinite(variance)
-        & (variance > 0.0)
-        & (flags == 0)
-    )
+    valid = np.isfinite(image) & np.isfinite(variance) & (variance > 0.0) & (flags == 0)
     masked_image = image.astype(np.float64, copy=True)
     masked_image[~valid] = np.nan
     projected_image, image_footprint = reproject_interp(
@@ -247,11 +242,7 @@ def _reproject_cutout(
         order="nearest-neighbor",
     )
 
-    footprint = (
-        (image_footprint > 0)
-        & (variance_footprint > 0)
-        & (flags_footprint > 0)
-    )
+    footprint = (image_footprint > 0) & (variance_footprint > 0) & (flags_footprint > 0)
     projected_image = np.asarray(projected_image, dtype=np.float64)
     projected_variance = np.asarray(projected_variance, dtype=np.float64)
     projected_flags = np.nan_to_num(projected_flags, nan=0.0).astype(np.uint8)
@@ -343,11 +334,7 @@ def coadd_spherex_epochs(
         coadd_spherex_epoch(cluster, target_header, epoch_id=f"pass_{index + 1}")
         for index, cluster in enumerate(clusters)
     ]
-    baseline = (
-        float(ordered[-1].mjd_obs) - float(ordered[0].mjd_obs)
-        if len(ordered) >= 2
-        else 0.0
-    )
+    baseline = float(ordered[-1].mjd_obs) - float(ordered[0].mjd_obs) if len(ordered) >= 2 else 0.0
     multi_epoch = len(epochs) >= 2
     return SpherexCoaddResult(
         epochs=epochs,

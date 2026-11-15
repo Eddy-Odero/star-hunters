@@ -64,9 +64,7 @@ class TestAdaptiveEpochClustering(unittest.TestCase):
         self.assertEqual(len(clusters[0]), 1)
 
     def test_baseline_below_one_day_remains_one_epoch(self) -> None:
-        clusters = cluster_spherex_epochs(
-            [make_cutout(60000.0), make_cutout(60000.5)]
-        )
+        clusters = cluster_spherex_epochs([make_cutout(60000.0), make_cutout(60000.5)])
         self.assertEqual(len(clusters), 1)
 
     def test_short_baseline_splits_earliest_and_latest(self) -> None:
@@ -77,10 +75,7 @@ class TestAdaptiveEpochClustering(unittest.TestCase):
         self.assertEqual([item.mjd_obs for item in clusters[1]], [60020.0, 60030.0])
 
     def test_large_gaps_separate_survey_passes(self) -> None:
-        cutouts = [
-            make_cutout(mjd)
-            for mjd in (59000.0, 59001.0, 59182.0, 59183.0, 59365.0)
-        ]
+        cutouts = [make_cutout(mjd) for mjd in (59000.0, 59001.0, 59182.0, 59183.0, 59365.0)]
         clusters = cluster_spherex_epochs(cutouts)
         self.assertEqual([len(cluster) for cluster in clusters], [2, 2, 1])
 
