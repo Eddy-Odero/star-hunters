@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import time
 from collections.abc import Iterable, Iterator, Sequence
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,7 +54,9 @@ SPHEREX_BANDPASSES = (
     "SPHEREx-D6",
 )
 
-DEFAULT_HTTP_TIMEOUT = 12.0
+DEFAULT_HTTP_TIMEOUT = 8.0
+DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 3
+DEFAULT_INGEST_BUDGET_SECONDS = 18.0
 DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
@@ -59,8 +64,28 @@ class TimeoutSession(requests.Session):
     """Requests session with bounded connection and response timeouts."""
 
     def request(self, method, url, **kwargs):
-        kwargs.setdefault("timeout", (5, 12))
+        kwargs.setdefault("timeout", (4, 8))
         return super().request(method, url, **kwargs)
+
+
+def _is_transient_upstream_error(exc: Exception) -> bool:
+    """Return True when an HTTP failure indicates upstream throttling or 5xx outage."""
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "503",
+            "502",
+            "504",
+            "429",
+            "service unavailable",
+            "bad gateway",
+            "gateway timeout",
+            "too many requests",
+            "timed out",
+            "timeout",
+        )
+    )
 
 
 # Application-level hygiene mask bits.
@@ -1249,8 +1274,16 @@ def ingest_spherex_cutouts(
             for index, bandpass in enumerate(bandpasses)
         ]
 
-    cutouts: list[SpherexCutout] = []
-    for observation in observations:
+    results: list[SpherexCutout | None] = [None] * len(observations)
+    effective_timeout = min(float(timeout), 8.0) if not allow_synthetic_fallback else float(timeout)
+    workers = 1 if session is not None else min(6, max(1, len(observations)))
+    last_exc: Exception | None = None
+    transient_failures = 0
+    deadline = time.monotonic() + DEFAULT_INGEST_BUDGET_SECONDS
+
+    def _download_one(
+        index: int, observation: SpherexObservation
+    ) -> tuple[int, SpherexCutout | None, Exception | None]:
         try:
             payload = download_cutout(
                 observation.uri,
@@ -1258,7 +1291,7 @@ def ingest_spherex_cutouts(
                 dec=dec,
                 fov_arcmin=fov_arcmin,
                 session=session,
-                timeout=timeout,
+                timeout=effective_timeout,
             )
             cutout = process_spherex_fits(
                 payload,
@@ -1266,6 +1299,7 @@ def ingest_spherex_cutouts(
                 uri=observation.uri,
                 source_name="irsa",
             )
+            return index, cutout, None
         except Exception as exc:
             logger.warning(
                 "Failed downloading SPHEREx cutout %s (%s): %s",
@@ -1274,8 +1308,8 @@ def ingest_spherex_cutouts(
                 exc,
             )
             if not allow_synthetic_fallback:
-                raise
-            cutout = _fallback_cutout(
+                return index, None, exc
+            fallback = _fallback_cutout(
                 ra=ra,
                 dec=dec,
                 fov_arcmin=fov_arcmin,
@@ -1283,7 +1317,60 @@ def ingest_spherex_cutouts(
                 fixture_dir=fixture_dir,
                 mjd_obs=observation.mjd_obs or 60000.0,
             )
-        cutouts.append(cutout)
+            return index, fallback, None
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        pending = {pool.submit(_download_one, idx, obs) for idx, obs in enumerate(observations)}
+        while pending:
+            wait_sec = None if allow_synthetic_fallback else max(0.05, deadline - time.monotonic())
+            done, pending = wait_futures(pending, timeout=wait_sec, return_when=FIRST_COMPLETED)
+            if not done:
+                logger.warning(
+                    "SPHEREx download budget (%.1fs) reached at ra=%.4f dec=%.4f; short-circuiting "
+                    "%d pending cutout(s).",
+                    DEFAULT_INGEST_BUDGET_SECONDS,
+                    ra,
+                    dec,
+                    len(pending),
+                )
+                for rem in pending:
+                    rem.cancel()
+                break
+
+            for fut in done:
+                idx, cutout, exc = fut.result()
+                if cutout is not None:
+                    results[idx] = cutout
+                    continue
+                if exc is not None:
+                    last_exc = exc
+                    if _is_transient_upstream_error(exc):
+                        transient_failures += 1
+                    if (
+                        not allow_synthetic_fallback
+                        and transient_failures >= DEFAULT_CIRCUIT_BREAKER_THRESHOLD
+                    ):
+                        logger.warning(
+                            "Trip SPHEREx 503 circuit breaker after %d transient failures at "
+                            "ra=%.4f dec=%.4f; cancelling %d pending cutout(s).",
+                            transient_failures,
+                            ra,
+                            dec,
+                            len(pending),
+                        )
+                        for rem in pending:
+                            rem.cancel()
+                        pending = set()
+                        break
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    cutouts = [c for c in results if c is not None]
+    if not cutouts and not allow_synthetic_fallback:
+        if last_exc is not None:
+            raise last_exc
+        raise SpherexDownloadError("All SPHEREx cutout downloads failed or timed out.")
 
     logger.info(
         "Ingested %d SPHEREx cutout(s) at ra=%.4f dec=%.4f (sources=%s)",

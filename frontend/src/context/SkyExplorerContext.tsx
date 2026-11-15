@@ -39,8 +39,9 @@ import {
   selectAllObjectIds,
   toggleObjectId,
 } from '../utils/knownObjectSelection';
-import { BENCHMARK_TARGET_OPTIONS } from '../utils/observatoryMath';
 import { observatoryLogger } from '../utils/observatoryLogger';
+import { useBlinkerPlayback } from '../hooks/useBlinkerPlayback';
+import { useObservatoryWarmup } from '../hooks/useObservatoryWarmup';
 import { useOptionalNotifications } from './NotificationContext';
 
 const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
@@ -113,9 +114,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [renderSettings, setRenderSettings] =
     useState<ViewportRenderSettings>(INITIAL_RENDER_SETTINGS);
   const [activeMissions, setActiveMissions] = useState<MissionName[]>(ALL_MISSIONS);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [isLooping, setIsLooping] = useState<boolean>(false); // MUST default to false
-  const [fps, setFps] = useState<number>(2);
   const [selectedObject, setSelectedObject] = useState<TracedObjectSummary | null>(null);
   const [trackedTargets, setTrackedTargets] = useState<TracedObjectSummary[]>([]);
   const [lastClickDiagnostic, setLastClickDiagnostic] = useState<ClickDiagnosticInfo | null>(null);
@@ -146,98 +144,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return map;
   }, [knownObjects]);
 
-  // Pre-emptively wake up backend and warm global catalog index on mount
-  useEffect(() => {
-    let cancelled = false;
-
-    const wakeHealthAndGlobalCatalog = async () => {
-      observatoryLogger.info('warmup', 'Waking backend /health and loading global object catalog');
-      fetch('/health')
-        .then((res) => {
-          observatoryLogger.info('warmup', 'Backend health check complete', { status: res.status });
-        })
-        .catch(() => {
-          observatoryLogger.warn(
-            'warmup',
-            'Backend health ping unreachable; operating offline/cached',
-          );
-        });
-
-      let baselineObjects: GlobalKnownObjectEntry[] = [];
-      try {
-        const res = await fetch('/presets/global_known_objects.json');
-        if (res.ok) {
-          const payload = (await res.json()) as GlobalKnownObjectEntry[];
-          if (!cancelled && Array.isArray(payload) && payload.length > 0) {
-            baselineObjects = payload;
-            setGlobalKnownObjects(payload);
-            observatoryLogger.info('catalogs', 'Loaded preset global known objects', {
-              count: payload.length,
-            });
-          }
-        }
-      } catch {
-        // Fallback below
-      }
-
-      try {
-        const apiRes = await fetch('/api/v1/catalogs/search?limit=200');
-        if (apiRes.ok) {
-          const apiData = (await apiRes.json()) as { results?: GlobalKnownObjectEntry[] };
-          if (!cancelled && Array.isArray(apiData.results) && apiData.results.length > 0) {
-            setGlobalKnownObjects((prev) => {
-              const byId = new Map<string, GlobalKnownObjectEntry>();
-              for (const item of prev.length > 0 ? prev : baselineObjects) {
-                byId.set(item.object_id, item);
-              }
-              for (const liveItem of apiData.results ?? []) {
-                byId.set(liveItem.object_id, liveItem);
-              }
-              return Array.from(byId.values());
-            });
-            observatoryLogger.info('catalogs', 'Merged live global known objects from backend', {
-              count: apiData.results.length,
-            });
-          }
-        }
-      } catch {
-        // Ignore offline startup failures
-      }
-    };
-
-    void wakeHealthAndGlobalCatalog();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Pre-fetch the 5 mandatory benchmark targets + Comet 3I/ATLAS sequentially behind curtain
-  useEffect(() => {
-    let cancelled = false;
-    const warmupController = new AbortController();
-
-    const prewarmBenchmarks = async () => {
-      for (const target of BENCHMARK_TARGET_OPTIONS) {
-        if (cancelled) return;
-        try {
-          await loadPresetPatchFlow(target.slug, {
-            cache: defaultClientPatchCache,
-            signal: warmupController.signal,
-            onStageChange: () => undefined,
-            onReady: () => undefined,
-          });
-        } catch {
-          // Warmup skips individual failures silently so user navigation stays unaffected
-        }
-      }
-    };
-
-    void prewarmBenchmarks();
-    return () => {
-      cancelled = true;
-      warmupController.abort();
-    };
-  }, []);
+  useObservatoryWarmup(setGlobalKnownObjects);
 
   const requestGlobeFocus = useCallback((ra: number, dec: number, fovDeg = 2.0) => {
     setGlobeFocusRequest((prev) => ({
@@ -411,72 +318,22 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return resolveFilteredEpochIndices(manifest.epochs, activeMissions);
   }, [manifest, activeMissions]);
 
-  useEffect(() => {
-    if (!isPlaying || !manifest || filteredEpochIndices.length <= 1) {
-      return undefined;
-    }
-    const intervalMs = Math.max(100, Math.round(1000 / Math.max(0.5, fps)));
-    const timer = window.setInterval(() => {
-      setRenderSettings((prev) => {
-        const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
-        if (pos >= 0 && pos < filteredEpochIndices.length - 1) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[pos + 1] };
-        }
-        if (pos === -1) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
-        }
-        if (isLooping) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
-        }
-        setIsPlaying(false);
-        return prev;
-      });
-    }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [isPlaying, isLooping, fps, manifest, filteredEpochIndices]);
-
-  const play = useCallback(() => {
-    if (filteredEpochIndices.length === 0) return;
-    setRenderSettings((prev) => {
-      const lastValid = filteredEpochIndices[filteredEpochIndices.length - 1];
-      if (
-        !filteredEpochIndices.includes(prev.activeEpochIndex) ||
-        prev.activeEpochIndex === lastValid
-      ) {
-        return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
-      }
-      return prev;
-    });
-    setIsPlaying(true);
-  }, [filteredEpochIndices]);
-
-  const pause = useCallback(() => setIsPlaying(false), []);
-
-  const stepForward = useCallback(() => {
-    setIsPlaying(false);
-    if (filteredEpochIndices.length === 0) return;
-    setRenderSettings((prev) => {
-      const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
-      const nextIdx =
-        pos < 0
-          ? filteredEpochIndices[0]
-          : filteredEpochIndices[Math.min(filteredEpochIndices.length - 1, pos + 1)];
-      return { ...prev, activeEpochIndex: nextIdx };
-    });
-  }, [filteredEpochIndices]);
-
-  const stepBackward = useCallback(() => {
-    setIsPlaying(false);
-    if (filteredEpochIndices.length === 0) return;
-    setRenderSettings((prev) => {
-      const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
-      const prevIdx =
-        pos < 0 ? filteredEpochIndices[0] : filteredEpochIndices[Math.max(0, pos - 1)];
-      return { ...prev, activeEpochIndex: prevIdx };
-    });
-  }, [filteredEpochIndices]);
-
-  const toggleLoop = useCallback(() => setIsLooping((prev) => !prev), []);
+  const {
+    isPlaying,
+    setIsPlaying,
+    isLooping,
+    fps,
+    setFps,
+    play,
+    pause,
+    stepForward,
+    stepBackward,
+    toggleLoop,
+  } = useBlinkerPlayback({
+    manifest,
+    filteredEpochIndices,
+    setRenderSettings,
+  });
 
   const applyLoadedPatch = useCallback(
     (result: LoadedPatchResult, syncCoordinatesFromManifest: boolean) => {
@@ -574,6 +431,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
+      setManifest(null);
+      setEpochBuffers(null);
+      setFlagsBuffers(null);
+      setSelectedObject(null);
+      setTrackedTargets([]);
+      setLastClickDiagnostic(null);
       observatoryLogger.info('patch', 'Loading live sky patch', { ra, dec, fovArcmin });
       notificationsRef.current?.startAsyncTask(
         'sky-patch-load',

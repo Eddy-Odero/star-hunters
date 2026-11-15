@@ -166,18 +166,23 @@ function fillEmptyFrame(out: Uint8ClampedArray): Uint8ClampedArray {
   return out;
 }
 
-function tintFlagPixel(out: Uint8ClampedArray, outIdx: number, flag: number): void {
-  if (flag === 0) return;
-  // Bit 1 is rendered as warm amber; any higher bit as hot magenta. Mixed masks
-  // get a magenta/amber blend so both classes remain distinguishable.
-  if ((flag & 0x02) !== 0) {
-    out[outIdx] = Math.min(255, out[outIdx] + 110);
-    out[outIdx + 1] = Math.min(255, out[outIdx + 1] + 25);
-    out[outIdx + 2] = Math.min(255, out[outIdx + 2] + 130);
-  } else {
-    out[outIdx] = Math.min(255, out[outIdx] + 125);
-    out[outIdx + 1] = Math.min(255, out[outIdx + 1] + 85);
-    out[outIdx + 2] = Math.min(255, out[outIdx + 2] + 10);
+const IS_LITTLE_ENDIAN = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+function applyFlagsOverlay(out: Uint8ClampedArray, flags: Uint8Array | null | undefined): void {
+  if (!flags) return;
+  for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+    const flag = flags[i];
+    if (flag === 0) continue;
+    const outIdx = i * 4;
+    if ((flag & 0x02) !== 0) {
+      out[outIdx] = Math.min(255, out[outIdx] + 110);
+      out[outIdx + 1] = Math.min(255, out[outIdx + 1] + 25);
+      out[outIdx + 2] = Math.min(255, out[outIdx + 2] + 130);
+    } else {
+      out[outIdx] = Math.min(255, out[outIdx] + 125);
+      out[outIdx + 1] = Math.min(255, out[outIdx + 1] + 85);
+      out[outIdx + 2] = Math.min(255, out[outIdx + 2] + 10);
+    }
   }
 }
 
@@ -190,6 +195,7 @@ function renderColorFrame(
   showFlagsOverlay: boolean,
 ): Uint8ClampedArray {
   const out = new Uint8ClampedArray(PIXELS_PER_PLANE * 4);
+  const out32 = IS_LITTLE_ENDIAN ? new Uint32Array(out.buffer) : null;
   const epochCount = Math.max(1, indices.length);
   // Half of each detector pair, averaged across the co-add stack.
   const scale = 0.5 / epochCount;
@@ -209,23 +215,38 @@ function renderColorFrame(
     const d4 = planes[4] ?? ZERO_PLANE;
     const d5 = planes[5] ?? ZERO_PLANE;
 
-    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-      const blue = h0 * d0[i] + h1 * d1[i];
-      const green = h2 * d2[i] + h3 * d3[i];
-      const red = h4 * d4[i] + h5 * d5[i];
-      const outIdx = i * 4;
-      let ri = red * STRETCH_LUT_STEP;
-      let gi = green * STRETCH_LUT_STEP;
-      let bi = blue * STRETCH_LUT_STEP;
-      ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
-      gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
-      bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-      out[outIdx] = lut[ri];
-      out[outIdx + 1] = lut[gi];
-      out[outIdx + 2] = lut[bi];
-      if (showFlagsOverlay && flags) tintFlagPixel(out, outIdx, flags[i]);
-      out[outIdx + 3] = 255;
+    if (out32) {
+      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+        const blue = h0 * d0[i] + h1 * d1[i];
+        const green = h2 * d2[i] + h3 * d3[i];
+        const red = h4 * d4[i] + h5 * d5[i];
+        let ri = red * STRETCH_LUT_STEP;
+        let gi = green * STRETCH_LUT_STEP;
+        let bi = blue * STRETCH_LUT_STEP;
+        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
+        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
+        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
+        out32[i] = 0xff000000 | (lut[bi] << 16) | (lut[gi] << 8) | lut[ri];
+      }
+    } else {
+      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+        const blue = h0 * d0[i] + h1 * d1[i];
+        const green = h2 * d2[i] + h3 * d3[i];
+        const red = h4 * d4[i] + h5 * d5[i];
+        const outIdx = i * 4;
+        let ri = red * STRETCH_LUT_STEP;
+        let gi = green * STRETCH_LUT_STEP;
+        let bi = blue * STRETCH_LUT_STEP;
+        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
+        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
+        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
+        out[outIdx] = lut[ri];
+        out[outIdx + 1] = lut[gi];
+        out[outIdx + 2] = lut[bi];
+        out[outIdx + 3] = 255;
+      }
     }
+    if (showFlagsOverlay) applyFlagsOverlay(out, flags);
     return out;
   }
 
@@ -245,23 +266,38 @@ function renderColorFrame(
     const b4 = second[4] ?? ZERO_PLANE;
     const b5 = second[5] ?? ZERO_PLANE;
 
-    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-      const blue = h0 * (a0[i] + b0[i]) + h1 * (a1[i] + b1[i]);
-      const green = h2 * (a2[i] + b2[i]) + h3 * (a3[i] + b3[i]);
-      const red = h4 * (a4[i] + b4[i]) + h5 * (a5[i] + b5[i]);
-      const outIdx = i * 4;
-      let ri = red * STRETCH_LUT_STEP;
-      let gi = green * STRETCH_LUT_STEP;
-      let bi = blue * STRETCH_LUT_STEP;
-      ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
-      gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
-      bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-      out[outIdx] = lut[ri];
-      out[outIdx + 1] = lut[gi];
-      out[outIdx + 2] = lut[bi];
-      if (showFlagsOverlay && flags) tintFlagPixel(out, outIdx, flags[i]);
-      out[outIdx + 3] = 255;
+    if (out32) {
+      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+        const blue = h0 * (a0[i] + b0[i]) + h1 * (a1[i] + b1[i]);
+        const green = h2 * (a2[i] + b2[i]) + h3 * (a3[i] + b3[i]);
+        const red = h4 * (a4[i] + b4[i]) + h5 * (a5[i] + b5[i]);
+        let ri = red * STRETCH_LUT_STEP;
+        let gi = green * STRETCH_LUT_STEP;
+        let bi = blue * STRETCH_LUT_STEP;
+        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
+        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
+        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
+        out32[i] = 0xff000000 | (lut[bi] << 16) | (lut[gi] << 8) | lut[ri];
+      }
+    } else {
+      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+        const blue = h0 * (a0[i] + b0[i]) + h1 * (a1[i] + b1[i]);
+        const green = h2 * (a2[i] + b2[i]) + h3 * (a3[i] + b3[i]);
+        const red = h4 * (a4[i] + b4[i]) + h5 * (a5[i] + b5[i]);
+        const outIdx = i * 4;
+        let ri = red * STRETCH_LUT_STEP;
+        let gi = green * STRETCH_LUT_STEP;
+        let bi = blue * STRETCH_LUT_STEP;
+        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
+        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
+        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
+        out[outIdx] = lut[ri];
+        out[outIdx + 1] = lut[gi];
+        out[outIdx + 2] = lut[bi];
+        out[outIdx + 3] = 255;
+      }
     }
+    if (showFlagsOverlay) applyFlagsOverlay(out, flags);
     return out;
   }
 
@@ -285,19 +321,23 @@ function renderColorFrame(
       green += h2 * c2[k][i] + h3 * c3[k][i];
       red += h4 * c4[k][i] + h5 * c5[k][i];
     }
-    const outIdx = i * 4;
     let ri = red * STRETCH_LUT_STEP;
     let gi = green * STRETCH_LUT_STEP;
     let bi = blue * STRETCH_LUT_STEP;
     ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
     gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
     bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-    out[outIdx] = lut[ri];
-    out[outIdx + 1] = lut[gi];
-    out[outIdx + 2] = lut[bi];
-    if (showFlagsOverlay && flags) tintFlagPixel(out, outIdx, flags[i]);
-    out[outIdx + 3] = 255;
+    if (out32) {
+      out32[i] = 0xff000000 | (lut[bi] << 16) | (lut[gi] << 8) | lut[ri];
+    } else {
+      const outIdx = i * 4;
+      out[outIdx] = lut[ri];
+      out[outIdx + 1] = lut[gi];
+      out[outIdx + 2] = lut[bi];
+      out[outIdx + 3] = 255;
+    }
   }
+  if (showFlagsOverlay) applyFlagsOverlay(out, flags);
   return out;
 }
 
@@ -367,9 +407,9 @@ function renderSubtractFrame(
       out[outIdx + 1] = baseG;
       out[outIdx + 2] = baseB;
     }
-    if (showFlagsOverlay && flags) tintFlagPixel(out, outIdx, flags[i]);
     out[outIdx + 3] = 255;
   }
+  if (showFlagsOverlay) applyFlagsOverlay(out, flags);
   return out;
 }
 
