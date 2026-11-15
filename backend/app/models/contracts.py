@@ -874,15 +874,23 @@ def validate_spectrum_payload(payload: dict[str, Any]) -> SpectrumPayload:
     """Validate a SpectrumPayload dictionary and check monotonic wavelength ordering."""
     spectrum = SpectrumPayload.model_validate(payload)
     wavelengths = [ch.wavelength_um for ch in spectrum.channels]
+    if len(wavelengths) != 102:
+        raise ValueError(f"Spectrum must contain exactly 102 channels, got {len(wavelengths)}")
     for i in range(1, len(wavelengths)):
-        if wavelengths[i] < wavelengths[i - 1]:
+        if wavelengths[i] <= wavelengths[i - 1]:
             raise ValueError(
-                f"Spectrum channels are not monotonically increasing at index {i}: "
+                f"Spectrum channels must be strictly increasing at index {i}: "
                 f"{wavelengths[i - 1]} -> {wavelengths[i]}"
             )
+    if not math.isclose(wavelengths[0], 0.75, abs_tol=0.01):
+        raise ValueError("Spectrum must start at approximately 0.75 um")
+    if not math.isclose(wavelengths[-1], 5.00, abs_tol=0.01):
+        raise ValueError("Spectrum must end at approximately 5.00 um")
     for ch in spectrum.channels:
         if not (math.isfinite(ch.flux) and math.isfinite(ch.variance)):
             raise ValueError(f"Non-finite flux/variance at band_index={ch.band_index}")
+        if ch.variance < 0.0:
+            raise ValueError(f"Negative variance at band_index={ch.band_index}")
     return spectrum
 
 

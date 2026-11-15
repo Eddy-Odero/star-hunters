@@ -26,6 +26,7 @@ from .models.contracts import (
     validate_spectrum_payload,
 )
 from .services.spatial_cache import SpatialSqliteCache, compute_grid_key
+from .services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Query, Response
@@ -842,6 +843,47 @@ class StarHuntersBackendService:
         }
         return body, headers
 
+    def get_forced_spectrum(
+        self,
+        ra: float,
+        dec: float,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Ingest SPHEREx cutouts and measure the selected sky position.
+
+        Wavelength-resolved planes are used directly when supplied. Otherwise the
+        six detector-band cutouts are measured with aperture photometry and
+        interpolated onto the 102-channel contract grid. The ISS-04 synthetic
+        fixture fallback keeps this endpoint available when IRSA is offline.
+        """
+        spectrum_key = f"spec_forced_ra{round(ra, 4):.4f}_dec{round(dec, 4):.4f}"
+        cached_spec = self.cache.get_spectrum(spectrum_key)
+        if cached_spec is not None:
+            validate_spectrum_payload(cached_spec)
+            return cached_spec
+
+        try:
+            from .services.spherex_ingest import ingest_spherex_cutouts
+
+            cutouts = ingest_spherex_cutouts(
+                ra=ra,
+                dec=dec,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=True,
+            )
+        except ImportError as exc:
+            raise SpectrumExtractionError(
+                "SPHEREx ingestion dependencies are unavailable; install backend/requirements.txt."
+            ) from exc
+        payload = extract_forced_spectrum(
+            ra=ra,
+            dec=dec,
+            cutouts=cutouts,
+            source_label=label or "Selected sky position",
+        )
+        self.cache.put_spectrum(spectrum_key=spectrum_key, ra=ra, dec=dec, payload=payload)
+        return payload
+
     def get_spectrum(
         self,
         ra: float,
@@ -955,7 +997,14 @@ if HAS_FASTAPI:
         dec: float = Query(..., ge=-90.0, le=90.0),
     ) -> dict[str, Any]:
         response.headers["Cache-Control"] = "public, max-age=3600"
-        return backend_service.get_spectrum(ra=ra, dec=dec)
+        try:
+            return backend_service.get_forced_spectrum(ra=ra, dec=dec)
+        except SpectrumExtractionError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"SPHEREx spectrum unavailable: {exc}"
+            ) from exc
 
     @app.post("/api/v1/admin/clear-cache")
     async def clear_cache(
