@@ -661,6 +661,105 @@ select:focus-visible {
   display: inline-block;
 }
 
+/* Browser surface & accessibility polish */
+::selection {
+  background: rgba(56, 189, 248, 0.28);
+  color: #e0f2fe;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090d16;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+.sky-viewport-stage:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+/* Interactive 256x256 Sky Patch Viewport */
+.sky-viewport-stage {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid #334155;
+  background: #050811;
+  cursor: crosshair;
+  margin-bottom: 0.85rem;
+  touch-action: none;
+  user-select: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.sky-viewport-stage.is-dragging {
+  cursor: grabbing;
+}
+
+.sky-viewport-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+}
+
+.sky-viewport-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.viewport-hud-top,
+.viewport-hud-bottom {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  pointer-events: none;
+}
+
+.viewport-hud-top {
+  top: 0.5rem;
+  justify-content: flex-end;
+}
+
+.viewport-hud-bottom {
+  bottom: 0.5rem;
+}
+
+.hud-pill {
+  background: rgba(9, 13, 22, 0.82);
+  border: 1px solid rgba(51, 65, 85, 0.85);
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  padding: 0.18rem 0.5rem;
+  border-radius: 9999px;
+}
+
 @media (max-width: 900px) {
   .workspace-grid {
     grid-template-columns: 1fr;
@@ -668,5 +767,11 @@ select:focus-visible {
 
   .wam-manual-form {
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 0.75rem;
   }
 }
