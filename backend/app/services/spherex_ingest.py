@@ -1282,7 +1282,8 @@ async def ingest_spherex_cutouts_async(
             raise SpherexIngestError(
                 "IRSA access disabled by environment."
             )
-        observations = query_observations(
+        observations = await asyncio.to_thread(
+            query_observations,
             ra=ra,
             dec=dec,
             fov_arcmin=fov_arcmin,

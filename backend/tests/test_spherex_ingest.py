@@ -431,6 +431,25 @@ class TestDownloadsAndFallback(unittest.TestCase):
                     allow_synthetic_fallback=False,
                 )
 
+    def test_ingest_async_falls_back_to_synthetic_when_irsa_unreachable(self) -> None:
+        with mock.patch.object(
+            ingest,
+            "query_observations",
+            side_effect=ingest.SpherexIngestError("offline"),
+        ):
+            cutouts = asyncio.run(
+                ingest.ingest_spherex_cutouts_async(
+                    ra=10.0,
+                    dec=20.0,
+                    fov_arcmin=5.0,
+                    bandpasses=("SPHEREx-D1", "SPHEREx-D2"),
+                )
+            )
+
+        self.assertEqual(len(cutouts), 2)
+        self.assertEqual([c.bandpass for c in cutouts], ["SPHEREx-D1", "SPHEREx-D2"])
+        self.assertTrue(all(c.source == "synthetic" for c in cutouts))
+
 
 if __name__ == "__main__":
     unittest.main()
