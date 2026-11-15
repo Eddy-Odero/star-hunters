@@ -395,7 +395,7 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             self.assertAlmostEqual(
                 unseeded_fb["zenith_icrs"]["dec"],
                 unseeded_fb["earth"]["lat"],
-                places=4,
+                delta=1.0,
             )
             expected_zenith = compute_zenith_icrs(
                 lat=unseeded_fb["earth"]["lat"],
@@ -407,15 +407,52 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
                 expected_zenith["zenith_icrs"]["ra"],
                 places=4,
             )
+            self.assertAlmostEqual(
+                unseeded_fb["zenith_icrs"]["dec"],
+                expected_zenith["zenith_icrs"]["dec"],
+                places=4,
+            )
             self.assertEqual(
                 unseeded_fb["zenith_icrs"]["constellation"],
                 expected_zenith["zenith_icrs"]["constellation"],
             )
 
+        # Verify GMST/LST sidereal fallback agrees within ~0.5 deg of astropy ICRS
+        gmst_fb = compute_zenith_icrs(
+            lat=-0.0917, lon=34.7680, iso_time="2026-11-14T16:21:00Z", use_astropy=False
+        )
+        validate_earth_to_sky_response(gmst_fb)
+        self.assertLess(abs(gmst_fb["zenith_icrs"]["dec"] - res1["zenith_icrs"]["dec"]), 0.5)
+
         with self.assertRaises(ValueError):
             compute_zenith_icrs(lat=95.0, lon=0.0)
         with self.assertRaises(ValueError):
             compute_zenith_icrs(lat=0.0, lon=195.0)
+
+        # HTTP endpoint validation: out-of-range lat/lon returns 400 Bad Request
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:  # pragma: no cover
+            return
+        import app.main as main_module
+
+        with patch.object(main_module, "backend_service", self.service):
+            client = TestClient(main_module.app)
+            self.assertEqual(
+                client.get("/api/v1/earth-to-sky", params={"lat": 95.0, "lon": 0.0}).status_code,
+                400,
+            )
+            self.assertEqual(
+                client.get("/api/v1/earth-to-sky", params={"lat": 0.0, "lon": -185.0}).status_code,
+                400,
+            )
+            ok_resp = client.get("/api/v1/earth-to-sky")
+            self.assertEqual(ok_resp.status_code, 200)
+            ok_payload = ok_resp.json()
+            validate_earth_to_sky_response(ok_payload)
+            self.assertTrue(ok_payload["earth"]["is_fallback_capital"])
+            self.assertTrue(ok_payload["earth"]["city_name"])
+            self.assertTrue(ok_payload["earth"]["country"])
 
     def test_highlighter_palette_fuzzy_search_and_pinned_cache(self) -> None:
         # At least 16 distinct highlighter colors
