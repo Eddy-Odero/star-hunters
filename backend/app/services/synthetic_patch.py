@@ -6,6 +6,8 @@ import copy
 import json
 import math
 import random
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +36,34 @@ def _load_celestial_catalog_data() -> dict[str, dict[str, Any]]:
 
 
 CELESTIAL_CATALOG_DATA: dict[str, dict[str, Any]] = _load_celestial_catalog_data()
+_MAX_CACHED_FRAME_SETS = 2
 _PREWARMED_MANIFESTS: dict[tuple[str, bool], dict[str, Any]] = {}
-_PREWARMED_FRAMES: dict[str, dict[str, bytes]] = {}
+_FRAME_LRU_CACHE: OrderedDict[tuple[str, tuple[Any, ...]], dict[str, bytes]] = OrderedDict()
+_FRAME_CACHE_LOCK = threading.Lock()
 _PREWARMED_SPECTRA: dict[str, dict[str, Any]] = {}
+
+
+def _frame_cache_signature(known_objects: list[dict[str, Any]]) -> tuple[Any, ...]:
+    """Compute a deterministic hashable key of objects affecting synthetic PSF synthesis.
+
+    Args:
+        known_objects: List of ``KnownCelestialObject`` dictionaries in the patch.
+
+    Returns:
+        Immutable tuple uniquely identifying the PSF-relevant object attributes.
+    """
+    return tuple(
+        (
+            str(obj.get("catalog", "gaia_dr3")),
+            float(obj.get("magnitude") or 15.5),
+            tuple(
+                (float(ep["x"]), float(ep["y"]))
+                for ep in (obj.get("epoch_positions") or [])
+                if "x" in ep and "y" in ep
+            ),
+        )
+        for obj in known_objects
+    )
 
 
 def _format_wise_designation(ra: float, dec: float) -> str:
@@ -508,9 +535,6 @@ def generate_synthetic_epoch_frames(
         Mapping of frame filenames (``pass_1.bin``, ``pass_2.bin``,
         ``pass_1_flags.bin``, ``pass_2_flags.bin``) to raw little-endian bytes.
     """
-    if manifest is None and slug in _PREWARMED_FRAMES:
-        return _PREWARMED_FRAMES[slug]
-
     if manifest is None:
         meta = SHOWCASE_TARGETS.get(slug, SHOWCASE_TARGETS["wise_0855"])
         manifest = build_sky_patch_manifest_payload(
@@ -522,6 +546,12 @@ def generate_synthetic_epoch_frames(
 
     resolved_slug = manifest.get("target_metadata", {}).get("slug", slug)
     known_objects = manifest.get("catalog_overlays", {}).get("known_objects", [])
+    cache_key = (str(resolved_slug), _frame_cache_signature(known_objects))
+    with _FRAME_CACHE_LOCK:
+        cached_frames = _FRAME_LRU_CACHE.get(cache_key)
+        if cached_frames is not None:
+            _FRAME_LRU_CACHE.move_to_end(cache_key)
+            return dict(cached_frames)
     cold_only_primary = resolved_slug in ("wise_0855", "epsilon_indi_b", "luhman_16")
     variable_primary = resolved_slug in ("rw_aurigae", "r_draconis", "cw_leonis", "t_tauri")
     det_indices = np.arange(NUM_DETECTORS, dtype=np.float32)
@@ -591,9 +621,12 @@ def generate_synthetic_epoch_frames(
         "pass_1_flags.bin": flags_bytes,
         "pass_2_flags.bin": flags_bytes,
     }
-    if resolved_slug in SHOWCASE_TARGETS:
-        _PREWARMED_FRAMES[resolved_slug] = result
-    return result
+    with _FRAME_CACHE_LOCK:
+        _FRAME_LRU_CACHE[cache_key] = result
+        _FRAME_LRU_CACHE.move_to_end(cache_key)
+        while len(_FRAME_LRU_CACHE) > _MAX_CACHED_FRAME_SETS:
+            _FRAME_LRU_CACHE.popitem(last=False)
+    return dict(result)
 
 
 def build_sky_patch_manifest_payload(

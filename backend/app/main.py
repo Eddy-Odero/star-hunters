@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -14,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.services.backend_service import StarHuntersBackendService
 from app.services.spectrum_extractor import SpectrumExtractionError
+
+_HTTP_CLIENT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_HTTP_CLIENT_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
 
 
 def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
@@ -32,11 +36,25 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Manage SQLite connection pool cleanup on ASGI shutdown."""
+        """Manage pooled HTTP client and SQLite connection pool across ASGI lifespan."""
+        managed_http_client: httpx.AsyncClient | None = None
+        if active_service.catalog_pipeline.http_client is None:
+            managed_http_client = httpx.AsyncClient(
+                timeout=_HTTP_CLIENT_TIMEOUT,
+                limits=_HTTP_CLIENT_LIMITS,
+                follow_redirects=True,
+            )
+            active_service.catalog_pipeline.http_client = managed_http_client
         try:
             yield
         finally:
-            active_service.cache.close()
+            try:
+                if managed_http_client is not None:
+                    if active_service.catalog_pipeline.http_client is managed_http_client:
+                        active_service.catalog_pipeline.http_client = None
+                    await managed_http_client.aclose()
+            finally:
+                active_service.cache.close()
 
     fastapi_app = FastAPI(
         title="Star Hunters API (Planet X & SPHEREx Blinker)",
