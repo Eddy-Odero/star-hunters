@@ -701,7 +701,7 @@ export function detectAndTrackBodiesAtClick(params: {
     manifest,
     wavelengthRangeUm,
     localRadiusPx = 6,
-    crossEpochSearchRadiusPx = 14,
+    crossEpochSearchRadiusPx = 18,
     minSnrThreshold = 3.0,
     colorIndexOffset = 0,
   } = params;
@@ -1082,6 +1082,7 @@ export function detectAndTrackBodiesAtClick(params: {
     ): boolean => {
       const mjdTarget = manifest.epochs[epIdx].mjd;
       const mjdOrigin = manifest.epochs[clampedOrigin].mjd;
+      const predictions: Array<{ x: number; y: number }> = [];
       for (const existing of branchSeeds) {
         if (existing.kind !== 'moving') continue;
         if (existing.seedEpochIdx === epIdx) {
@@ -1105,6 +1106,31 @@ export function detectAndTrackBodiesAtClick(params: {
             existing.originPeak.y +
             ((existing.seedDetection.y - existing.originPeak.y) / dtSeed) * dtTarget;
           if (Math.hypot(predX - candPeak.x, predY - candPeak.y) < 4.5) {
+            return true;
+          }
+          predictions.push({ x: predX, y: predY });
+        }
+      }
+
+      // A single widened detection can be the blended centroid of two already-known
+      // branches (e.g. two overlapping movers that separate in the clicked epoch but
+      // merge again in this one). If the candidate sits on the segment between two
+      // predicted branch positions, treat it as the same bodies rather than a new one.
+      for (let i = 0; i < predictions.length; i += 1) {
+        for (let j = i + 1; j < predictions.length; j += 1) {
+          const a = predictions[i];
+          const b = predictions[j];
+          const segX = b.x - a.x;
+          const segY = b.y - a.y;
+          const segLenSq = segX * segX + segY * segY;
+          if (segLenSq < 20.0) continue;
+          const t = Math.max(
+            0,
+            Math.min(1, ((candPeak.x - a.x) * segX + (candPeak.y - a.y) * segY) / segLenSq),
+          );
+          const closestX = a.x + t * segX;
+          const closestY = a.y + t * segY;
+          if (Math.hypot(candPeak.x - closestX, candPeak.y - closestY) <= 2.2) {
             return true;
           }
         }
