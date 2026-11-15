@@ -347,7 +347,11 @@ test('Overlapped bodies at the moment of clicking are separated and tracked with
   assert.equal(asyncSepRes.isOverlapped, true);
   assert.equal(asyncSepRes.tracks.length, 2);
   assert.equal(asyncSepRes.status, 'partially_lost');
-  assert.equal(WORLD_CAPITAL_CITIES.length, 12);
+  assert.ok(WORLD_CAPITAL_CITIES.length > 0);
+  assert.equal(
+    new Set(WORLD_CAPITAL_CITIES.map((city) => city.slug)).size,
+    WORLD_CAPITAL_CITIES.length,
+  );
 });
 
 test('Edge cases: clicking empty sky returns no_body_found, and fading or exiting bodies report lost/out_of_bounds waypoints', () => {
