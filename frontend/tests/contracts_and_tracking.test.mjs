@@ -21,6 +21,16 @@ import {
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
 import { ClientPatchCache } from '../src/services/clientPatchCache.ts';
+import {
+  WAVELENGTH_PRESETS,
+  catalogBadgeLabel,
+  clearCheckedObjectIds,
+  formatMagnitude,
+  formatProperMotion,
+  isWavelengthPresetActive,
+  selectAllObjectIds,
+  toggleObjectId,
+} from '../src/utils/knownObjectSelection.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
@@ -540,6 +550,123 @@ test('Click-to-Track accurately tracks both stationary field stars and moving ta
           );
         }
       }
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ISS-16: Viewport Controls Bar & Known Celestial Objects Checkbox UI
+// ---------------------------------------------------------------------------
+
+function loadPresetKnownObjects(slug) {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, slug, 'manifest.json'), 'utf-8'),
+  );
+  return manifest.catalog_overlays.known_objects;
+}
+
+const PRESET_SLUGS = fs
+  .readdirSync(PRESETS_DIR, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name);
+
+test('ISS-16: default selection checks notable movers and leaves stationary field stars unchecked', () => {
+  assert.equal(PRESET_SLUGS.length, 6);
+  for (const slug of PRESET_SLUGS) {
+    const known = loadPresetKnownObjects(slug);
+    const defaults = getDefaultCheckedObjectIds(known);
+    assert.ok(defaults.length >= 1, `${slug}: expected at least one notable object checked`);
+    for (const obj of known) {
+      assert.equal(
+        defaults.includes(obj.object_id),
+        obj.default_checked,
+        `${slug}: ${obj.object_id} default selection must follow default_checked`,
+      );
+    }
+    assert.ok(
+      known.some((obj) => !obj.default_checked),
+      `${slug}: expected stationary background stars to start unchecked`,
+    );
+  }
+});
+
+test('ISS-16: Check All selects every object, Uncheck All clears to [], Notable Only restores defaults', () => {
+  for (const slug of PRESET_SLUGS) {
+    const known = loadPresetKnownObjects(slug);
+
+    const all = selectAllObjectIds(known);
+    assert.deepEqual(
+      all,
+      known.map((obj) => obj.object_id),
+      `${slug}: Check All must include every known object`,
+    );
+
+    assert.deepEqual(clearCheckedObjectIds(), [], `${slug}: Uncheck All must yield []`);
+
+    const restored = getDefaultCheckedObjectIds(known);
+    assert.notDeepEqual(all, restored, `${slug}: Notable Only must differ from Check All`);
+    assert.deepEqual(
+      restored,
+      known.filter((obj) => obj.default_checked).map((obj) => obj.object_id),
+    );
+  }
+});
+
+test('ISS-16: toggling an object id adds or removes only that id without mutating the input', () => {
+  const start = ['a', 'b'];
+  const added = toggleObjectId(start, 'c');
+  assert.deepEqual(added, ['a', 'b', 'c']);
+  assert.deepEqual(start, ['a', 'b'], 'input array must not be mutated');
+
+  const removed = toggleObjectId(added, 'a');
+  assert.deepEqual(removed, ['b', 'c']);
+
+  assert.deepEqual(toggleObjectId(toggleObjectId([], 'x'), 'x'), []);
+});
+
+test('ISS-16: wavelength quick-filter pills cover the four required ranges and highlight exclusively', () => {
+  assert.deepEqual(
+    WAVELENGTH_PRESETS.map((p) => p.range),
+    [
+      [0.75, 5.0],
+      [3.8, 5.0],
+      [2.4, 3.8],
+      [0.75, 2.4],
+    ],
+  );
+  for (const preset of WAVELENGTH_PRESETS) {
+    const active = WAVELENGTH_PRESETS.filter((p) =>
+      isWavelengthPresetActive(preset.range, p.range),
+    );
+    assert.deepEqual(
+      active.map((p) => p.id),
+      [preset.id],
+      `only the ${preset.id} pill should be active for its own range`,
+    );
+    assert.ok(preset.range[0] >= 0.75 && preset.range[1] <= 5.0);
+  }
+  assert.equal(isWavelengthPresetActive([1.0, 4.0], [0.75, 5.0]), false);
+});
+
+test('ISS-16: known-object rows show a catalog badge, magnitude and proper motion for every preset object', () => {
+  assert.equal(catalogBadgeLabel('gaia_dr3'), 'Gaia DR3');
+  assert.equal(catalogBadgeLabel('wise'), 'WISE');
+  assert.equal(catalogBadgeLabel('most'), 'MOST');
+
+  assert.equal(formatMagnitude(16.44), 'mag 16.4');
+  assert.equal(formatMagnitude(null), 'mag —');
+  assert.equal(formatProperMotion(0.013), 'μ 0.013″/yr');
+  assert.equal(formatProperMotion(8.12), 'μ 8.12″/yr');
+  assert.equal(formatProperMotion(null), 'μ —');
+
+  for (const slug of PRESET_SLUGS) {
+    for (const obj of loadPresetKnownObjects(slug)) {
+      const row = [
+        catalogBadgeLabel(obj.catalog),
+        formatMagnitude(obj.magnitude),
+        formatProperMotion(obj.proper_motion_arcsec_yr),
+      ].join(' ');
+      assert.ok(!/NaN|undefined|null/.test(row), `${slug}/${obj.object_id}: bad row "${row}"`);
     }
   }
 });

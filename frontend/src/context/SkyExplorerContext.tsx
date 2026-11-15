@@ -25,6 +25,11 @@ import {
   type ViewportRenderSettings,
 } from '../types/contracts';
 import { defaultClientPatchCache } from '../services/clientPatchCache';
+import {
+  clearCheckedObjectIds,
+  selectAllObjectIds,
+  toggleObjectId,
+} from '../utils/knownObjectSelection';
 
 const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
   mode: 'blink',
@@ -110,26 +115,23 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, []);
 
   const toggleKnownObject = useCallback((objectId: string) => {
-    setRenderSettings((prev) => {
-      const exists = prev.checkedObjectIds.includes(objectId);
-      const nextIds = exists
-        ? prev.checkedObjectIds.filter((id) => id !== objectId)
-        : [...prev.checkedObjectIds, objectId];
-      return { ...prev, checkedObjectIds: nextIds };
-    });
+    setRenderSettings((prev) => ({
+      ...prev,
+      checkedObjectIds: toggleObjectId(prev.checkedObjectIds, objectId),
+    }));
   }, []);
 
   const checkAllKnownObjects = useCallback(() => {
     setRenderSettings((prev) => ({
       ...prev,
-      checkedObjectIds: knownObjects.map((obj) => obj.object_id),
+      checkedObjectIds: selectAllObjectIds(knownObjects),
     }));
   }, [knownObjects]);
 
   const uncheckAllKnownObjects = useCallback(() => {
     setRenderSettings((prev) => ({
       ...prev,
-      checkedObjectIds: [],
+      checkedObjectIds: clearCheckedObjectIds(),
     }));
   }, []);
 
