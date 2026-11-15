@@ -8,10 +8,10 @@ import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 import { SourceInspectorCard } from './components/SourceInspectorCard';
 import { SpectrumDrawer } from './components/SpectrumDrawer';
 import {
-  catalogBadgeLabel,
+ 
   inferObjectClass,
   isMovingSolarSystemObject,
-  objectClassBadgeLabel,
+  
   renderEpochBuffersToRgba,
 } from './utils/knownObjectSelection';
 
@@ -25,7 +25,6 @@ const StarHuntersWorkspace: React.FC = () => {
     renderSettings,
     knownObjects,
     objectHighlighterColors,
-    selectedObject,
     trackedTargets,
     lastClickDiagnostic,
     clearTrackedTargets,
