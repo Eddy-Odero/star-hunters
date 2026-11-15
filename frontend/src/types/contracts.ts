@@ -5,6 +5,8 @@
  * and Backend (14Emanuel, paowuor).
  */
 
+import worldCapitalCities from './world_capital_cities.json' with { type: 'json' };
+
 export type MissionName = 'SPHEREx' | 'WISE';
 export type BinaryDtype = 'float32' | 'float16';
 export type ComparisonMode = 'blink' | 'subtract' | 'coadd';
@@ -55,26 +57,7 @@ export interface WorldCapitalCity {
   lon: number;
 }
 
-export const WORLD_CAPITAL_CITIES: ReadonlyArray<WorldCapitalCity> = [
-  { slug: 'nairobi', city_name: 'Nairobi', country: 'Kenya', lat: -1.2921, lon: 36.8219 },
-  { slug: 'tokyo', city_name: 'Tokyo', country: 'Japan', lat: 35.6762, lon: 139.6503 },
-  { slug: 'london', city_name: 'London', country: 'United Kingdom', lat: 51.5074, lon: -0.1278 },
-  {
-    slug: 'washington_dc',
-    city_name: 'Washington, D.C.',
-    country: 'United States',
-    lat: 38.9072,
-    lon: -77.0369,
-  },
-  { slug: 'cairo', city_name: 'Cairo', country: 'Egypt', lat: 30.0444, lon: 31.2357 },
-  { slug: 'santiago', city_name: 'Santiago', country: 'Chile', lat: -33.4489, lon: -70.6693 },
-  { slug: 'canberra', city_name: 'Canberra', country: 'Australia', lat: -35.2809, lon: 149.13 },
-  { slug: 'reykjavik', city_name: 'Reykjavik', country: 'Iceland', lat: 64.1466, lon: -21.9426 },
-  { slug: 'new_delhi', city_name: 'New Delhi', country: 'India', lat: 28.6139, lon: 77.209 },
-  { slug: 'brasilia', city_name: 'Brasília', country: 'Brazil', lat: -15.7975, lon: -47.8919 },
-  { slug: 'ottawa', city_name: 'Ottawa', country: 'Canada', lat: 45.4215, lon: -75.6972 },
-  { slug: 'accra', city_name: 'Accra', country: 'Ghana', lat: 5.6037, lon: -0.187 },
-] as const;
+export const WORLD_CAPITAL_CITIES: ReadonlyArray<WorldCapitalCity> = worldCapitalCities;
 
 export type WaypointTrackingStatus = 'tracked' | 'lost' | 'out_of_bounds' | 'low_snr';
 export type TrackSummaryStatus = 'tracked' | 'partially_lost' | 'no_body_found';

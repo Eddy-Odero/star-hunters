@@ -6,9 +6,13 @@ validation, unit tests, and preset generators run cleanly in any Python 3.11+ en
 
 from __future__ import annotations
 
+import csv
 import math
+import re
 import struct
+import unicodedata
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 import jsonschema
@@ -63,62 +67,34 @@ DEFAULT_MOLECULAR_FEATURES: list[dict[str, Any]] = [
     {"molecule": "CO", "min_um": 4.55, "max_um": 4.80, "label": "Carbon Monoxide"},
 ]
 
-WORLD_CAPITAL_CITIES: list[dict[str, Any]] = [
-    {"slug": "nairobi", "city_name": "Nairobi", "country": "Kenya", "lat": -1.2921, "lon": 36.8219},
-    {"slug": "tokyo", "city_name": "Tokyo", "country": "Japan", "lat": 35.6762, "lon": 139.6503},
-    {
-        "slug": "london",
-        "city_name": "London",
-        "country": "United Kingdom",
-        "lat": 51.5074,
-        "lon": -0.1278,
-    },
-    {
-        "slug": "washington_dc",
-        "city_name": "Washington, D.C.",
-        "country": "United States",
-        "lat": 38.9072,
-        "lon": -77.0369,
-    },
-    {"slug": "cairo", "city_name": "Cairo", "country": "Egypt", "lat": 30.0444, "lon": 31.2357},
-    {
-        "slug": "santiago",
-        "city_name": "Santiago",
-        "country": "Chile",
-        "lat": -33.4489,
-        "lon": -70.6693,
-    },
-    {
-        "slug": "canberra",
-        "city_name": "Canberra",
-        "country": "Australia",
-        "lat": -35.2809,
-        "lon": 149.1300,
-    },
-    {
-        "slug": "reykjavik",
-        "city_name": "Reykjavik",
-        "country": "Iceland",
-        "lat": 64.1466,
-        "lon": -21.9426,
-    },
-    {
-        "slug": "new_delhi",
-        "city_name": "New Delhi",
-        "country": "India",
-        "lat": 28.6139,
-        "lon": 77.2090,
-    },
-    {
-        "slug": "brasilia",
-        "city_name": "Brasília",
-        "country": "Brazil",
-        "lat": -15.7975,
-        "lon": -47.8919,
-    },
-    {"slug": "ottawa", "city_name": "Ottawa", "country": "Canada", "lat": 45.4215, "lon": -75.6972},
-    {"slug": "accra", "city_name": "Accra", "country": "Ghana", "lat": 5.6037, "lon": -0.1870},
-]
+
+def _slugify_capital(city_name: str) -> str:
+    """Convert a capital city name to an ASCII snake_case slug."""
+    ascii_text = unicodedata.normalize("NFKD", city_name).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
+
+
+def _load_world_capital_cities() -> list[dict[str, Any]]:
+    """Load the full list of world capital cities from world_capital_cities.csv."""
+    csv_path = Path(__file__).with_name("world_capital_cities.csv")
+    cities: list[dict[str, Any]] = []
+    with csv_path.open("r", encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            city_name = row["Capital City"].strip()
+            country = row["Country"].strip()
+            cities.append(
+                {
+                    "slug": _slugify_capital(city_name),
+                    "city_name": city_name,
+                    "country": country,
+                    "lat": float(row["Latitude"]),
+                    "lon": float(row["Longitude"]),
+                }
+            )
+    return cities
+
+
+WORLD_CAPITAL_CITIES: list[dict[str, Any]] = _load_world_capital_cities()
 
 SHOWCASE_TARGETS: dict[str, dict[str, Any]] = {
     "wise_0855": {
