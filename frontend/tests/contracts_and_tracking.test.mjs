@@ -39,6 +39,12 @@ import {
   selectAllObjectIds,
   toggleObjectId,
 } from '../src/utils/knownObjectSelection.ts';
+import {
+  URL_STATE_DEFAULTS,
+  parseUrlState,
+  replaceUrlState,
+  serializeUrlState,
+} from '../src/utils/urlStateSync.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
@@ -803,4 +809,132 @@ test('ISS-17: formatSpectrumCsv produces 103-line CSV with header and 102 spectr
   assert.ok(lines[1].startsWith('0,1,0.7500,'));
   assert.ok(lines[11].endsWith(',true'));
   assert.ok(lines[12].endsWith(',false'));
+});
+
+// ---------------------------------------------------------------------------
+// ISS-14: Aladin Lite v3 Global Sky Map & Shareable URL Query State
+// ---------------------------------------------------------------------------
+
+test('ISS-14: parseUrlState restores exact coordinates, comparison mode, and wavelength filter', () => {
+  const parsed = parseUrlState(
+    '?target=barnards_star&ra=269.4521&dec=4.6934&fov=5&mode=subtract&wlMin=3.8&wlMax=5.0',
+  );
+
+  assert.equal(parsed.target, 'barnards_star');
+  assert.equal(parsed.ra, 269.4521);
+  assert.equal(parsed.dec, 4.6934);
+  assert.equal(parsed.fov, 5);
+  assert.equal(parsed.mode, 'subtract');
+  assert.equal(parsed.wlMin, 3.8);
+  assert.equal(parsed.wlMax, 5.0);
+
+  // Acceptance URL without a preset still resolves the exact sky state.
+  const acceptance = parseUrlState('?ra=269.4521&dec=4.6934&mode=subtract&wlMin=3.8&wlMax=5.0');
+  assert.equal(acceptance.target, null);
+  assert.equal(acceptance.ra, 269.4521);
+  assert.equal(acceptance.dec, 4.6934);
+  assert.equal(acceptance.mode, 'subtract');
+  assert.deepEqual([acceptance.wlMin, acceptance.wlMax], [3.8, 5.0]);
+});
+
+test('ISS-14: parseUrlState applies scientific defaults and ignores invalid ranges', () => {
+  const empty = parseUrlState('');
+  assert.equal(empty.target, null);
+  assert.equal(empty.ra, null);
+  assert.equal(empty.dec, null);
+  assert.equal(empty.fov, URL_STATE_DEFAULTS.fov);
+  assert.equal(empty.mode, URL_STATE_DEFAULTS.mode);
+  assert.equal(empty.wlMin, URL_STATE_DEFAULTS.wlMin);
+  assert.equal(empty.wlMax, URL_STATE_DEFAULTS.wlMax);
+
+  const invalid = parseUrlState(
+    '?ra=999&dec=-120&fov=0&mode=bogus&wlMin=abc&wlMax=9&target=%3Cscript%3E',
+  );
+  assert.equal(invalid.target, null);
+  assert.equal(invalid.ra, null);
+  assert.equal(invalid.dec, null);
+  assert.equal(invalid.fov, URL_STATE_DEFAULTS.fov);
+  assert.equal(invalid.mode, URL_STATE_DEFAULTS.mode);
+  assert.equal(invalid.wlMin, URL_STATE_DEFAULTS.wlMin);
+  assert.equal(invalid.wlMax, URL_STATE_DEFAULTS.wlMax);
+
+  // Reversed wavelength windows are normalized rather than dropped.
+  const reversed = parseUrlState('?wlMin=5&wlMax=3.8');
+  assert.deepEqual([reversed.wlMin, reversed.wlMax], [3.8, 5]);
+
+  // RA 360 is the same as 0h, and full URLs are accepted.
+  const fullUrl = parseUrlState('https://example.test/explore?ra=360&dec=-90&mode=coadd');
+  assert.equal(fullUrl.ra, 0);
+  assert.equal(fullUrl.dec, -90);
+  assert.equal(fullUrl.mode, 'coadd');
+});
+
+test('ISS-14: serializeUrlState round-trips the sky view and preserves unrelated params', () => {
+  const serialized = serializeUrlState({
+    ra: 269.4521,
+    dec: 4.6934,
+    fov: 5,
+    mode: 'subtract',
+    wlMin: 3.8,
+    wlMax: 5.0,
+  });
+
+  assert.equal(serialized, 'ra=269.4521&dec=4.6934&fov=5&mode=subtract&wlMin=3.8&wlMax=5');
+  assert.deepEqual(parseUrlState(`?${serialized}`), {
+    target: null,
+    ra: 269.4521,
+    dec: 4.6934,
+    fov: 5,
+    mode: 'subtract',
+    wlMin: 3.8,
+    wlMax: 5,
+  });
+
+  // Non-sky parameters survive, and `null` explicitly clears a known key.
+  const updated = serializeUrlState(
+    { target: null, mode: 'coadd' },
+    '?target=wise_0855&foo=bar&mode=blink',
+  );
+  assert.equal(updated, 'mode=coadd&foo=bar');
+  assert.equal(parseUrlState(`?${updated}`).target, null);
+});
+
+test('ISS-14: replaceUrlState mirrors the view into history.replaceState without navigation', () => {
+  const calls = [];
+  const history = {
+    state: { from: 'test' },
+    replaceState(data, unused, url) {
+      calls.push({ data, unused, url });
+    },
+    pushState() {
+      throw new Error('ISS-14 must not push a new history entry');
+    },
+  };
+  const location = {
+    pathname: '/explore',
+    search: '?target=wise_0855&utm_source=share',
+    hash: '#sky',
+  };
+
+  const url = replaceUrlState(
+    {
+      target: null,
+      ra: 269.4521,
+      dec: 4.6934,
+      fov: 5,
+      mode: 'subtract',
+      wlMin: 3.8,
+      wlMax: 5.0,
+    },
+    { history, location },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].data, { from: 'test' });
+  assert.equal(calls[0].unused, '');
+  assert.equal(
+    url,
+    '/explore?ra=269.4521&dec=4.6934&fov=5&mode=subtract&wlMin=3.8&wlMax=5&utm_source=share#sky',
+  );
+  assert.equal(calls[0].url, url);
 });

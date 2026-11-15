@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
 import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
@@ -7,27 +7,90 @@ import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 import { SourceInspectorCard } from './components/SourceInspectorCard';
 import { SpectrumDrawer } from './components/SpectrumDrawer';
 import { SkyPatchViewport } from './components/SkyPatchViewport';
+import { AladinSkyMap } from './components/AladinSkyMap';
+import { URL_STATE_DEFAULTS, parseUrlState, replaceUrlState } from './utils/urlStateSync';
 
 const StarHuntersWorkspace: React.FC = () => {
   const {
     activePresetSlug,
+    coordinates,
     manifest,
     loadingState,
     renderSettings,
+    updateRenderSettings,
     trackedTargets,
     lastClickDiagnostic,
     clearTrackedTargets,
     selectPreset,
+    navigateToCoordinates,
     inspectPixelOrCoord,
   } = useSkyExplorer();
 
   const [showLabels, setShowLabels] = useState<boolean>(true);
 
+  // Parse the incoming share URL exactly once before any preset auto-loading.
+  const [initialUrlState] = useState(() =>
+    parseUrlState(typeof window === 'undefined' ? '' : window.location.search),
+  );
+  const urlInitializedRef = useRef(false);
+  const skipFirstUrlWriteRef = useRef(true);
+
   useEffect(() => {
+    if (urlInitializedRef.current) return;
+    urlInitializedRef.current = true;
+
+    // A shared link restores the preset and/or exact coordinates, comparison
+    // mode, and wavelength filter before the default tour target loads.
+    if (initialUrlState.target) {
+      selectPreset(initialUrlState.target);
+    }
+    if (initialUrlState.ra !== null && initialUrlState.dec !== null) {
+      navigateToCoordinates(initialUrlState.ra, initialUrlState.dec, initialUrlState.fov);
+    }
+    if (
+      initialUrlState.mode !== URL_STATE_DEFAULTS.mode ||
+      initialUrlState.wlMin !== URL_STATE_DEFAULTS.wlMin ||
+      initialUrlState.wlMax !== URL_STATE_DEFAULTS.wlMax
+    ) {
+      updateRenderSettings({
+        mode: initialUrlState.mode,
+        wavelengthRangeUm: [initialUrlState.wlMin, initialUrlState.wlMax],
+      });
+    }
+  }, [initialUrlState, navigateToCoordinates, selectPreset, updateRenderSettings]);
+
+  useEffect(() => {
+    // Skip the very first render so an incoming share URL is never clobbered
+    // before the initializer above applies it.
+    if (skipFirstUrlWriteRef.current) {
+      skipFirstUrlWriteRef.current = false;
+      return;
+    }
+    if (typeof window === 'undefined') return;
+
+    replaceUrlState(
+      {
+        target: activePresetSlug,
+        ra: coordinates.ra,
+        dec: coordinates.dec,
+        fov: coordinates.fovArcmin,
+        mode: renderSettings.mode,
+        wlMin: renderSettings.wavelengthRangeUm[0],
+        wlMax: renderSettings.wavelengthRangeUm[1],
+      },
+      { baseSearch: window.location.search },
+    );
+  }, [activePresetSlug, coordinates, renderSettings.mode, renderSettings.wavelengthRangeUm]);
+
+  useEffect(() => {
+    // When an explicit target/coordinate is present in the URL, the initializer
+    // owns the first load; otherwise keep the default showcase target.
+    if (initialUrlState.target) return;
+    if (initialUrlState.ra !== null && initialUrlState.dec !== null) return;
     if (activePresetSlug && !manifest && loadingState.stage === 'idle') {
       selectPreset(activePresetSlug);
     }
-  }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
+  }, [initialUrlState, activePresetSlug, manifest, loadingState.stage, selectPreset]);
 
   return (
     <div className="app-shell">
@@ -62,6 +125,9 @@ const StarHuntersWorkspace: React.FC = () => {
 
       {/* What's Above Me Zenith Discovery Flow */}
       <WhatsAboveMeBar />
+
+      {/* Wide-field Aladin Lite v3 context synchronized with the patch viewport */}
+      <AladinSkyMap />
 
       <main className="workspace-grid">
         <section className="viewport-panel">
