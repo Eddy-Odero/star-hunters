@@ -1,16 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { NotificationProvider } from './context/NotificationContext';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
-import { TargetTourBar } from './components/TargetTourBar';
-import { ViewportControlsBar } from './components/ViewportControlsBar';
-import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
-import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
-import { SourceInspectorCard } from './components/SourceInspectorCard';
-import { SpectrumDrawer } from './components/SpectrumDrawer';
-import { SkyPatchViewport } from './components/SkyPatchViewport';
-import { AladinSkyMap } from './components/AladinSkyMap';
+import { BlinkerModal } from './components/BlinkerModal';
+import { FloatingSearchZenithMenu } from './components/FloatingSearchZenithMenu';
+import { KnownObjectsPanel } from './components/KnownObjectsPanel';
+import { LandingCurtainOverlay } from './components/LandingCurtainOverlay';
+import { NightSkyGlobe } from './components/NightSkyGlobe';
+import { NotificationOverlay } from './components/NotificationOverlay';
+import { SpotlightTourOverlay } from './components/SpotlightTourOverlay';
 import { URL_STATE_DEFAULTS, parseUrlState, replaceUrlState } from './utils/urlStateSync';
 
-const StarHuntersWorkspace: React.FC = () => {
+const ObservatoryWorkspace: React.FC = () => {
   const {
     activePresetSlug,
     coordinates,
@@ -18,17 +18,12 @@ const StarHuntersWorkspace: React.FC = () => {
     loadingState,
     renderSettings,
     updateRenderSettings,
-    trackedTargets,
-    lastClickDiagnostic,
-    clearTrackedTargets,
     selectPreset,
     navigateToCoordinates,
-    inspectPixelOrCoord,
+    requestGlobeFocus,
   } = useSkyExplorer();
 
-  const [showLabels, setShowLabels] = useState<boolean>(true);
-
-  // Parse the incoming share URL exactly once before any preset auto-loading.
+  // Parse incoming URL query parameters once on load for silent browser address-bar sharing
   const [initialUrlState] = useState(() =>
     parseUrlState(typeof window === 'undefined' ? '' : window.location.search),
   );
@@ -39,16 +34,13 @@ const StarHuntersWorkspace: React.FC = () => {
     if (urlInitializedRef.current) return;
     urlInitializedRef.current = true;
 
-    // A shared link restores the preset and/or exact coordinates, comparison
-    // mode, and wavelength filter before the default tour target loads.
-    // Preset links carry both ?target and ?ra/dec (written by the sync effect),
-    // so the preset owns the load; explicit coordinates are the fallback for
-    // live sky views that have no preset.
     if (initialUrlState.target) {
       selectPreset(initialUrlState.target);
     } else if (initialUrlState.ra !== null && initialUrlState.dec !== null) {
       navigateToCoordinates(initialUrlState.ra, initialUrlState.dec, initialUrlState.fov);
+      requestGlobeFocus?.(initialUrlState.ra, initialUrlState.dec, 2.2);
     }
+
     if (
       initialUrlState.mode !== URL_STATE_DEFAULTS.mode ||
       initialUrlState.wlMin !== URL_STATE_DEFAULTS.wlMin ||
@@ -59,11 +51,15 @@ const StarHuntersWorkspace: React.FC = () => {
         wavelengthRangeUm: [initialUrlState.wlMin, initialUrlState.wlMax],
       });
     }
-  }, [initialUrlState, navigateToCoordinates, selectPreset, updateRenderSettings]);
+  }, [
+    initialUrlState,
+    navigateToCoordinates,
+    requestGlobeFocus,
+    selectPreset,
+    updateRenderSettings,
+  ]);
 
   useEffect(() => {
-    // Skip the very first render so an incoming share URL is never clobbered
-    // before the initializer above applies it.
     if (skipFirstUrlWriteRef.current) {
       skipFirstUrlWriteRef.current = false;
       return;
@@ -84,9 +80,8 @@ const StarHuntersWorkspace: React.FC = () => {
     );
   }, [activePresetSlug, coordinates, renderSettings.mode, renderSettings.wavelengthRangeUm]);
 
+  // Pre-hydrate default showcase target immediately behind the Landing Curtain
   useEffect(() => {
-    // When an explicit target/coordinate is present in the URL, the initializer
-    // owns the first load; otherwise keep the default showcase target.
     if (initialUrlState.target) return;
     if (initialUrlState.ra !== null && initialUrlState.dec !== null) return;
     if (activePresetSlug && !manifest && loadingState.stage === 'idle') {
@@ -95,104 +90,39 @@ const StarHuntersWorkspace: React.FC = () => {
   }, [initialUrlState, activePresetSlug, manifest, loadingState.stage, selectPreset]);
 
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div>
-          <h1>Star Hunters — Planet X &amp; SPHEREx Blinker</h1>
-          <p className="subtitle">
-            Multi-Epoch Near-Infrared Blinker (0.75–5.0 &mu;m) &bull; SPHEREx + WISE/NEOWISE + Gaia
-            DR3 + MOST
-          </p>
-        </div>
+    <main className="observatory-shell" aria-label="Star Hunters Infrared Observatory">
+      {/* Full-bleed 3D Night-Sky Globe mounted immediately behind curtain */}
+      <NightSkyGlobe />
 
-        {/* Telemetry Header Banner */}
-        <div className="header-telemetry">
-          {manifest?.data_source_summary && (
-            <span className="telemetry-badge" title={manifest.data_source_summary.status_note}>
-              🛰️ Baseline: {manifest.data_source_summary.baseline_days} days |{' '}
-              {manifest.data_source_summary.uses_wise_fallback
-                ? 'WISE Fallback'
-                : 'Primary SPHEREx'}
-            </span>
-          )}
-          <span className="telemetry-badge">
-            ⚡ Stage: {loadingState.stage}
-            {loadingState.fromClientCache ? ' (3G Browser Cache Hit)' : ' (Live Stream)'}
-          </span>
-        </div>
-      </header>
+      {/* Top-Left Search & Zenith Foldable Draggable HUD */}
+      <FloatingSearchZenithMenu />
 
-      {/* Target Tour Carousel Component */}
-      <TargetTourBar />
+      {/* Top-Right Viewport-Filtered Known Objects Panel (291px) */}
+      <KnownObjectsPanel />
 
-      {/* What's Above Me Zenith Discovery Flow */}
-      <WhatsAboveMeBar />
+      {/* Centered Patch Inspector / Blinker Modal + Collapsible 102-Band Spectra Modal */}
+      <BlinkerModal />
 
-      {/* Wide-field Aladin Lite v3 context synchronized with the patch viewport */}
-      <AladinSkyMap />
+      {/* Top-Center Warning Banner + Bottom-Right Async Toast + Persistent 40x40 Help Icon */}
+      <NotificationOverlay />
 
-      <main className="workspace-grid">
-        <section className="viewport-panel">
-          <div className="panel-header">
-            <h2>
-              256&times;256 Sky Patch Viewport{' '}
-              {manifest ? `— ${manifest.target_metadata.name}` : ''}
-            </h2>
-            <span className="status-badge">
-              Zoom: {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: (
-              {renderSettings.panX.toFixed(0)}, {renderSettings.panY.toFixed(0)})
-            </span>
-          </div>
+      {/* 5-Step Spotlight Guided Tour */}
+      <SpotlightTourOverlay />
 
-          <ViewportControlsBar />
-
-          <div className="secondary-action-bar">
-            <button
-              type="button"
-              className="mode-btn"
-              onClick={() => inspectPixelOrCoord(124, 126, renderSettings.activeEpochIndex)}
-            >
-              Track Target (124, 126)
-            </button>
-            <button
-              type="button"
-              className={showLabels ? 'mode-btn active' : 'mode-btn'}
-              onClick={() => setShowLabels((prev) => !prev)}
-            >
-              Labels: {showLabels ? 'ON' : 'OFF'}
-            </button>
-            {trackedTargets.length > 0 && (
-              <button type="button" className="mode-btn" onClick={clearTrackedTargets}>
-                Clear Tracks ({trackedTargets.length})
-              </button>
-            )}
-          </div>
-
-          <SkyPatchViewport showLabels={showLabels} />
-
-          {lastClickDiagnostic && lastClickDiagnostic.status === 'no_body_found' && (
-            <div className="diagnostic-banner" role="status">
-              {lastClickDiagnostic.message}
-            </div>
-          )}
-
-          {/* Integrated Source Inspector Card */}
-          <SourceInspectorCard />
-
-          {/* Integrated Scientist Spectrum Drawer */}
-          <SpectrumDrawer />
-        </section>
-
-        <KnownObjectsCheckboxMenu />
-      </main>
-    </div>
+      {/* z-index 50 NASA Photography Landing Curtain (<= 2s warmup lock + 600ms slide-out) */}
+      <LandingCurtainOverlay />
+    </main>
   );
 };
 
-export const App: React.FC = () => (
-  <SkyExplorerProvider>
-    <StarHuntersWorkspace />
-  </SkyExplorerProvider>
-);
+export function App() {
+  return (
+    <NotificationProvider>
+      <SkyExplorerProvider>
+        <ObservatoryWorkspace />
+      </SkyExplorerProvider>
+    </NotificationProvider>
+  );
+}
 
 export default App;
