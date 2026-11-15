@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  BINARY_DETECTOR_FLOAT16_BYTES,
   BINARY_DETECTOR_FLOAT32_BYTES,
   BINARY_FLAGS_UINT8_BYTES,
   TRACKING_SQUARE_COLORS,
@@ -15,13 +16,18 @@ import {
   computeViewportViewBox,
   decodeDetectorBinaryBuffer,
   decodeFlagsBinaryBuffer,
+  decodeFloat16Word,
   detectAndTrackBodiesAtClick,
   detectAndTrackBrightBodyAcrossEpochs,
   getDefaultCheckedObjectIds,
   pickDistinctHighlighterColors,
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
-import { ClientPatchCache } from '../src/services/clientPatchCache.ts';
+import {
+  ClientPatchCache,
+  gridCacheKey,
+  presetCacheKey,
+} from '../src/services/clientPatchCache.ts';
 import { formatSpectrumCsv } from '../src/utils/csvExport.ts';
 import {
   WAVELENGTH_PRESETS,
@@ -129,6 +135,69 @@ test('Float16 3G binary detector buffer decoding produces finite 6x256x256 Float
 
   assert.throws(() => decodeDetectorBinaryBuffer(new ArrayBuffer(128), 'float16'));
   assert.throws(() => decodeDetectorBinaryBuffer(new ArrayBuffer(128), 'float32'));
+});
+
+test('ISS-10: decodeFloat16Word matches IEEE-754 binary16 reference values including subnormals, infinity and NaN', () => {
+  assert.equal(decodeFloat16Word(0x0000), 0);
+  assert.ok(Object.is(decodeFloat16Word(0x8000), -0));
+  assert.equal(decodeFloat16Word(0x3c00), 1.0);
+  assert.equal(decodeFloat16Word(0xbc00), -1.0);
+  assert.equal(decodeFloat16Word(0x4000), 2.0);
+  assert.equal(decodeFloat16Word(0xc000), -2.0);
+  assert.equal(decodeFloat16Word(0x3800), 0.5);
+  assert.equal(decodeFloat16Word(0x7bff), 65504);
+  // Smallest positive subnormal: 2^-24
+  assert.equal(decodeFloat16Word(0x0001), Math.pow(2, -24));
+  // 0x3555 => (1 + 341/1024) * 2^-2
+  assert.equal(decodeFloat16Word(0x3555), (1 + 341 / 1024) * 0.25);
+  assert.equal(decodeFloat16Word(0x7c00), Infinity);
+  assert.equal(decodeFloat16Word(0xfc00), -Infinity);
+  assert.ok(Number.isNaN(decodeFloat16Word(0x7e00)));
+  assert.equal(BINARY_DETECTOR_FLOAT16_BYTES, 786432);
+  assert.equal(BINARY_DETECTOR_FLOAT32_BYTES, 1572864);
+});
+
+test('ISS-10: decodeDetectorBinaryBuffer decodes both 786,432 B float16 and 1,572,864 B float32 wire frames into Float32Array[6]', () => {
+  const words = new Uint16Array(6 * 256 * 256);
+  const pattern = [0x0000, 0x3c00, 0xbc00, 0x4000, 0x3800, 0x7bff, 0x0001, 0xc000];
+  for (let i = 0; i < words.length; i += 1) {
+    words[i] = pattern[i % pattern.length];
+  }
+
+  const float16Buffer = words.buffer;
+  assert.equal(float16Buffer.byteLength, BINARY_DETECTOR_FLOAT16_BYTES);
+  const decoded16 = decodeDetectorBinaryBuffer(float16Buffer, 'float16');
+  assert.equal(decoded16.length, 6);
+  assert.ok(decoded16.every((plane) => plane instanceof Float32Array));
+  assert.ok(decoded16.every((plane) => plane.length === 256 * 256));
+  // First and last values of every plane follow the exact same pattern.
+  for (const plane of decoded16) {
+    assert.equal(plane[0], 0);
+    assert.equal(plane[1], 1);
+    assert.equal(plane[2], -1);
+    assert.equal(plane[65535], decodeFloat16Word(pattern[65535 % pattern.length]));
+  }
+  // Auto-detection by wire size also works when no dtype hint is supplied.
+  const autoDecoded = decodeDetectorBinaryBuffer(float16Buffer);
+  assert.equal(autoDecoded[3][1000], decodeFloat16Word(pattern[1000 % pattern.length]));
+
+  const float32 = new Float32Array(6 * 256 * 256);
+  for (let i = 0; i < float32.length; i += 1) {
+    float32[i] = (i % 17) - 8 + 0.25;
+  }
+  assert.equal(float32.buffer.byteLength, BINARY_DETECTOR_FLOAT32_BYTES);
+  const decoded32 = decodeDetectorBinaryBuffer(float32.buffer, 'float32');
+  assert.equal(decoded32.length, 6);
+  assert.ok(decoded32.every((plane) => plane.length === 256 * 256));
+  assert.equal(decoded32[0][0], -7.75);
+  assert.equal(decoded32[0][16], 8.25);
+  assert.equal(decoded32[5][65535], float32[5 * 65536 + 65535]);
+  // Planes reference the correct detector slices in the raw frame.
+  assert.equal(decoded32[1][0], float32[65536]);
+  assert.equal(decoded32[5][0], float32[5 * 65536]);
+
+  assert.throws(() => decodeDetectorBinaryBuffer(new ArrayBuffer(786431), 'float16'));
+  assert.throws(() => decodeDetectorBinaryBuffer(new ArrayBuffer(1572863), 'float32'));
 });
 
 test('Wavelength Dim & Pop detector weights isolate cold IR detectors (3.8 - 5.0 um)', () => {
@@ -519,6 +588,138 @@ test('ClientPatchCache caches sky patches in memory and evicts oldest entry on L
   assert.ok((await cache.getPatch('k1')) !== null);
   assert.equal(await cache.getPatch('k2'), null);
   assert.ok((await cache.getPatch('k3')) !== null);
+});
+
+test('ISS-10: cached grid_key and preset:{slug} are served from memory in <5 ms with zero network requests', async () => {
+  const cache = new ClientPatchCache(4);
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const gridKey = computeGridKey(133.7951, -7.2451, 5.0);
+  const presetKey = presetCacheKey('wise_0855');
+
+  assert.equal(gridCacheKey(gridKey), 'ra133.80_dec-7.25_fov5.0');
+  assert.equal(presetKey, 'preset:wise_0855');
+  assert.equal(gridCacheKey('  ra133.80_dec-7.25_fov5.0  '), gridKey);
+  assert.equal(presetCacheKey('  wise_0855  '), presetKey);
+
+  const makeBundle = (cacheKey) => ({
+    cacheKey,
+    manifest,
+    epochBuffers: [],
+    flagsBuffers: [],
+    storedAt: Date.now(),
+    lastAccessed: Date.now(),
+  });
+
+  const originalFetch = globalThis.fetch;
+  let networkCalls = 0;
+  globalThis.fetch = (...args) => {
+    networkCalls += 1;
+    return Promise.reject(new Error(`Unexpected network request: ${String(args[0])}`));
+  };
+
+  try {
+    await cache.putPatch(makeBundle(gridKey));
+    await cache.putPatch(makeBundle(presetKey));
+    await cache.putCatalogs(gridKey, {
+      query: manifest.query,
+      wcs: manifest.wcs,
+      catalog_overlays: manifest.catalog_overlays,
+    });
+
+    // A loader must not run for keys that are already cached.
+    const gridHit = await cache.getOrFetchPatch(gridKey, async () => {
+      networkCalls += 1;
+      return null;
+    });
+    const presetHit = await cache.getOrFetchPatch(presetKey, async () => {
+      networkCalls += 1;
+      return null;
+    });
+    const catalogHit = await cache.getOrFetchCatalogs(gridKey, async () => {
+      networkCalls += 1;
+      return null;
+    });
+    assert.ok(gridHit);
+    assert.ok(presetHit);
+    assert.ok(catalogHit);
+
+    // Warm the JIT then measure the average hot-path retrieval time.
+    for (let i = 0; i < 10; i += 1) {
+      await cache.getPatch(gridKey);
+      await cache.getPatch(presetKey);
+    }
+    const iterations = 200;
+    const startedAt = performance.now();
+    for (let i = 0; i < iterations; i += 1) {
+      const hit = await cache.getPatch(i % 2 === 0 ? gridKey : presetKey);
+      assert.ok(hit);
+    }
+    const averageMs = (performance.now() - startedAt) / iterations;
+    assert.ok(averageMs < 5, `cached patch retrieval averaged ${averageMs.toFixed(3)} ms`);
+
+    assert.ok(cache.getPatchSync(gridKey));
+    assert.ok(cache.getPatchSync(presetKey));
+    assert.equal(networkCalls, 0, 'cached retrieval must never touch the network');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('ISS-10: ClientPatchCache LRU-evicts catalogs and works without IndexedDB in headless environments', async () => {
+  const cache = new ClientPatchCache(2);
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const catalogsFor = (ra) => ({
+    query: { ...manifest.query, ra },
+    wcs: manifest.wcs,
+    catalog_overlays: manifest.catalog_overlays,
+  });
+
+  // Node has no indexedDB: every operation must gracefully fall back to memory.
+  assert.equal(cache.isPersistentStorageAvailable(), false);
+  assert.equal(cache.capacity, 2);
+
+  await cache.putCatalogs('grid_a', catalogsFor(10));
+  await cache.putCatalogs('grid_b', catalogsFor(20));
+  assert.equal((await cache.getCatalogs('grid_a')).query.ra, 10);
+
+  await cache.putCatalogs('grid_c', catalogsFor(30));
+  assert.equal(await cache.getCatalogs('grid_b'), null, 'LRU catalog grid_b should be evicted');
+  assert.equal((await cache.getCatalogs('grid_a')).query.ra, 10);
+  assert.equal((await cache.getCatalogs('grid_c')).query.ra, 30);
+  assert.equal(await cache.hasCatalogs('grid_b'), false);
+  assert.equal(await cache.hasCatalogs('grid_c'), true);
+
+  assert.deepEqual(cache.size, { patches: 0, catalogs: 2 });
+  const stats = cache.getStats();
+  assert.equal(stats.maxEntries, 2);
+  assert.equal(stats.memoryCatalogs, 2);
+  assert.ok(stats.catalogHits >= 2);
+  assert.ok(stats.catalogMisses >= 1);
+
+  await cache.deleteCatalogs('grid_a');
+  assert.equal(await cache.getCatalogs('grid_a'), null);
+
+  const patch = {
+    cacheKey: 'grid_patch',
+    manifest,
+    epochBuffers: [],
+    flagsBuffers: [],
+    storedAt: Date.now(),
+    lastAccessed: Date.now(),
+  };
+  await cache.putPatch(patch);
+  assert.equal(await cache.hasPatch('grid_patch'), true);
+  assert.ok(await cache.getPatch('grid_patch'));
+  await cache.deletePatch('grid_patch');
+  assert.equal(await cache.hasPatch('grid_patch'), false);
+
+  await cache.putCatalogs('grid_d', catalogsFor(40));
+  await cache.clearAll();
+  assert.deepEqual(cache.size, { patches: 0, catalogs: 0 });
 });
 
 test('Click-to-Track accurately tracks both stationary field stars and moving targets across all 12 presets and epochs', () => {
