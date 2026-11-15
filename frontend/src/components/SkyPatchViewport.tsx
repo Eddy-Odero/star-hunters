@@ -6,11 +6,8 @@ import {
   pixelToSkyWcs,
   screenToImageCoordinates,
 } from '../types/contracts';
-import {
-  inferObjectClass,
-  isMovingSolarSystemObject,
-  renderEpochBuffersToRgba,
-} from '../utils/knownObjectSelection';
+import { inferObjectClass, isMovingSolarSystemObject } from '../utils/knownObjectSelection';
+import { renderEpochBuffersToImageData } from '../utils/pixelEngine';
 
 interface SkyPatchViewportProps {
   showLabels: boolean;
@@ -62,15 +59,18 @@ export const SkyPatchViewport: React.FC<SkyPatchViewportProps> = ({ showLabels }
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const rgba = renderEpochBuffersToRgba({
+    const imageData = renderEpochBuffersToImageData({
       epochBuffers,
       flagsBuffers,
       activeEpochIndex: renderSettings.activeEpochIndex,
       comparisonMode: renderSettings.mode,
       contrastStretch: renderSettings.contrastStretch,
       wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+      passAIndex: renderSettings.passAIndex,
+      passBIndex: renderSettings.passBIndex,
+      coaddIndices: renderSettings.coaddIndices,
+      showFlagsOverlay: renderSettings.showFlagsOverlay,
     });
-    const imageData = new ImageData(new Uint8ClampedArray(rgba), 256, 256);
     ctx.putImageData(imageData, 0, 0);
   }, [
     epochBuffers,
@@ -79,6 +79,10 @@ export const SkyPatchViewport: React.FC<SkyPatchViewportProps> = ({ showLabels }
     renderSettings.mode,
     renderSettings.contrastStretch,
     renderSettings.wavelengthRangeUm,
+    renderSettings.passAIndex,
+    renderSettings.passBIndex,
+    renderSettings.coaddIndices,
+    renderSettings.showFlagsOverlay,
   ]);
 
   const clampedPanZoom = useMemo(
