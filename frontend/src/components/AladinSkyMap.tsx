@@ -338,6 +338,15 @@ export const AladinSkyMap: React.FC = () => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const aladinRef = useRef<AladinInstance | null>(null);
   const overlayRef = useRef<AladinGraphicOverlay | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   // Keep click handlers pointing at the latest context values without
   // re-registering the Aladin listener on every render.
@@ -477,6 +486,13 @@ export const AladinSkyMap: React.FC = () => {
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(window.location.href);
         setCopied(true);
+        if (copyTimerRef.current !== null) {
+          window.clearTimeout(copyTimerRef.current);
+        }
+        copyTimerRef.current = window.setTimeout(() => {
+          setCopied(false);
+          copyTimerRef.current = null;
+        }, 2500);
       }
     } catch {
       setCopied(false);

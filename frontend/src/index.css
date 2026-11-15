@@ -860,6 +860,11 @@ input:focus-visible,
   touch-action: manipulation;
 }
 
+.aladin-fallback-svg:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: -2px;
+}
+
 .aladin-fallback-note {
   pointer-events: none;
 }
@@ -906,8 +911,15 @@ input:focus-visible,
 
 .aladin-map-hint {
   margin: 0;
-  color: #64748b;
-  font-size: 0.72rem;
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 600px) {
+  .aladin-map-stage {
+    aspect-ratio: 4 / 3;
+    min-height: 220px;
+  }
 }
 
 @media (max-width: 900px) {
