@@ -6,8 +6,11 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import jsonschema
+import numpy as np
 
 from app.main import (
     StarHuntersBackendService,
@@ -32,6 +35,7 @@ from app.models.contracts import (
     validate_spectrum_payload,
 )
 from app.services.spatial_cache import SpatialSqliteCache, compute_grid_key
+from app.services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
 
 
 class TestPhase0ContractsAndBackend(unittest.TestCase):
@@ -40,6 +44,46 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.db_path = str(Path(self.temp_dir.name) / "test_cache.db")
         self.cache = SpatialSqliteCache(db_path=self.db_path, max_cache_bytes=50 * 1024 * 1024)
         self.service = StarHuntersBackendService(cache=self.cache)
+
+    def _make_spectral_cutout(
+        self,
+        ra: float,
+        dec: float,
+        *,
+        bandpass: str = "SPHEREx-D1",
+        wavelength: float | None = None,
+        source_flux: float = 5.0,
+    ) -> SimpleNamespace:
+        header = {
+            "NAXIS": 2,
+            "NAXIS1": 31,
+            "NAXIS2": 31,
+            "CTYPE1": "RA---TAN",
+            "CTYPE2": "DEC--TAN",
+            "CUNIT1": "deg",
+            "CUNIT2": "deg",
+            "CRVAL1": ra,
+            "CRVAL2": dec,
+            "CRPIX1": 16.0,
+            "CRPIX2": 16.0,
+            "CDELT1": -0.0001,
+            "CDELT2": 0.0001,
+        }
+        if wavelength is not None:
+            header["WAVELEN"] = float(wavelength)
+        image = np.full((31, 31), 10.0, dtype=np.float32)
+        image[13:18, 13:18] += source_flux
+        variance = np.ones((31, 31), dtype=np.float32)
+        flags = np.zeros((31, 31), dtype=np.uint8)
+        return SimpleNamespace(
+            clean_image=image,
+            variance=variance,
+            weight_map=np.ones_like(image),
+            flags_mask=flags,
+            mjd_obs=60000.0,
+            bandpass=bandpass,
+            header=header,
+        )
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -153,6 +197,113 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         # First patch should have been evicted by LRU pruning
         self.assertIsNone(tiny_cache.get_manifest(m_a["query"]["grid_key"]))
         self.assertIsNotNone(tiny_cache.get_manifest(m_b["query"]["grid_key"]))
+
+    def test_forced_spectrum_extracts_102_wavelength_planes(self) -> None:
+        ra, dec = 133.7951, -7.2451
+        cutouts = [
+            self._make_spectral_cutout(
+                ra,
+                dec,
+                bandpass=f"SPHEREx-D{(index // 17) + 1}",
+                wavelength=float(wavelength),
+                source_flux=5.0,
+            )
+            for index, wavelength in enumerate(np.linspace(0.75, 5.0, 102))
+        ]
+
+        payload = extract_forced_spectrum(ra, dec, list(reversed(cutouts)), "Test source")
+        parsed = validate_spectrum_payload(payload)
+        self.assertEqual(len(parsed.channels), 102)
+        self.assertAlmostEqual(parsed.channels[0].wavelength_um, 0.75)
+        self.assertAlmostEqual(parsed.channels[-1].wavelength_um, 5.0)
+        self.assertTrue(all(np.isfinite(channel.flux) for channel in parsed.channels))
+        self.assertTrue(
+            all(
+                np.isfinite(channel.variance) and channel.variance >= 0
+                for channel in parsed.channels
+            )
+        )
+        self.assertEqual(len(parsed.molecular_features), 4)
+        self.assertTrue(all(channel.flux > 0 for channel in parsed.channels))
+
+    def test_forced_spectrum_uses_detector_bands_when_sub_exposures_unavailable(self) -> None:
+        ra, dec = 133.7951, -7.2451
+        cutouts = [
+            self._make_spectral_cutout(
+                ra,
+                dec,
+                bandpass=f"SPHEREx-D{detector}",
+                source_flux=5.0 + detector,
+            )
+            for detector in range(1, 7)
+        ]
+
+        parsed = validate_spectrum_payload(
+            extract_forced_spectrum(ra, dec, cutouts, "Six detector bands")
+        )
+        self.assertEqual(len(parsed.channels), 102)
+        self.assertAlmostEqual(parsed.channels[0].wavelength_um, 0.75)
+        self.assertAlmostEqual(parsed.channels[-1].wavelength_um, 5.0)
+        self.assertEqual({channel.detector for channel in parsed.channels}, set(range(1, 7)))
+        self.assertTrue(all(np.isfinite(channel.flux) for channel in parsed.channels))
+        self.assertTrue(all(channel.variance >= 0 for channel in parsed.channels))
+        self.assertEqual(
+            [feature.molecule for feature in parsed.molecular_features],
+            ["H2O", "CH4", "CO2", "CO"],
+        )
+
+    def test_forced_spectrum_service_and_api_return_102_channels(self) -> None:
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError:  # pragma: no cover
+            self.skipTest("FastAPI TestClient is unavailable.")
+
+        import app.main as main_module
+
+        ra, dec = 133.7951, -7.2451
+        cutouts = [
+            self._make_spectral_cutout(
+                ra,
+                dec,
+                bandpass=f"SPHEREx-D{detector}",
+                source_flux=5.0 + detector,
+            )
+            for detector in range(1, 7)
+        ]
+
+        with (
+            patch(
+                "app.services.spherex_ingest.ingest_spherex_cutouts",
+                return_value=cutouts,
+            ),
+            patch.object(main_module, "backend_service", self.service),
+        ):
+            service_payload = self.service.get_forced_spectrum(ra, dec)
+            response = TestClient(main_module.app).get(
+                "/api/v1/spectrum",
+                params={"ra": ra, "dec": dec},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        for payload in (service_payload, response.json()):
+            parsed = validate_spectrum_payload(payload)
+            self.assertEqual(len(parsed.channels), 102)
+            self.assertEqual(len(parsed.molecular_features), 4)
+
+    def test_forced_spectrum_offline_synthetic_fallback_returns_102_channels(self) -> None:
+        with patch.dict("os.environ", {"SPHEREX_OFFLINE": "1"}):
+            payload = self.service.get_forced_spectrum(133.7951, -7.2451)
+
+        parsed = validate_spectrum_payload(payload)
+        self.assertEqual(len(parsed.channels), 102)
+        self.assertAlmostEqual(parsed.channels[0].wavelength_um, 0.75)
+        self.assertAlmostEqual(parsed.channels[-1].wavelength_um, 5.0)
+        self.assertEqual({channel.detector for channel in parsed.channels}, set(range(1, 7)))
+        self.assertEqual(len(parsed.molecular_features), 4)
+
+    def test_forced_spectrum_rejects_incomplete_wavelength_set(self) -> None:
+        with self.assertRaises(SpectrumExtractionError):
+            extract_forced_spectrum(133.7951, -7.2451, [], "Incomplete")
 
     def test_spectrum_102_channels_and_monotonic_order(self) -> None:
         spec = build_spectrum_payload(133.7951, -7.2451, "WISE 0855", slug="wise_0855")
