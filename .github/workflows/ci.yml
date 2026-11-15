@@ -1,0 +1,83 @@
+name: Star Hunters CI (Lint, Typecheck & Tests)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend-check:
+    name: Backend Python Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt ruff
+
+      - name: Compile, Lint, Format & Pytest
+        working-directory: backend
+        run: |
+          python -m compileall -q .
+          ruff check .
+          ruff format --check .
+          pytest
+
+  frontend-check:
+    name: Frontend TypeScript, Lint & Build Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint, Format, Test & Build
+        run: |
+          pnpm lint
+          pnpm format:check
+          pnpm test
+          pnpm build
+
+  repo-hygiene-check:
+    name: Guard Against Raw FITS, Secrets & Build Artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for forbidden files
+        run: |
+          if find . -not -path './.git/*' \( -name "*.fits" -o -name "*.fits.gz" -o \( -name ".env*" -not -name ".env.example" \) \) | grep -q .; then
+            echo "ERROR: Raw .fits/.fits.gz or .env files must not be committed to the repository."
+            exit 1
+          fi
+          if git ls-files | grep -E '(^|/)(node_modules|\.venv|frontend/dist)/'; then
+            echo "ERROR: Dependencies or build outputs must not be tracked in git."
+            exit 1
+          fi
