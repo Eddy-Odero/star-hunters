@@ -5,11 +5,11 @@ import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
 import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
 import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
+import { SourceInspectorCard } from './components/SourceInspectorCard';
+import { SpectrumDrawer } from './components/SpectrumDrawer';
 import {
-  catalogBadgeLabel,
   inferObjectClass,
   isMovingSolarSystemObject,
-  objectClassBadgeLabel,
   renderEpochBuffersToRgba,
 } from './utils/knownObjectSelection';
 
@@ -23,10 +23,8 @@ const StarHuntersWorkspace: React.FC = () => {
     renderSettings,
     knownObjects,
     objectHighlighterColors,
-    selectedObject,
     trackedTargets,
     lastClickDiagnostic,
-    removeTrackedTarget,
     clearTrackedTargets,
     selectPreset,
     inspectPixelOrCoord,
@@ -319,77 +317,11 @@ const StarHuntersWorkspace: React.FC = () => {
             </div>
           )}
 
-          {selectedObject &&
-            (() => {
-              const matchedKnown = selectedObject.matchedObjectId
-                ? knownObjects.find((o) => o.object_id === selectedObject.matchedObjectId)
-                : undefined;
-              const matchedClass = matchedKnown ? inferObjectClass(matchedKnown) : null;
-              return (
-                <div className="traced-card">
-                  <h3>
-                    Focused Track ({selectedObject.trackId}) — Clicked Frame #
-                    {selectedObject.originEpochIndex + 1}
-                  </h3>
-                  <p>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        width: 12,
-                        height: 12,
-                        border: `2px solid ${selectedObject.color}`,
-                        marginRight: 6,
-                      }}
-                    />
-                    Origin Centroid: ({selectedObject.originCentroidX},{' '}
-                    {selectedObject.originCentroidY}) &bull; Proper Motion:{' '}
-                    {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull; Match:{' '}
-                    {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
-                    {selectedObject.isOverlappedAtOrigin ? ' • Overlapped Body Branch' : ''}
-                  </p>
-                  {matchedKnown && (
-                    <p className="obj-meta">
-                      Class: {matchedClass ? objectClassBadgeLabel(matchedClass) : 'Object'}
-                      {matchedKnown.otype ? ` (${matchedKnown.otype})` : ''} &bull; Catalog:{' '}
-                      {catalogBadgeLabel(matchedKnown.catalog)}
-                      {matchedKnown.canonical_name
-                        ? ` • Canonical ID: ${matchedKnown.canonical_name}`
-                        : ''}
-                      {matchedKnown.parallax_mas !== null && matchedKnown.parallax_mas !== undefined
-                        ? ` • Parallax: ${matchedKnown.parallax_mas.toFixed(2)} mas`
-                        : ''}
-                      {matchedKnown.data_source ? ` • Source: ${matchedKnown.data_source}` : ''}
-                    </p>
-                  )}
-                  <ul>
-                    {selectedObject.waypoints.map((wp) => (
-                      <li key={wp.epoch_id}>
-                        {wp.epoch_id} (MJD {wp.mjd}): pixel ({wp.x}, {wp.y}) &bull; SNR {wp.snr}{' '}
-                        &bull; status: {wp.status}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })()}
+          {/* Integrated Source Inspector Card */}
+          <SourceInspectorCard />
 
-          {trackedTargets.length > 1 && (
-            <div className="traced-card">
-              <h4>All Tracked Targets ({trackedTargets.length})</h4>
-              <ul>
-                {trackedTargets.map((t) => (
-                  <li key={t.trackId}>
-                    <span style={{ color: t.color, fontWeight: 700 }}>■</span> {t.trackId}: (
-                    {t.originCentroidX}, {t.originCentroidY}) &rarr; ({t.xN}, {t.yN}) [
-                    {t.statusMessage}]{' '}
-                    <button type="button" onClick={() => removeTrackedTarget(t.trackId)}>
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {/* Integrated Scientist Spectrum Drawer */}
+          <SpectrumDrawer />
         </section>
 
         <KnownObjectsCheckboxMenu />

@@ -22,6 +22,7 @@ import {
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
 import { ClientPatchCache } from '../src/services/clientPatchCache.ts';
+import { formatSpectrumCsv } from '../src/utils/csvExport.ts';
 import {
   WAVELENGTH_PRESETS,
   catalogBadgeLabel,
@@ -776,4 +777,30 @@ test('Automated pipeline UI helpers: catalog/class badges, mover detection, and 
     wavelengthRangeUm: [3.8, 5.0],
   });
   assert.equal(diffRgba.length, 256 * 256 * 4);
+});
+
+test('ISS-17: formatSpectrumCsv produces 103-line CSV with header and 102 spectral channels', () => {
+  const channels = Array.from({ length: 102 }, (_, idx) => ({
+    band_index: idx,
+    detector: Math.floor(idx / 17) + 1,
+    wavelength_um: 0.75 + (idx / 101) * (5.0 - 0.75),
+    flux: 12.5 + idx * 0.1,
+    variance: 0.04,
+    flagged: idx === 10 || idx === 55,
+  }));
+
+  const csv = formatSpectrumCsv({
+    target_id: 'barnards_star',
+    ra: 269.452,
+    dec: 4.693,
+    aperture_radius_px: 2.5,
+    channels,
+  });
+
+  const lines = csv.trimEnd().split('\n');
+  assert.equal(lines.length, 103);
+  assert.equal(lines[0], 'band_index,detector,wavelength_um,flux,variance,flagged');
+  assert.ok(lines[1].startsWith('0,1,0.7500,'));
+  assert.ok(lines[11].endsWith(',true'));
+  assert.ok(lines[12].endsWith(',false'));
 });
