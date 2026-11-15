@@ -31,7 +31,7 @@ export const KnownObjectsCheckboxMenu: React.FC = () => {
   }, [knownObjects, filterQuery]);
 
   return (
-    <aside className="known-objects-panel">
+    <aside className="known-objects-panel" aria-label="Known Celestial Objects">
       <div className="panel-header">
         <h2>Known Celestial Objects ({knownObjects.length})</h2>
         <div className="checkbox-actions">
@@ -50,6 +50,7 @@ export const KnownObjectsCheckboxMenu: React.FC = () => {
       <div className="known-filter-container">
         <input
           type="text"
+          aria-label="Filter known celestial objects"
           placeholder="Filter catalog objects..."
           value={filterQuery}
           onChange={(e) => setFilterQuery(e.target.value)}
