@@ -32,7 +32,7 @@ By the end of Phase 1:
   - `/frontend` initialized with React, TypeScript, and Vite, containing `src/types/contracts.ts` and `src/context/SkyExplorerContext.tsx` (with known-object checkbox state helpers, pan/zoom controls, multi-spot & overlapped bright-body tracking with colored tracking squares, and non-looping playback controls).
 - **Acceptance Criteria:**
   - Backend starts cleanly and `GET /health` returns `200 OK` with `{"status": "ok"}`.
-  - Frontend compiles and runs (`npm run build` and `npm test`) with zero TypeScript errors.
+  - Frontend compiles and runs (`pnpm build` and `pnpm test`) with zero TypeScript errors.
   - Contract validation tests confirm that sample payloads from Phase 0 pass both Pydantic validation and TypeScript type-checking.
 
 ---

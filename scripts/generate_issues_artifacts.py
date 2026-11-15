@@ -98,7 +98,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
         ],
         "verification_commands": [
             "PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v",
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -152,7 +152,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
         ],
         "verification_commands": [
             "python3 scripts/generate_synthetic_presets.py",
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -529,7 +529,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Zero network requests are made when retrieving a previously cached `grid_key` or `preset:{slug}`.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -576,7 +576,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Computing a `256x256` RGBA `Uint8ClampedArray` frame completes in `<5 ms`.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -725,7 +725,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Changing presets or coordinates updates the Aladin reticle position and browser query string.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -772,7 +772,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "When user location data is unavailable or denied, clicking \"What's Above Me?\" automatically falls back to a random capital city from the backend and displays `city_name` and `country`.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -820,7 +820,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Changing comparison modes, epoch pairs, wavelength pills, zoom/pan, or known-object checkboxes updates `SkyExplorerContext.renderSettings` immediately with zero network fetches.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -870,7 +870,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "`formatSpectrumCsv` produces a valid 103-line CSV (`header + 102 channels`) with columns `band_index,detector,wavelength_um,flux,variance,flagged`.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -923,7 +923,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Clicking empty sky noise returns `status: 'no_body_found'` with `tracks: []`; a body that fades or leaves the FOV in another epoch marks that epoch's waypoint with `status: 'lost' | 'low_snr' | 'out_of_bounds'` and `track.status === 'partially_lost'`.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -973,7 +973,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Clicking multiple spots or overlapped bodies renders distinct colored tracking squares (`track.color`) for each target across epochs, and non-looping playback pauses on the final frame (`isLooping === false` by default).",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
     {
@@ -1074,7 +1074,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
             "Changing any `ViewportRenderSettings` option, panning/zooming, or clicking to track bodies across epochs makes `0` HTTP requests.",
         ],
         "verification_commands": [
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
             "PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v",
         ],
     },
@@ -1123,7 +1123,7 @@ RAW_ISSUES: List[Dict[str, Any]] = [
         ],
         "verification_commands": [
             "PYTHONPATH=backend python3 -m unittest discover -s backend/tests -v",
-            "cd frontend && npm test",
+            "cd frontend && pnpm test",
         ],
     },
 ]
