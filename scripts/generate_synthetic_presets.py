@@ -10,19 +10,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.main import (
+from app.main import (  # noqa: E402
     build_sky_patch_manifest_payload,
     build_spectrum_payload,
     generate_synthetic_epoch_frames,
     get_global_known_objects_index,
 )
-from app.models.contracts import (
+from app.models.contracts import (  # noqa: E402
     SHOWCASE_TARGETS,
     validate_detector_binary_buffer,
     validate_flags_binary_buffer,
     validate_sky_patch_manifest,
     validate_spectrum_payload,
 )
+from app.models.global_sky_reference_catalog import extend_global_known_objects_index  # noqa: E402
 
 
 def generate_all_presets(output_root: Path | None = None) -> list[str]:
@@ -68,7 +69,7 @@ def generate_all_presets(output_root: Path | None = None) -> list[str]:
         )
         generated_slugs.append(slug)
 
-    global_index = get_global_known_objects_index()
+    global_index = extend_global_known_objects_index(get_global_known_objects_index())
     (presets_dir / "global_known_objects.json").write_text(
         json.dumps(global_index, indent=2) + "\n", encoding="utf-8"
     )
