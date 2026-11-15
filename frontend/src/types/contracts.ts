@@ -1596,6 +1596,63 @@ export function detectAndTrackBodiesAtClick(params: {
 }
 
 /**
+ * Merge a fresh click-tracking result into the accumulated multi-spot target list
+ * (`trackedTargets`). Every retained/new target keeps a distinct color from
+ * `TRACKING_SQUARE_COLORS`; re-clicking the same group or catalog object replaces
+ * its previous branches instead of duplicating them.
+ */
+export function mergeTrackedTargets(
+  existing: TracedObjectSummary[],
+  incoming: TracedObjectSummary[],
+  options: {
+    checkedObjectIds?: Iterable<string>;
+    objectHighlighterColors?: Record<string, string>;
+    rng?: () => number;
+  } = {},
+): TracedObjectSummary[] {
+  if (incoming.length === 0) return existing;
+
+  const { checkedObjectIds = [], objectHighlighterColors = {}, rng = Math.random } = options;
+
+  const incomingGroupId = incoming[0].groupId;
+  const incomingMatchedIds = new Set(
+    incoming.map((t) => t.matchedObjectId).filter((id): id is string => Boolean(id)),
+  );
+  const retained = existing.filter(
+    (t) =>
+      t.groupId !== incomingGroupId &&
+      (!t.matchedObjectId || !incomingMatchedIds.has(t.matchedObjectId)),
+  );
+
+  // Colors already taken by retained tracking squares.
+  const usedTargetColors = new Set(retained.map((t) => t.color));
+  // Colors reserved by checked known objects (avoid random collisions in the viewport).
+  const reservedObjectColors = new Set<string>();
+  for (const id of checkedObjectIds) {
+    const color = objectHighlighterColors[id];
+    if (color) reservedObjectColors.add(color);
+  }
+
+  const colored = incoming.map((track) => {
+    const preferred = track.matchedObjectId
+      ? objectHighlighterColors[track.matchedObjectId]
+      : undefined;
+    const color =
+      preferred && !usedTargetColors.has(preferred)
+        ? preferred
+        : pickDistinctHighlighterColors(
+            1,
+            new Set([...usedTargetColors, ...reservedObjectColors]),
+            rng,
+          )[0];
+    usedTargetColors.add(color);
+    return { ...track, color };
+  });
+
+  return [...retained, ...colored];
+}
+
+/**
  * Detect the primary "bright" body near (clickX, clickY) on `originEpochIndex`
  * and automatically track its position backward (previous epochs) and forward (future epochs).
  * (For multi-branch overlapped body tracking at a click, see `detectAndTrackBodiesAtClick`.)

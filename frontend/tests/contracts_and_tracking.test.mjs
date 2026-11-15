@@ -20,6 +20,7 @@ import {
   detectAndTrackBodiesAtClick,
   detectAndTrackBrightBodyAcrossEpochs,
   getDefaultCheckedObjectIds,
+  mergeTrackedTargets,
   pickDistinctHighlighterColors,
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
@@ -541,6 +542,7 @@ test('ISS-18: clicking multiple spots accumulates every target with a distinct t
     ]),
   ];
 
+  const clickResults = [];
   let trackedTargets = [];
   for (const [clickX, clickY] of [
     [60, 60],
@@ -553,12 +555,13 @@ test('ISS-18: clicking multiple spots accumulates every target with a distinct t
       epochBuffers: twoBodyBuffers,
       manifest: manifest2,
       wavelengthRangeUm: [0.75, 5.0],
-      // Mirror SkyExplorerContext: offset the palette by the number of already-tracked targets.
       colorIndexOffset: trackedTargets.length,
     });
     assert.equal(res.status, 'tracked');
     assert.equal(res.tracks.length, 1);
-    trackedTargets = [...trackedTargets, ...res.tracks];
+    clickResults.push(res);
+    // This is the exact accumulation helper used by SkyExplorerContext.
+    trackedTargets = mergeTrackedTargets(trackedTargets, res.tracks);
   }
 
   assert.equal(trackedTargets.length, 2);
@@ -566,6 +569,46 @@ test('ISS-18: clicking multiple spots accumulates every target with a distinct t
   for (const target of trackedTargets) {
     assert.ok(TRACKING_SQUARE_COLORS.includes(target.color));
   }
+
+  // Re-clicking an existing spot replaces that target instead of duplicating it.
+  trackedTargets = mergeTrackedTargets(trackedTargets, clickResults[0].tracks);
+  assert.equal(trackedTargets.length, 2);
+  assert.equal(new Set(trackedTargets.map((t) => t.color)).size, 2);
+
+  // A matched known object whose preferred highlighter color collides with an
+  // already-tracked target must be reassigned a distinct palette color.
+  const existingColor = trackedTargets[0].color;
+  const matchedTrack = {
+    ...clickResults[1].tracks[0],
+    trackId: 'matched-known-object',
+    groupId: 'matched-known-object-group',
+    matchedObjectId: 'known-1',
+  };
+  const withKnownObject = mergeTrackedTargets(trackedTargets, [matchedTrack], {
+    objectHighlighterColors: { 'known-1': existingColor },
+  });
+  assert.equal(withKnownObject.length, 3);
+  assert.equal(new Set(withKnownObject.map((t) => t.color)).size, 3);
+  assert.ok(withKnownObject.every((t) => TRACKING_SQUARE_COLORS.includes(t.color)));
+
+  // A checked object's own preferred color is still allowed for its matched track.
+  const ownKnownColor = mergeTrackedTargets([], [matchedTrack], {
+    checkedObjectIds: ['known-1'],
+    objectHighlighterColors: { 'known-1': TRACKING_SQUARE_COLORS[5] },
+  });
+  assert.equal(ownKnownColor[0].color, TRACKING_SQUARE_COLORS[5]);
+
+  // Unmatched targets never steal a color reserved by a checked known object.
+  const reservedAware = mergeTrackedTargets(
+    [],
+    [{ ...clickResults[0].tracks[0], matchedObjectId: null }],
+    {
+      checkedObjectIds: ['known-2'],
+      objectHighlighterColors: { 'known-2': TRACKING_SQUARE_COLORS[0] },
+      rng: () => 0,
+    },
+  );
+  assert.notEqual(reservedAware[0].color, TRACKING_SQUARE_COLORS[0]);
 
   // Palette offsets wrap back to the first color instead of running off the end.
   const wrapped = detectAndTrackBodiesAtClick({

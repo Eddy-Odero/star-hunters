@@ -14,6 +14,7 @@ import {
   decodeFlagsBinaryBuffer,
   detectAndTrackBodiesAtClick,
   getDefaultCheckedObjectIds,
+  mergeTrackedTargets,
   pickDistinctHighlighterColors,
   type BinaryDtype,
   type CatalogsResponse,
@@ -555,34 +556,15 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           return prevTargets;
         }
 
-        // Gather all highlighter colors currently active in the viewport
-        const usedColors = new Set<string>(prevTargets.map((t) => t.color));
-        for (const checkedId of renderSettings.checkedObjectIds) {
-          const c = objectHighlighterColors[checkedId];
-          if (c) usedColors.add(c);
-        }
-
         const matchedKnownIdsToAutoCheck: string[] = [];
         const enrichedTracks = result.tracks.map((track) => {
-          if (track.matchedObjectId) {
-            matchedKnownIdsToAutoCheck.push(track.matchedObjectId);
-            const matchedObj = knownObjects.find((o) => o.object_id === track.matchedObjectId);
-            const knownColor =
-              objectHighlighterColors[track.matchedObjectId] ??
-              pickDistinctHighlighterColors(1, usedColors)[0];
-            usedColors.add(knownColor);
-            return {
-              ...track,
-              color: knownColor,
-              matchedLabel: matchedObj?.label ?? track.matchedLabel,
-              matchedCatalog: matchedObj?.catalog ?? track.matchedCatalog,
-            };
-          }
-          const randomColor = pickDistinctHighlighterColors(1, usedColors)[0];
-          usedColors.add(randomColor);
+          if (!track.matchedObjectId) return track;
+          matchedKnownIdsToAutoCheck.push(track.matchedObjectId);
+          const matchedObj = knownObjects.find((o) => o.object_id === track.matchedObjectId);
           return {
             ...track,
-            color: randomColor,
+            matchedLabel: matchedObj?.label ?? track.matchedLabel,
+            matchedCatalog: matchedObj?.catalog ?? track.matchedCatalog,
           };
         });
 
@@ -602,20 +584,20 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           });
         }
 
-        setSelectedObject(enrichedTracks[0]);
-        setIsSpectrumLoading(false);
-
-        // Append newly detected tracks (avoiding duplicate groupId or duplicate matchedObjectId)
+        // Accumulate multi-spot targets with distinct tracking-square colors.
+        // Re-clicking an existing group/object replaces its old branches.
         const incomingGroupId = enrichedTracks[0].groupId;
-        const incomingMatchedIds = new Set(
-          enrichedTracks.map((t) => t.matchedObjectId).filter((id): id is string => Boolean(id)),
-        );
-        const filteredPrev = prevTargets.filter(
-          (t) =>
-            t.groupId !== incomingGroupId &&
-            (!t.matchedObjectId || !incomingMatchedIds.has(t.matchedObjectId)),
-        );
-        return [...filteredPrev, ...enrichedTracks];
+        const nextTargets = mergeTrackedTargets(prevTargets, enrichedTracks, {
+          checkedObjectIds: renderSettings.checkedObjectIds,
+          objectHighlighterColors,
+        });
+        const selectedTrack =
+          nextTargets.find((t) => t.groupId === incomingGroupId && t.branchIndex === 0) ??
+          nextTargets[nextTargets.length - 1] ??
+          null;
+        setSelectedObject(selectedTrack);
+        setIsSpectrumLoading(false);
+        return nextTargets;
       });
     },
     [
