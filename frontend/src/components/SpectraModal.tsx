@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
-import { DETECTOR_WAVELENGTH_BOUNDS_UM } from '../types/contracts';
+import { DETECTOR_WAVELENGTH_BOUNDS_UM, formatImageProvenanceBadge } from '../types/contracts';
 import { downloadSpectrumCsv } from '../utils/csvExport';
+import { formatRaDecCompact } from '../utils/observatoryMath';
 import { ChevronIcon, CloseIcon, DownloadIcon, SpinnerIcon } from './icons/ObservatoryIcons';
 
 const DEFAULT_MOLECULAR_BANDS = [
@@ -24,6 +25,7 @@ function shortFormulaLabel(key: string, label: string): string {
 export const SpectraModal: React.FC = () => {
   const {
     activePresetSlug,
+    manifest,
     activeSpectrum,
     isSpectrumLoading,
     isSpectraModalOpen = false,
@@ -31,6 +33,11 @@ export const SpectraModal: React.FC = () => {
     renderSettings,
     selectedObject,
   } = useSkyExplorer();
+
+  const provenance = useMemo(
+    () => formatImageProvenanceBadge(manifest?.data_source_summary),
+    [manifest?.data_source_summary],
+  );
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
@@ -130,9 +137,9 @@ export const SpectraModal: React.FC = () => {
           </span>
           <span className="blinker-section-sub mono">
             {activeSpectrum
-              ? `RA ${activeSpectrum.ra.toFixed(4)}°, Dec ${
-                  activeSpectrum.dec >= 0 ? '+' : ''
-                }${activeSpectrum.dec.toFixed(4)}° · Flux (${activeSpectrum.units?.flux ?? 'MJy/sr'})`
+              ? `${formatRaDecCompact(activeSpectrum.ra, activeSpectrum.dec)} · Flux (${
+                  activeSpectrum.units?.flux ?? 'MJy/sr'
+                })`
               : 'Loading forced-photometry spectrum...'}
           </span>
         </div>
@@ -201,25 +208,21 @@ export const SpectraModal: React.FC = () => {
                   gap: 12,
                   fontSize: 11,
                   color: 'var(--text-muted)',
+                  flexShrink: 0,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   {features.slice(0, 4).map((feat) => (
                     <span key={feat.key} className="badge-pill" style={{ textTransform: 'none' }}>
-                      {feat.label}: {feat.min_um.toFixed(2)}–{feat.max_um.toFixed(2)} µm
+                      {feat.label}: {feat.min_um.toFixed(2)}-{feat.max_um.toFixed(2)} µm
                     </span>
                   ))}
                 </div>
-                {hoverChannel && (
-                  <span className="mono" style={{ color: 'var(--accent-amber-bright)' }}>
-                    Band #{hoverChannel.band_index + 1} (D{hoverChannel.detector}) ·{' '}
-                    {hoverChannel.wavelength_um.toFixed(3)} µm · Flux{' '}
-                    {hoverChannel.flux.toExponential(2)}
-                  </span>
-                )}
               </div>
 
               <svg
+                data-testid="spectra-plot-svg"
+                aria-label="102-Band SPHEREx Spectrum Plot"
                 viewBox={`0 0 ${plotGeometry.w} ${plotGeometry.h}`}
                 style={{ width: '100%', flex: 1, minHeight: 0, display: 'block' }}
                 onMouseMove={(e) => {
@@ -340,6 +343,26 @@ export const SpectraModal: React.FC = () => {
                   />
                 ))}
               </svg>
+
+              <div className="spectra-hover-readout" data-testid="spectra-hover-readout">
+                {hoverChannel ? (
+                  <span className="mono" style={{ color: 'var(--accent-amber-bright)' }}>
+                    Band #{hoverChannel.band_index + 1} (Detector {hoverChannel.detector}) ·{' '}
+                    {hoverChannel.wavelength_um.toFixed(3)} µm · Flux{' '}
+                    {hoverChannel.flux.toExponential(2)} {activeSpectrum?.units?.flux ?? 'MJy/sr'}
+                    {hoverChannel.flagged ? ' · FLAGGED' : ''}
+                  </span>
+                ) : (
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    Hover over the spectrum curve to inspect band wavelength and flux
+                  </span>
+                )}
+                <span className="mono" style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                  {activeSpectrum?.spectrum_origin === 'spherex_forced_photometry'
+                    ? 'Forced Photometry'
+                    : provenance.shortLabel}
+                </span>
+              </div>
             </>
           ) : (
             <div

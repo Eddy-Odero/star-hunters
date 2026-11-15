@@ -266,8 +266,9 @@ export function replaceUrlState(
   const pathname = location?.pathname ?? '/';
   const hash = location?.hash ?? '';
   const url = `${pathname}${query ? `?${query}` : ''}${hash}`;
+  const currentUrl = `${pathname}${location?.search ?? ''}${hash}`;
 
-  if (history) {
+  if (history && url !== currentUrl) {
     history.replaceState(history.state ?? null, '', url);
   }
 

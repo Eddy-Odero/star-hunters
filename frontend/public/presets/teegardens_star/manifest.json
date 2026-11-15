@@ -79,7 +79,7 @@
     "known_objects": [
       {
         "object_id": "gaia:35227046884571776",
-        "label": "Teegarden's Star (SO J0253+1652 \u2014 Ultracool M7V Exoplanet Host)",
+        "label": "Teegarden's Star (SO J0253+1652: Ultracool M7V Exoplanet Host)",
         "catalog": "gaia_dr3",
         "object_type": "high_pm_star",
         "ra": 43.25486,

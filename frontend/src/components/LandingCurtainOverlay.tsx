@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { pickRandomNasaCurtainImage, type NasaCurtainImage } from '../data/nasaCurtainImages';
+import { observatoryLogger } from '../utils/observatoryLogger';
 import { SpinnerIcon } from './icons/ObservatoryIcons';
 
 const CURTAIN_WARMUP_LOCK_MS = 1750;
-const CURTAIN_EXIT_TRANSITION_MS = 620;
+const CURTAIN_EXIT_TRANSITION_MS = 1050;
 
 export const LandingCurtainOverlay: React.FC<{
   onDismissed?: () => void;
@@ -25,6 +26,10 @@ export const LandingCurtainOverlay: React.FC<{
       setProgressPct(pct);
       if (elapsed >= CURTAIN_WARMUP_LOCK_MS) {
         setIsUnlocked(true);
+        observatoryLogger.info('curtain', 'Landing warmup unlocked', {
+          imageId: selectedImage.id,
+          nasaId: selectedImage.nasaId,
+        });
         return;
       }
       rafId = window.requestAnimationFrame(tick);
@@ -32,13 +37,17 @@ export const LandingCurtainOverlay: React.FC<{
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, []);
+  }, [selectedImage.id, selectedImage.nasaId]);
 
   const handleDismiss = () => {
     if (!isUnlocked || isDismissing) return;
+    observatoryLogger.info('curtain', 'Raising landing curtain to reveal globe', {
+      imageId: selectedImage.id,
+    });
     setIsDismissing(true);
     window.setTimeout(() => {
       setIsUnmounted(true);
+      observatoryLogger.info('curtain', 'Landing curtain unmounted');
       onDismissed?.();
     }, CURTAIN_EXIT_TRANSITION_MS);
   };

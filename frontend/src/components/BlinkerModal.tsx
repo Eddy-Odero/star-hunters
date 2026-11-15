@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import {
   clampViewportPanZoom,
   computeViewportViewBox,
+  formatImageProvenanceBadge,
   GRID_HEIGHT,
   GRID_WIDTH,
   screenToImageCoordinates,
@@ -10,6 +11,18 @@ import {
   type ContrastStretch,
   type MissionName,
 } from '../types/contracts';
+import {
+  computeSmartCalloutLayout,
+  HOVER_DETAILS_DELAY_MS,
+  type AvoidRect,
+  type DetailsCalloutOrigin,
+} from '../utils/calloutPlacement';
+import {
+  catalogBadgeLabel,
+  formatMagnitude,
+  formatProperMotion,
+} from '../utils/knownObjectSelection';
+import { observatoryLogger } from '../utils/observatoryLogger';
 import {
   decodeHygieneFlagMask,
   formatRaDecCompact,
@@ -28,12 +41,13 @@ import {
   SkipNextIcon,
   SkipPrevIcon,
   SpectrumWaveIcon,
-  SpinnerIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from './icons/ObservatoryIcons';
 
-const MISSIONS_FILTER_LIST: ReadonlyArray<MissionName> = ['SPHEREx', 'WISE', 'NEOSSat'];
+const BASE_MISSIONS_FILTER_LIST: ReadonlyArray<MissionName> = ['SPHEREx', 'WISE', 'NEOSSat'];
+
+type CalloutRef = { kind: 'tracked'; trackId: string } | { kind: 'known'; objectId: string };
 
 const BLINKER_CONTROLS_FOLDED_KEY = 'sh_blinker_controls_folded_v1';
 
@@ -52,14 +66,18 @@ export const BlinkerModal: React.FC = () => {
     manifest,
     epochBuffers,
     flagsBuffers,
-    loadingState,
     renderSettings,
     updateRenderSettings,
     setViewportZoomPan,
     resetViewportZoomPan,
     knownObjects,
     objectHighlighterColors = {},
+    toggleKnownObject,
+    checkAllKnownObjects,
+    uncheckAllKnownObjects,
     trackedTargets,
+    removeTrackedTarget,
+    clearTrackedTargets,
     selectedObject,
     inspectPixelOrCoord,
     playback,
@@ -71,6 +89,69 @@ export const BlinkerModal: React.FC = () => {
     openSelectedSpectrum,
   } = useSkyExplorer();
 
+  type ScopedCalloutState = { scopeKey: string; target: CalloutRef };
+  const currentCalloutScopeKey = isBlinkerModalOpen
+    ? (manifest?.query.grid_key ?? 'open')
+    : 'closed';
+
+  const [controlsTab, setControlsTab] = useState<'controls' | 'objects'>('controls');
+  const [lockedCalloutState, setLockedCalloutState] = useState<ScopedCalloutState | null>(null);
+  const [hoverCalloutState, setHoverCalloutState] = useState<ScopedCalloutState | null>(null);
+  const [autoTrackSelection, setAutoTrackSelection] = useState<{
+    scopeKey: string;
+    trackId: string | null;
+  } | null>(null);
+  const hoverTimerRef = useRef<number | null>(null);
+  const hoverCandidateKeyRef = useRef<string | null>(null);
+
+  const selectedTrackId = selectedObject?.trackId ?? null;
+  const isDismissedAutoTrack =
+    autoTrackSelection?.scopeKey === currentCalloutScopeKey &&
+    autoTrackSelection.trackId === selectedTrackId;
+  const lockedCallout: CalloutRef | null = useMemo(
+    () =>
+      lockedCalloutState?.scopeKey === currentCalloutScopeKey
+        ? lockedCalloutState.target
+        : isBlinkerModalOpen &&
+            selectedTrackId &&
+            !isDismissedAutoTrack &&
+            trackedTargets.some((t) => t.trackId === selectedTrackId)
+          ? { kind: 'tracked', trackId: selectedTrackId }
+          : null,
+    [
+      currentCalloutScopeKey,
+      isBlinkerModalOpen,
+      isDismissedAutoTrack,
+      lockedCalloutState,
+      selectedTrackId,
+      trackedTargets,
+    ],
+  );
+  const hoverCallout: CalloutRef | null =
+    hoverCalloutState?.scopeKey === currentCalloutScopeKey ? hoverCalloutState.target : null;
+
+  const setLockedCallout = useCallback(
+    (next: CalloutRef | null) => {
+      if (next) {
+        setLockedCalloutState({ scopeKey: currentCalloutScopeKey, target: next });
+      } else {
+        setLockedCalloutState(null);
+        setAutoTrackSelection({
+          scopeKey: currentCalloutScopeKey,
+          trackId: selectedTrackId,
+        });
+      }
+    },
+    [currentCalloutScopeKey, selectedTrackId],
+  );
+
+  const setHoverCallout = useCallback(
+    (next: CalloutRef | null) => {
+      setHoverCalloutState(next ? { scopeKey: currentCalloutScopeKey, target: next } : null);
+    },
+    [currentCalloutScopeKey],
+  );
+
   const [controlsFolded, setControlsFolded] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -81,9 +162,11 @@ export const BlinkerModal: React.FC = () => {
   });
 
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const controlsCardRef = useRef<HTMLElement | null>(null);
   const canvasFrameRef = useRef<HTMLDivElement | null>(null);
   const visibleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [controlsRect, setControlsRect] = useState<AvoidRect | null>(null);
 
   const [frameRect, setFrameRect] = useState<{
     width: number;
@@ -132,19 +215,33 @@ export const BlinkerModal: React.FC = () => {
     });
   };
 
-  // Close Blinker Modal cleanly on Escape key
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current !== null) {
+      window.clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+    hoverCandidateKeyRef.current = null;
+  }, []);
+
+  useEffect(() => () => clearHoverTimer(), [clearHoverTimer]);
+
+  // Close Blinker Modal cleanly on Escape key (unlocks pinned callout first if open)
   useEffect(() => {
     if (!isBlinkerModalOpen) return undefined;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (lockedCallout) {
+          setLockedCallout(null);
+          return;
+        }
         closeBlinkerModal?.();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeBlinkerModal, isBlinkerModalOpen]);
+  }, [closeBlinkerModal, isBlinkerModalOpen, lockedCallout, setLockedCallout]);
 
-  // Measure canvas frame geometry inside modal stage for pixel-exact SVG overlay & leader lines
+  // Measure canvas frame and controls geometry inside modal stage for pixel-exact SVG overlay & callouts
   useEffect(() => {
     if (!isBlinkerModalOpen) return undefined;
 
@@ -162,6 +259,16 @@ export const BlinkerModal: React.FC = () => {
         stageW: sRect.width,
         stageH: sRect.height,
       });
+      const ctrl = controlsCardRef.current;
+      if (ctrl) {
+        const cRect = ctrl.getBoundingClientRect();
+        setControlsRect({
+          left: cRect.left - sRect.left,
+          top: cRect.top - sRect.top,
+          right: cRect.right - sRect.left,
+          bottom: cRect.bottom - sRect.top,
+        });
+      }
     };
 
     const raf = window.requestAnimationFrame(measure);
@@ -170,7 +277,7 @@ export const BlinkerModal: React.FC = () => {
       window.cancelAnimationFrame(raf);
       window.removeEventListener('resize', measure);
     };
-  }, [isBlinkerModalOpen, isSpectraModalOpen]);
+  }, [controlsFolded, controlsTab, isBlinkerModalOpen, isSpectraModalOpen]);
 
   const viewBox = useMemo(
     () => computeViewportViewBox(renderSettings.zoom, renderSettings.panX, renderSettings.panY),
@@ -242,6 +349,23 @@ export const BlinkerModal: React.FC = () => {
     viewBox,
   ]);
 
+  const provenance = useMemo(
+    () => formatImageProvenanceBadge(manifest?.data_source_summary),
+    [manifest?.data_source_summary],
+  );
+
+  const missionFilterList = useMemo(() => {
+    const ordered: MissionName[] = [...BASE_MISSIONS_FILTER_LIST];
+    if (manifest) {
+      for (const ep of manifest.epochs) {
+        if (!ordered.includes(ep.mission)) {
+          ordered.push(ep.mission);
+        }
+      }
+    }
+    return ordered;
+  }, [manifest]);
+
   if (!isBlinkerModalOpen) {
     return null;
   }
@@ -262,6 +386,45 @@ export const BlinkerModal: React.FC = () => {
     sx: ((imgX - viewBox.minX) / viewBox.viewWidth) * frameRect.width,
     sy: ((imgY - viewBox.minY) / viewBox.viewHeight) * frameRect.height,
   });
+
+  // Hit-test visible labeled catalog objects and actively tracked targets near screen coordinates
+  const findHitLabeledObject = (localX: number, localY: number): CalloutRef | null => {
+    const epIdx = renderSettings.activeEpochIndex;
+    for (const track of trackedTargets) {
+      const wp = track.waypoints[epIdx] ??
+        track.waypoints[track.originEpochIndex] ?? {
+          x: track.originCentroidX,
+          y: track.originCentroidY,
+        };
+      const { sx, sy } = imageToScreen(wp.x, wp.y);
+      const nearMarker = Math.hypot(localX - sx, localY - sy) <= 18;
+      const nearLabel =
+        Boolean(track.matchedLabel) &&
+        localX >= sx + 12 &&
+        localX <= sx + 145 &&
+        Math.abs(localY - sy) <= 11;
+      if (nearMarker || nearLabel) {
+        return { kind: 'tracked', trackId: track.trackId };
+      }
+    }
+
+    for (const obj of knownObjects) {
+      if (!checkedIdSet.has(obj.object_id) || trackedObjectIdSet.has(obj.object_id)) {
+        continue;
+      }
+      const epPos =
+        obj.epoch_positions?.[
+          Math.min(epIdx, Math.max(0, (obj.epoch_positions?.length ?? 1) - 1))
+        ] ?? obj;
+      const { sx, sy } = imageToScreen(epPos.x, epPos.y);
+      const nearMarker = Math.hypot(localX - sx, localY - sy) <= 18;
+      const nearLabel = localX >= sx + 14 && localX <= sx + 150 && Math.abs(localY - sy) <= 11;
+      if (nearMarker || nearLabel) {
+        return { kind: 'known', objectId: obj.object_id };
+      }
+    }
+    return null;
+  };
 
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -292,6 +455,8 @@ export const BlinkerModal: React.FC = () => {
       const dy = e.clientY - drag.startClientY;
       if (Math.hypot(dx, dy) > 4) {
         drag.moved = true;
+        clearHoverTimer();
+        setHoverCallout(null);
       }
       if (drag.moved && renderSettings.zoom > 1.0) {
         const deltaImgX = -(dx / Math.max(1, fRect.width)) * viewBox.viewWidth;
@@ -310,7 +475,31 @@ export const BlinkerModal: React.FC = () => {
     // Hover hygiene inspection (FLAGS + flux/variance)
     if (localX < 0 || localY < 0 || localX > fRect.width || localY > fRect.height) {
       setHoverFlagTooltip(null);
+      clearHoverTimer();
+      setHoverCallout(null);
       return;
+    }
+
+    // Hover-delay preview over labeled markers when no details box is locked
+    if (!lockedCallout) {
+      const hit = findHitLabeledObject(localX, localY);
+      const hitKey = hit
+        ? hit.kind === 'tracked'
+          ? `t:${hit.trackId}`
+          : `k:${hit.objectId}`
+        : null;
+      if (hit && hitKey !== hoverCandidateKeyRef.current) {
+        clearHoverTimer();
+        hoverCandidateKeyRef.current = hitKey;
+        setHoverCallout(null);
+        hoverTimerRef.current = window.setTimeout(() => {
+          setHoverCallout(hit);
+          observatoryLogger.info('blinker', 'callout_hover_show', { hitKey });
+        }, HOVER_DETAILS_DELAY_MS);
+      } else if (!hit && hoverCandidateKeyRef.current !== null) {
+        clearHoverTimer();
+        setHoverCallout(null);
+      }
     }
 
     const { x: ix, y: iy } = screenToImageCoordinates(
@@ -355,6 +544,24 @@ export const BlinkerModal: React.FC = () => {
     const frameEl = canvasFrameRef.current;
     if (!frameEl) return;
     const fRect = frameEl.getBoundingClientRect();
+    const localX = e.clientX - fRect.left;
+    const localY = e.clientY - fRect.top;
+
+    const hitLabeled = findHitLabeledObject(localX, localY);
+    if (hitLabeled) {
+      clearHoverTimer();
+      setHoverCallout(null);
+      setLockedCallout(hitLabeled);
+      observatoryLogger.info('blinker', 'callout_click_lock', { ...hitLabeled });
+      return;
+    }
+
+    if (lockedCallout) {
+      setLockedCallout(null);
+      observatoryLogger.info('blinker', 'callout_unlock_by_sky_click');
+      return;
+    }
+
     const { x: imgX, y: imgY } = screenToImageCoordinates(
       e.clientX,
       e.clientY,
@@ -363,6 +570,11 @@ export const BlinkerModal: React.FC = () => {
       renderSettings.panX,
       renderSettings.panY,
     );
+    observatoryLogger.info('blinker', 'click_to_track', {
+      x: Number(imgX.toFixed(2)),
+      y: Number(imgY.toFixed(2)),
+      epoch: renderSettings.activeEpochIndex,
+    });
     inspectPixelOrCoord(imgX, imgY, renderSettings.activeEpochIndex);
   };
 
@@ -377,10 +589,33 @@ export const BlinkerModal: React.FC = () => {
     setViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
   };
 
-  // Compute stage geometry for angled leader line (Vector 1) & 288x87px Callout Card (Frame 34)
+  const activeCalloutRef: CalloutRef | null = lockedCallout ?? hoverCallout;
+  const activeCalloutOrigin: DetailsCalloutOrigin = lockedCallout ? 'click' : 'hover';
+
+  interface CalloutDetail {
+    title: string;
+    subtitle: string;
+    description: string;
+    catalogBadge: string;
+    ra: number;
+    dec: number;
+    properMotionText: string;
+    magnitudeText: string;
+    w1W2Text: string | null;
+    color: string;
+    imgX: number;
+    imgY: number;
+    trackId: string | null;
+    objectId: string | null;
+    isLocked: boolean;
+  }
+
+  let calloutDetail: CalloutDetail | null = null;
   let calloutGeometry: {
     markerStageX: number;
     markerStageY: number;
+    lineStartX: number;
+    lineStartY: number;
     kneeX: number;
     kneeY: number;
     cardLeft: number;
@@ -390,47 +625,169 @@ export const BlinkerModal: React.FC = () => {
     color: string;
   } | null = null;
 
-  if (selectedObject && manifest) {
-    const wp = selectedObject.waypoints[renderSettings.activeEpochIndex] ??
-      selectedObject.waypoints[selectedObject.originEpochIndex] ?? {
-        x: selectedObject.originCentroidX,
-        y: selectedObject.originCentroidY,
+  if (activeCalloutRef && manifest) {
+    const epIdx = renderSettings.activeEpochIndex;
+    const targetNameLower = manifest.target_metadata.name.trim().toLowerCase();
+
+    if (activeCalloutRef.kind === 'tracked') {
+      const track = trackedTargets.find((t) => t.trackId === activeCalloutRef.trackId);
+      if (track) {
+        const knownMatch = track.matchedObjectId
+          ? knownObjects.find((k) => k.object_id === track.matchedObjectId)
+          : undefined;
+        const wp = track.waypoints[epIdx] ??
+          track.waypoints[track.originEpochIndex] ?? {
+            x: track.originCentroidX,
+            y: track.originCentroidY,
+          };
+        const title = track.matchedLabel ?? 'Uncataloged Moving Source';
+        const isPrimaryFieldTarget =
+          Boolean(targetNameLower) && title.toLowerCase().includes(targetNameLower);
+        const notesParts: string[] = [];
+        if (isPrimaryFieldTarget && manifest.target_metadata.description) {
+          notesParts.push(manifest.target_metadata.description);
+        } else if (knownMatch) {
+          const typeLabel = [knownMatch.canonical_name, knownMatch.otype, knownMatch.object_type]
+            .filter(Boolean)
+            .join(' · ');
+          if (typeLabel) notesParts.push(typeLabel);
+        }
+        if (track.statusMessage && !notesParts.includes(track.statusMessage)) {
+          notesParts.push(track.statusMessage);
+        }
+        if (knownMatch?.data_source) {
+          notesParts.push(`Catalog provenance: ${knownMatch.data_source}`);
+        }
+        if (notesParts.length === 0 && manifest.target_metadata.description) {
+          notesParts.push(
+            `Field: ${manifest.target_metadata.name}. ${manifest.target_metadata.description}`,
+          );
+        }
+
+        calloutDetail = {
+          title,
+          subtitle: `${formatRaDecCompact(track.ra, track.dec)} · Constellation: ${
+            manifest.target_metadata.constellation || 'n/a'
+          }`,
+          description: notesParts.join(' '),
+          catalogBadge: track.matchedCatalog ? track.matchedCatalog.toUpperCase() : 'CANDIDATE',
+          ra: track.ra,
+          dec: track.dec,
+          properMotionText: `${track.properMotionArcsecPerYr.toFixed(2)}"/yr`,
+          magnitudeText:
+            knownMatch && knownMatch.magnitude !== null
+              ? formatMagnitude(knownMatch.magnitude)
+              : 'mag n/a',
+          w1W2Text:
+            knownMatch && knownMatch.w1_w2_color !== null
+              ? `W1-W2 ${knownMatch.w1_w2_color >= 0 ? '+' : ''}${knownMatch.w1_w2_color.toFixed(2)}`
+              : null,
+          color: track.color,
+          imgX: wp.x,
+          imgY: wp.y,
+          trackId: track.trackId,
+          objectId: track.matchedObjectId ?? null,
+          isLocked: activeCalloutOrigin === 'click',
+        };
+      }
+    } else {
+      const obj = knownObjects.find((k) => k.object_id === activeCalloutRef.objectId);
+      if (obj) {
+        const epPos =
+          obj.epoch_positions?.[
+            Math.min(epIdx, Math.max(0, (obj.epoch_positions?.length ?? 1) - 1))
+          ] ?? obj;
+        const color = objectHighlighterColors[obj.object_id] ?? '#38bdf8';
+        const isPrimaryFieldTarget =
+          Boolean(targetNameLower) && obj.label.toLowerCase().includes(targetNameLower);
+        const notesParts: string[] = [];
+        if (isPrimaryFieldTarget && manifest.target_metadata.description) {
+          notesParts.push(manifest.target_metadata.description);
+        }
+        const typeMeta = [obj.canonical_name, obj.otype, obj.object_class ?? obj.object_type]
+          .filter(Boolean)
+          .join(' · ');
+        if (typeMeta) {
+          notesParts.push(`Classification: ${typeMeta}`);
+        }
+        if (obj.parallax_mas !== null && obj.parallax_mas !== undefined) {
+          notesParts.push(`Parallax: ${obj.parallax_mas.toFixed(1)} mas`);
+        }
+        if (obj.data_source) {
+          notesParts.push(`Source: ${obj.data_source}`);
+        }
+
+        calloutDetail = {
+          title: obj.label,
+          subtitle: `${formatRaDecCompact(epPos.ra, epPos.dec)} · Constellation: ${
+            manifest.target_metadata.constellation || 'n/a'
+          }`,
+          description:
+            notesParts.length > 0
+              ? notesParts.join(' · ')
+              : `Cataloged celestial source in the ${manifest.target_metadata.name} cutout.`,
+          catalogBadge: catalogBadgeLabel(obj.catalog),
+          ra: epPos.ra,
+          dec: epPos.dec,
+          properMotionText: formatProperMotion(obj.proper_motion_arcsec_yr),
+          magnitudeText: formatMagnitude(obj.magnitude),
+          w1W2Text:
+            obj.w1_w2_color !== null
+              ? `W1-W2 ${obj.w1_w2_color >= 0 ? '+' : ''}${obj.w1_w2_color.toFixed(2)}`
+              : null,
+          color,
+          imgX: epPos.x,
+          imgY: epPos.y,
+          trackId: null,
+          objectId: obj.object_id,
+          isLocked: activeCalloutOrigin === 'click',
+        };
+      }
+    }
+
+    if (calloutDetail) {
+      const { sx, sy } = imageToScreen(calloutDetail.imgX, calloutDetail.imgY);
+      const markerStageX = frameRect.leftInStage + sx;
+      const markerStageY = frameRect.topInStage + sy;
+
+      const cardW = Math.min(316, Math.max(240, frameRect.stageW - 28));
+      const cardH = 186;
+      const smart = computeSmartCalloutLayout({
+        markerStageX,
+        markerStageY,
+        stageW: frameRect.stageW,
+        stageH: frameRect.stageH,
+        cardW,
+        cardH,
+        avoidRects: controlsRect ? [controlsRect] : [],
+      });
+
+      let lineStartX = markerStageX + 14;
+      let lineStartY = markerStageY;
+      if (smart.side === 'left') {
+        lineStartX = markerStageX - 14;
+      } else if (smart.side === 'above') {
+        lineStartX = markerStageX;
+        lineStartY = markerStageY - 14;
+      } else if (smart.side === 'below') {
+        lineStartX = markerStageX;
+        lineStartY = markerStageY + 14;
+      }
+
+      calloutGeometry = {
+        markerStageX,
+        markerStageY,
+        lineStartX,
+        lineStartY,
+        kneeX: smart.kneeX,
+        kneeY: smart.kneeY,
+        cardLeft: smart.cardLeft,
+        cardTop: smart.cardTop,
+        anchorX: smart.anchorX,
+        anchorY: smart.anchorY,
+        color: calloutDetail.color,
       };
-    const { sx, sy } = imageToScreen(wp.x, wp.y);
-    const markerStageX = frameRect.leftInStage + sx;
-    const markerStageY = frameRect.topInStage + sy;
-
-    const cardW = 288;
-    const cardH = 87;
-    const cardLeft = Math.max(
-      14,
-      Math.min(
-        frameRect.stageW - cardW - 14,
-        frameRect.leftInStage + frameRect.width + 18 > frameRect.stageW - cardW
-          ? frameRect.stageW - cardW - 14
-          : frameRect.leftInStage + frameRect.width - 24,
-      ),
-    );
-    const cardTop = Math.max(
-      14,
-      Math.min(frameRect.stageH - cardH - 64, markerStageY - cardH * 0.5),
-    );
-    const anchorX = cardLeft;
-    const anchorY = cardTop + cardH * 0.5;
-    const kneeX = Math.max(markerStageX + 18, anchorX - 24);
-    const kneeY = anchorY;
-
-    calloutGeometry = {
-      markerStageX,
-      markerStageY,
-      kneeX,
-      kneeY,
-      cardLeft,
-      cardTop,
-      anchorX,
-      anchorY,
-      color: selectedObject.color,
-    };
+    }
   }
 
   const decodedHoverFlags = hoverFlagTooltip
@@ -438,23 +795,23 @@ export const BlinkerModal: React.FC = () => {
     : null;
 
   const sectionSubtitle = (() => {
-    if (!manifest) return 'Loading calibrated SPHEREx planes...';
+    if (!manifest) return 'Loading calibrated infrared planes...';
     if (renderSettings.mode === 'subtract') {
       return `Diff: Pass ${renderSettings.passBIndex + 1} (${
-        passBEpoch?.iso_date?.slice(0, 10) ?? '—'
-      }, ${passBEpoch?.mission ?? 'SPHEREx'}) − Pass ${renderSettings.passAIndex + 1} (${
-        passAEpoch?.iso_date?.slice(0, 10) ?? '—'
+        passBEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
+      }, ${passBEpoch?.mission ?? 'SPHEREx'}) - Pass ${renderSettings.passAIndex + 1} (${
+        passAEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
       }, ${passAEpoch?.mission ?? 'SPHEREx'})`;
     }
     if (renderSettings.mode === 'coadd') {
       const count = renderSettings.coaddIndices.length || totalEpochs;
-      return `Co-Added Stack (${count} passes: #${renderSettings.passAIndex + 1}–#${
+      return `Co-Added Stack (${count} passes: #${renderSettings.passAIndex + 1}-#${
         renderSettings.passBIndex + 1
-      }) · ${manifest.data_source_summary.primary_mission ?? 'SPHEREx'}`;
+      }) · ${provenance.shortLabel}`;
     }
     return `Pass ${renderSettings.activeEpochIndex + 1}/${totalEpochs} · ${
-      activeEpoch?.iso_date?.slice(0, 10) ?? '—'
-    } · ${activeEpoch?.mission ?? 'SPHEREx'}`;
+      activeEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
+    } · ${activeEpoch?.mission ?? provenance.shortLabel}`;
   })();
 
   return (
@@ -537,7 +894,17 @@ export const BlinkerModal: React.FC = () => {
             </span>
           </div>
 
-          <div className="blinker-header-right">
+          <div
+            className="blinker-header-right"
+            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+          >
+            <span
+              className={`provenance-pill provenance-pill--${provenance.tier}`}
+              data-testid="blinker-provenance-badge"
+              title={manifest?.data_source_summary?.status_note ?? provenance.label}
+            >
+              {provenance.label}
+            </span>
             <button
               type="button"
               className="hud-icon-btn"
@@ -551,11 +918,29 @@ export const BlinkerModal: React.FC = () => {
         </header>
 
         {/* Modal Main Stage */}
-        <div ref={stageRef} className="blinker-stage">
-          {/* Top-Left Foldable Controls Card (Frame 1 - 291px) */}
+        <div
+          ref={stageRef}
+          className="blinker-stage"
+          onPointerDown={(e) => {
+            if (!lockedCallout) return;
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.closest('.callout-card') ||
+                target.closest('.blinker-controls-card') ||
+                target.closest('.blinker-canvas-frame') ||
+                target.closest('.blinker-transport-bar'))
+            ) {
+              return;
+            }
+            setLockedCallout(null);
+          }}
+        >
+          {/* Top-Left Foldable Controls & Inline Objects Card */}
           <aside
+            ref={controlsCardRef}
             className="blinker-controls-card"
-            aria-label="Infrared Blinker & Wavelength Controls"
+            aria-label="Infrared Blinker, Wavelength & Known Objects Controls"
             data-testid="blinker-controls-card"
           >
             <div className="hud-drag-handle" style={{ cursor: 'default', padding: '9px 12px' }}>
@@ -574,138 +959,309 @@ export const BlinkerModal: React.FC = () => {
 
             {!controlsFolded && (
               <div className="blinker-controls-body">
-                {/* 1. Dual-Thumb Wavelength Slice Slider (Dim & Pop) */}
-                <div>
-                  <DualThumbRangeSlider
-                    label="Wavelength Slice"
-                    min={0.75}
-                    max={5.0}
-                    step={0.05}
-                    minGap={0.15}
-                    value={renderSettings.wavelengthRangeUm}
-                    formatReadout={(lo, hi) => `${lo.toFixed(2)}–${hi.toFixed(2)} µm`}
-                    lowAriaLabel="Minimum wavelength micrometers"
-                    highAriaLabel="Maximum wavelength micrometers"
-                    testId="wavelength-dual-slider"
-                    onChange={(next) => updateRenderSettings({ wavelengthRangeUm: next })}
-                  />
-                  <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
-                    {[
-                      { label: 'All 0.75–5.0', range: [0.75, 5.0] as [number, number] },
-                      { label: 'Cold 3.8–5.0', range: [3.8, 5.0] as [number, number] },
-                      { label: 'Ice 2.4–3.8', range: [2.4, 3.8] as [number, number] },
-                    ].map((preset) => (
+                <div
+                  className="blinker-controls-tabs"
+                  role="tablist"
+                  aria-label="Blinker Side Panel Tabs"
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={controlsTab === 'controls'}
+                    data-testid="blinker-tab-controls"
+                    className={`blinker-controls-tab-btn ${controlsTab === 'controls' ? 'active' : ''}`}
+                    onClick={() => setControlsTab('controls')}
+                  >
+                    Controls
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={controlsTab === 'objects'}
+                    data-testid="blinker-tab-objects"
+                    className={`blinker-controls-tab-btn ${controlsTab === 'objects' ? 'active' : ''}`}
+                    onClick={() => setControlsTab('objects')}
+                  >
+                    Known Objects ({checkedIdSet.size}/{knownObjects.length})
+                  </button>
+                </div>
+
+                {controlsTab === 'controls' ? (
+                  <>
+                    {/* 1. Dual-Thumb Wavelength Slice Slider (Dim & Pop) */}
+                    <div>
+                      <DualThumbRangeSlider
+                        label="Wavelength Slice"
+                        min={0.75}
+                        max={5.0}
+                        step={0.05}
+                        minGap={0.15}
+                        value={renderSettings.wavelengthRangeUm}
+                        formatReadout={(lo, hi) => `${lo.toFixed(2)}-${hi.toFixed(2)} µm`}
+                        lowAriaLabel="Minimum wavelength micrometers"
+                        highAriaLabel="Maximum wavelength micrometers"
+                        testId="wavelength-dual-slider"
+                        onChange={(next) => updateRenderSettings({ wavelengthRangeUm: next })}
+                      />
+                      <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                        {[
+                          { label: 'All 0.75-5.0', range: [0.75, 5.0] as [number, number] },
+                          { label: 'Cold 3.8-5.0', range: [3.8, 5.0] as [number, number] },
+                          { label: 'Ice 2.4-3.8', range: [2.4, 3.8] as [number, number] },
+                        ].map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            className="hud-btn-secondary"
+                            style={{ height: 22, padding: '0 6px', fontSize: 10 }}
+                            onClick={() =>
+                              updateRenderSettings({ wavelengthRangeUm: preset.range })
+                            }
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 2. Explicit [Blink | Subtract | Add] Mode Pill + Pass Dual-Thumb Slider */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div
+                        className="mode-segmented-pill"
+                        role="tablist"
+                        aria-label="Comparison Mode"
+                        data-testid="comparison-mode-pill"
+                      >
+                        {(
+                          [
+                            { id: 'blink', label: 'Blink' },
+                            { id: 'subtract', label: 'Subtract' },
+                            { id: 'coadd', label: 'Add' },
+                          ] as Array<{ id: ComparisonMode; label: string }>
+                        ).map((m) => (
+                          <button
+                            key={m.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={renderSettings.mode === m.id}
+                            data-testid={`mode-btn-${m.id}`}
+                            className={`mode-segmented-btn ${
+                              renderSettings.mode === m.id ? 'is-active' : ''
+                            }`}
+                            onClick={() => updateRenderSettings({ mode: m.id })}
+                          >
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {totalEpochs >= 2 && (
+                        <DualThumbRangeSlider
+                          label={
+                            renderSettings.mode === 'coadd'
+                              ? 'Co-Add Pass Span'
+                              : 'Pass Pair Window'
+                          }
+                          min={1}
+                          max={totalEpochs}
+                          step={1}
+                          minGap={1}
+                          value={[
+                            Math.min(renderSettings.passAIndex + 1, totalEpochs - 1),
+                            Math.max(2, Math.min(totalEpochs, renderSettings.passBIndex + 1)),
+                          ]}
+                          formatReadout={(lo, hi) =>
+                            renderSettings.mode === 'subtract'
+                              ? `P${hi} − P${lo}`
+                              : `P${lo} .. P${hi}`
+                          }
+                          lowAriaLabel="Left reference pass"
+                          highAriaLabel="Right target pass"
+                          testId="pass-dual-slider"
+                          onChange={([lo, hi]) => {
+                            const idxA = Math.max(0, Math.min(totalEpochs - 2, lo - 1));
+                            const idxB = Math.max(idxA + 1, Math.min(totalEpochs - 1, hi - 1));
+                            const span: number[] = [];
+                            for (let i = idxA; i <= idxB; i += 1) span.push(i);
+                            updateRenderSettings({
+                              passAIndex: idxA,
+                              passBIndex: idxB,
+                              coaddIndices: span,
+                            });
+                          }}
+                        />
+                      )}
+                    </div>
+
+                    {/* 3. Mission Source Filter Pills (SPHEREx, WISE, NEOSSat, SkyView...) */}
+                    <div>
+                      <div className="control-section-header" style={{ marginBottom: 4 }}>
+                        <span className="control-section-title">Mission Sources</span>
+                      </div>
+                      <div className="mission-filter-row" data-testid="mission-filter-row">
+                        {missionFilterList.map((mission) => {
+                          const enabled = activeMissions.includes(mission);
+                          return (
+                            <button
+                              key={mission}
+                              type="button"
+                              aria-pressed={enabled}
+                              data-testid={`mission-pill-${mission}`}
+                              className={`mission-pill-btn ${enabled ? 'is-enabled' : ''}`}
+                              onClick={() => toggleMissionFilter?.(mission)}
+                            >
+                              <span
+                                style={{
+                                  width: 7,
+                                  height: 7,
+                                  borderRadius: '50%',
+                                  background: enabled
+                                    ? 'var(--accent-cyan)'
+                                    : 'rgba(148, 163, 184, 0.35)',
+                                }}
+                              />
+                              <span>{mission}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div
+                    style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+                    data-testid="blinker-inline-objects-panel"
+                  >
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       <button
-                        key={preset.label}
                         type="button"
                         className="hud-btn-secondary"
-                        style={{ height: 22, padding: '0 6px', fontSize: 10 }}
-                        onClick={() => updateRenderSettings({ wavelengthRangeUm: preset.range })}
+                        style={{ flex: 1, height: 24, fontSize: 11, padding: '0 8px' }}
+                        data-testid="blinker-objects-select-all"
+                        onClick={() => checkAllKnownObjects?.()}
                       >
-                        {preset.label}
+                        Select All
                       </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 2. Explicit [Blink | Subtract | Add] Mode Pill + Pass Dual-Thumb Slider */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  <div
-                    className="mode-segmented-pill"
-                    role="tablist"
-                    aria-label="Comparison Mode"
-                    data-testid="comparison-mode-pill"
-                  >
-                    {(
-                      [
-                        { id: 'blink', label: 'Blink' },
-                        { id: 'subtract', label: 'Subtract' },
-                        { id: 'coadd', label: 'Add' },
-                      ] as Array<{ id: ComparisonMode; label: string }>
-                    ).map((m) => (
                       <button
-                        key={m.id}
                         type="button"
-                        role="tab"
-                        aria-selected={renderSettings.mode === m.id}
-                        data-testid={`mode-btn-${m.id}`}
-                        className={`mode-segmented-btn ${
-                          renderSettings.mode === m.id ? 'is-active' : ''
-                        }`}
-                        onClick={() => updateRenderSettings({ mode: m.id })}
+                        className="hud-btn-secondary"
+                        style={{ flex: 1, height: 24, fontSize: 11, padding: '0 8px' }}
+                        data-testid="blinker-objects-clear-all"
+                        onClick={() => {
+                          uncheckAllKnownObjects?.();
+                          if (lockedCallout?.kind === 'known') {
+                            setLockedCallout(null);
+                          }
+                        }}
                       >
-                        {m.label}
+                        Clear All
                       </button>
-                    ))}
-                  </div>
-
-                  {totalEpochs >= 2 && (
-                    <DualThumbRangeSlider
-                      label={
-                        renderSettings.mode === 'coadd' ? 'Co-Add Pass Span' : 'Pass Pair Window'
-                      }
-                      min={1}
-                      max={totalEpochs}
-                      step={1}
-                      minGap={1}
-                      value={[
-                        Math.min(renderSettings.passAIndex + 1, totalEpochs - 1),
-                        Math.max(2, Math.min(totalEpochs, renderSettings.passBIndex + 1)),
-                      ]}
-                      formatReadout={(lo, hi) =>
-                        renderSettings.mode === 'subtract' ? `P${hi} − P${lo}` : `P${lo} .. P${hi}`
-                      }
-                      lowAriaLabel="Left reference pass"
-                      highAriaLabel="Right target pass"
-                      testId="pass-dual-slider"
-                      onChange={([lo, hi]) => {
-                        const idxA = Math.max(0, Math.min(totalEpochs - 2, lo - 1));
-                        const idxB = Math.max(idxA + 1, Math.min(totalEpochs - 1, hi - 1));
-                        const span: number[] = [];
-                        for (let i = idxA; i <= idxB; i += 1) span.push(i);
-                        updateRenderSettings({
-                          passAIndex: idxA,
-                          passBIndex: idxB,
-                          coaddIndices: span,
-                        });
-                      }}
-                    />
-                  )}
-                </div>
-
-                {/* 3. Mission Source Filter Pills (SPHEREx, WISE, NEOSSat) */}
-                <div>
-                  <div className="control-section-header" style={{ marginBottom: 4 }}>
-                    <span className="control-section-title">Mission Sources</span>
-                  </div>
-                  <div className="mission-filter-row" data-testid="mission-filter-row">
-                    {MISSIONS_FILTER_LIST.map((mission) => {
-                      const enabled = activeMissions.includes(mission);
-                      return (
+                      {trackedTargets.length > 0 && (
                         <button
-                          key={mission}
                           type="button"
-                          aria-pressed={enabled}
-                          data-testid={`mission-pill-${mission}`}
-                          className={`mission-pill-btn ${enabled ? 'is-enabled' : ''}`}
-                          onClick={() => toggleMissionFilter?.(mission)}
+                          className="hud-btn-secondary"
+                          style={{ height: 24, fontSize: 11, padding: '0 8px' }}
+                          data-testid="blinker-objects-clear-pins"
+                          onClick={() => {
+                            clearTrackedTargets?.();
+                            if (lockedCallout?.kind === 'tracked') {
+                              setLockedCallout(null);
+                            }
+                          }}
                         >
-                          <span
-                            style={{
-                              width: 7,
-                              height: 7,
-                              borderRadius: '50%',
-                              background: enabled
-                                ? 'var(--accent-cyan)'
-                                : 'rgba(148, 163, 184, 0.35)',
-                            }}
-                          />
-                          <span>{mission}</span>
+                          Untrack ({trackedTargets.length})
                         </button>
-                      );
-                    })}
+                      )}
+                    </div>
+
+                    <div className="blinker-inline-objects-list">
+                      {knownObjects.length === 0 ? (
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', padding: 6 }}>
+                          No cataloged objects inside this cutout boundary.
+                        </div>
+                      ) : (
+                        knownObjects.map((obj) => {
+                          const checked = checkedIdSet.has(obj.object_id);
+                          const color = objectHighlighterColors[obj.object_id] ?? '#38bdf8';
+                          return (
+                            <div
+                              key={obj.object_id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 7,
+                                padding: '5px 7px',
+                                borderRadius: 8,
+                                background: checked
+                                  ? 'rgba(30, 41, 59, 0.72)'
+                                  : 'rgba(15, 23, 42, 0.42)',
+                                border: `1px solid ${
+                                  checked ? 'rgba(56, 189, 248, 0.35)' : 'var(--border-hairline)'
+                                }`,
+                              }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                aria-label={`Toggle ${obj.label}`}
+                                data-testid={`blinker-inline-obj-check-${obj.object_id}`}
+                                onChange={() => toggleKnownObject?.(obj.object_id)}
+                                style={{ accentColor: color, cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!checked) {
+                                    toggleKnownObject?.(obj.object_id);
+                                  }
+                                  clearHoverTimer();
+                                  setHoverCallout(null);
+                                  setLockedCallout({ kind: 'known', objectId: obj.object_id });
+                                }}
+                                style={{
+                                  flex: 1,
+                                  textAlign: 'left',
+                                  minWidth: 0,
+                                  color: 'var(--text-primary)',
+                                  fontSize: 11.5,
+                                }}
+                                title="Click to inspect details"
+                              >
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 5,
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      width: 7,
+                                      height: 7,
+                                      borderRadius: '50%',
+                                      background: color,
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  <span style={{ overflowWrap: 'anywhere' }}>{obj.label}</span>
+                                </div>
+                                <div
+                                  className="mono"
+                                  style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}
+                                >
+                                  {catalogBadgeLabel(obj.catalog)} ·{' '}
+                                  {formatMagnitude(obj.magnitude)} ·{' '}
+                                  {formatProperMotion(obj.proper_motion_arcsec_yr)}
+                                </div>
+                              </button>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
           </aside>
@@ -721,6 +1277,8 @@ export const BlinkerModal: React.FC = () => {
             onPointerLeave={() => {
               panDragRef.current.active = false;
               setHoverFlagTooltip(null);
+              clearHoverTimer();
+              setHoverCallout(null);
             }}
             onWheel={handleCanvasWheel}
           >
@@ -731,28 +1289,6 @@ export const BlinkerModal: React.FC = () => {
               className="blinker-pixel-canvas"
               data-testid="blinker-pixel-canvas"
             />
-
-            {(!epochBuffers ||
-              loadingState.stage === 'loading_catalogs' ||
-              loadingState.stage === 'loading_cutouts') && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  background: 'rgba(0, 0, 0, 0.6)',
-                  color: 'var(--text-secondary)',
-                  fontSize: 13,
-                }}
-              >
-                <SpinnerIcon size={20} />
-                <span>{loadingState.message ?? 'Loading scientific detector planes...'}</span>
-              </div>
-            )}
 
             {/* Open-Center 3-Shape SVG Overlay (>=16x16px inner clearance, NO crosshairs, NO stacking) */}
             <svg
@@ -811,6 +1347,22 @@ export const BlinkerModal: React.FC = () => {
                           strokeLinejoin="round"
                         />
                       )}
+                      <text
+                        x={sx + 17}
+                        y={sy + 4}
+                        fill={color}
+                        fontSize={10}
+                        fontWeight={600}
+                        stroke="rgba(5, 8, 15, 0.92)"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        style={{
+                          pointerEvents: 'none',
+                          fontFamily: 'Inter, system-ui, sans-serif',
+                        }}
+                      >
+                        {obj.label}
+                      </text>
                     </g>
                   );
                 })}
@@ -867,13 +1419,31 @@ export const BlinkerModal: React.FC = () => {
                       strokeWidth={2}
                       rx={1.5}
                     />
+                    {track.matchedLabel && (
+                      <text
+                        x={sx + 16}
+                        y={sy + 4}
+                        fill={track.color}
+                        fontSize={10}
+                        fontWeight={600}
+                        stroke="rgba(5, 8, 15, 0.92)"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        style={{
+                          pointerEvents: 'none',
+                          fontFamily: 'Inter, system-ui, sans-serif',
+                        }}
+                      >
+                        {track.matchedLabel}
+                      </text>
+                    )}
                   </g>
                 );
               })}
             </svg>
           </div>
 
-          {/* Vector 1 Angled Leader Line Overlay connecting □ edge to Callout Card */}
+          {/* Thin 1px Angled Leader Line connecting object perimeter to Callout Card */}
           {calloutGeometry && (
             <svg
               aria-hidden="true"
@@ -887,23 +1457,24 @@ export const BlinkerModal: React.FC = () => {
               }}
             >
               <polyline
-                points={`${(calloutGeometry.markerStageX + 13).toFixed(1)},${calloutGeometry.markerStageY.toFixed(1)} ${calloutGeometry.kneeX.toFixed(1)},${calloutGeometry.kneeY.toFixed(1)} ${calloutGeometry.anchorX.toFixed(1)},${calloutGeometry.anchorY.toFixed(1)}`}
+                points={`${calloutGeometry.lineStartX.toFixed(1)},${calloutGeometry.lineStartY.toFixed(1)} ${calloutGeometry.kneeX.toFixed(1)},${calloutGeometry.kneeY.toFixed(1)} ${calloutGeometry.anchorX.toFixed(1)},${calloutGeometry.anchorY.toFixed(1)}`}
                 fill="none"
                 stroke={calloutGeometry.color}
-                strokeWidth={1.75}
+                strokeWidth={1}
                 strokeLinejoin="round"
-                opacity={0.9}
+                opacity={0.92}
               />
             </svg>
           )}
 
-          {/* Callout Card (Frame 34 - 288x87px) with Speed & On-Demand Spectra Button */}
-          {calloutGeometry && selectedObject && (
+          {/* Frosted Glass Non-Occluding Details Callout Card */}
+          {calloutGeometry && calloutDetail && (
             <div
               className="callout-card"
               role="region"
-              aria-label="Selected Target Callout Card"
+              aria-label="Object Details Callout Card"
               data-testid="blinker-callout-card"
+              data-callout-origin={activeCalloutOrigin}
               style={{
                 left: calloutGeometry.cardLeft,
                 top: calloutGeometry.cardTop,
@@ -913,29 +1484,96 @@ export const BlinkerModal: React.FC = () => {
               <div
                 style={{
                   display: 'flex',
-                  alignItems: 'center',
+                  alignItems: 'flex-start',
                   justifyContent: 'space-between',
-                  gap: 6,
+                  gap: 8,
                 }}
               >
-                <span
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    color: 'var(--text-primary)',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                  }}
-                >
-                  {selectedObject.matchedLabel ?? 'Uncataloged Moving Source'}
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      lineHeight: 1.3,
+                      overflowWrap: 'anywhere',
+                    }}
+                  >
+                    {calloutDetail.title}
+                  </div>
+                  <div
+                    className="mono"
+                    style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}
+                  >
+                    {calloutDetail.subtitle}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 9.5,
+                      padding: '1px 6px',
+                      borderRadius: 999,
+                      border: `1px solid ${calloutGeometry.color}66`,
+                      color: calloutDetail.isLocked
+                        ? calloutGeometry.color
+                        : 'var(--text-secondary)',
+                    }}
+                  >
+                    {calloutDetail.isLocked ? 'Pinned' : 'Preview'}
+                  </span>
+                  <button
+                    type="button"
+                    className="hud-icon-btn"
+                    style={{ width: 22, height: 22 }}
+                    aria-label="Close object details"
+                    data-testid="callout-close-btn"
+                    onClick={() => {
+                      clearHoverTimer();
+                      setHoverCallout(null);
+                      setLockedCallout(null);
+                    }}
+                  >
+                    <CloseIcon size={12} />
+                  </button>
+                </div>
+              </div>
+
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 11.5,
+                  lineHeight: 1.42,
+                  color: 'var(--text-secondary)',
+                  overflowWrap: 'anywhere',
+                }}
+                data-testid="callout-description"
+              >
+                {calloutDetail.description}
+              </p>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 10.5,
+                }}
+              >
+                <span className="badge-pill">{calloutDetail.catalogBadge}</span>
+                <span className="mono" style={{ color: 'var(--text-secondary)' }}>
+                  {calloutDetail.magnitudeText}
                 </span>
-                <span
-                  className="mono"
-                  style={{ fontSize: 11, color: calloutGeometry.color, flexShrink: 0 }}
-                >
-                  {selectedObject.properMotionArcsecPerYr.toFixed(2)}″/yr
+                <span className="mono" style={{ color: calloutGeometry.color }}>
+                  {calloutDetail.properMotionText}
                 </span>
+                {calloutDetail.w1W2Text && (
+                  <span className="mono" style={{ color: 'var(--text-muted)' }}>
+                    {calloutDetail.w1W2Text}
+                  </span>
+                )}
               </div>
 
               <div
@@ -944,19 +1582,52 @@ export const BlinkerModal: React.FC = () => {
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   gap: 8,
+                  paddingTop: 2,
                 }}
               >
-                <span className="badge-pill">
-                  {selectedObject.matchedCatalog
-                    ? selectedObject.matchedCatalog.toUpperCase()
-                    : 'CANDIDATE'}
-                </span>
+                {calloutDetail.trackId ? (
+                  <button
+                    type="button"
+                    className="hud-btn-secondary"
+                    style={{ height: 26, padding: '0 9px', fontSize: 11 }}
+                    data-testid="callout-untrack-btn"
+                    onClick={() => {
+                      removeTrackedTarget?.(calloutDetail.trackId!);
+                      setLockedCallout(null);
+                    }}
+                  >
+                    Untrack
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="hud-btn-secondary"
+                    style={{ height: 26, padding: '0 9px', fontSize: 11 }}
+                    data-testid="callout-pin-track-btn"
+                    onClick={() =>
+                      inspectPixelOrCoord(
+                        calloutDetail.imgX,
+                        calloutDetail.imgY,
+                        renderSettings.activeEpochIndex,
+                      )
+                    }
+                  >
+                    Pin Vector
+                  </button>
+                )}
+
                 <button
                   type="button"
                   className="hud-btn-primary"
                   style={{ height: 28, padding: '0 10px', fontSize: 11 }}
                   data-testid="view-spectrum-btn"
-                  onClick={() => openSelectedSpectrum?.()}
+                  onClick={() =>
+                    openSelectedSpectrum?.({
+                      ra: calloutDetail.ra,
+                      dec: calloutDetail.dec,
+                      label: calloutDetail.title,
+                    })
+                  }
                 >
                   <SpectrumWaveIcon size={13} />
                   <span>View 102-Band Spectrum</span>

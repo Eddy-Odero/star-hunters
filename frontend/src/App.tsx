@@ -9,6 +9,7 @@ import { NightSkyGlobe } from './components/NightSkyGlobe';
 import { NotificationOverlay } from './components/NotificationOverlay';
 import { SpotlightTourOverlay } from './components/SpotlightTourOverlay';
 import { URL_STATE_DEFAULTS, parseUrlState, replaceUrlState } from './utils/urlStateSync';
+import { observatoryLogger } from './utils/observatoryLogger';
 
 const ObservatoryWorkspace: React.FC = () => {
   const {
@@ -29,10 +30,15 @@ const ObservatoryWorkspace: React.FC = () => {
   );
   const urlInitializedRef = useRef(false);
   const skipFirstUrlWriteRef = useRef(true);
+  const lastWrittenUrlSigRef = useRef<string>('');
 
   useEffect(() => {
     if (urlInitializedRef.current) return;
     urlInitializedRef.current = true;
+    observatoryLogger.info('app', 'Workspace initialized', {
+      hasUrlTarget: Boolean(initialUrlState.target),
+      hasUrlCoords: initialUrlState.ra !== null && initialUrlState.dec !== null,
+    });
 
     if (initialUrlState.target) {
       selectPreset(initialUrlState.target);
@@ -66,18 +72,26 @@ const ObservatoryWorkspace: React.FC = () => {
     }
     if (typeof window === 'undefined') return;
 
-    replaceUrlState(
-      {
-        target: activePresetSlug,
-        ra: coordinates.ra,
-        dec: coordinates.dec,
-        fov: coordinates.fovArcmin,
-        mode: renderSettings.mode,
-        wlMin: renderSettings.wavelengthRangeUm[0],
-        wlMax: renderSettings.wavelengthRangeUm[1],
-      },
-      { baseSearch: window.location.search },
-    );
+    const sig = `${activePresetSlug ?? ''}|${coordinates.ra.toFixed(4)}|${coordinates.dec.toFixed(4)}|${coordinates.fovArcmin.toFixed(2)}|${renderSettings.mode}|${renderSettings.wavelengthRangeUm[0].toFixed(2)}|${renderSettings.wavelengthRangeUm[1].toFixed(2)}`;
+    if (sig === lastWrittenUrlSigRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      lastWrittenUrlSigRef.current = sig;
+      replaceUrlState(
+        {
+          target: activePresetSlug,
+          ra: coordinates.ra,
+          dec: coordinates.dec,
+          fov: coordinates.fovArcmin,
+          mode: renderSettings.mode,
+          wlMin: renderSettings.wavelengthRangeUm[0],
+          wlMax: renderSettings.wavelengthRangeUm[1],
+        },
+        { baseSearch: window.location.search },
+      );
+    }, 300);
+
+    return () => window.clearTimeout(timer);
   }, [activePresetSlug, coordinates, renderSettings.mode, renderSettings.wavelengthRangeUm]);
 
   // Pre-hydrate default showcase target immediately behind the Landing Curtain

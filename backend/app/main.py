@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import math
 import os
 import random
 import struct
+import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as wait_futures
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+
+import numpy as np
 
 from .models.contracts import (
     BINARY_FLAGS_UINT8_BYTES,
@@ -29,8 +35,14 @@ from .models.contracts import (
 )
 from .models.global_sky_reference_catalog import extend_global_known_objects_index
 from .services.celestial_catalog_pipeline import (
+    HORIZONS_FEATURED_BODIES,
     AutomatedCelestialPipeline,
     fetch_most_spherex_matches,
+)
+from .services.logging_config import configure_backend_logging, get_logger
+from .services.skyview_fallback import (
+    fetch_skyview_fallback,
+    inject_solar_system_ephemeris_overlay,
 )
 from .services.spatial_cache import (
     SpatialSqliteCache,
@@ -45,6 +57,8 @@ from .services.zenith_bridge import (
     lookup_constellation,
     pick_random_capital_city,
 )
+
+_logger = get_logger("backend")
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Query, Response
@@ -757,11 +771,25 @@ def build_sky_patch_manifest_payload(
             "constellation": target_meta["constellation"],
         },
         "data_source_summary": {
-            "primary_mission": "SPHEREx",
-            "has_multi_epoch_spherex": True,
+            "primary_mission": (
+                "SPHEREx"
+                if (static_preset_urls or resolved_slug in SHOWCASE_TARGETS)
+                else "Simulated"
+            ),
+            "has_multi_epoch_spherex": bool(resolved_slug in SHOWCASE_TARGETS),
             "uses_wise_fallback": False,
             "baseline_days": 182.7,
-            "status_note": "2 SPHEREx survey passes (6-month baseline)",
+            "status_note": (
+                "2 SPHEREx survey passes (6-month baseline)"
+                if resolved_slug in SHOWCASE_TARGETS
+                else "Simulated multi-band reference baseline (archival lookup pending)"
+            ),
+            "provenance_tier": "simulated",
+            "survey_name": (
+                "Simulated SPHEREx Showcase Baseline"
+                if resolved_slug in SHOWCASE_TARGETS
+                else "Simulated Multi-Band Reference"
+            ),
         },
         "wcs": wcs,
         "epochs": epochs,
@@ -1098,7 +1126,9 @@ class StarHuntersBackendService:
         cache: SpatialSqliteCache | None = None,
         enable_archival_data: bool | None = None,
         wise_fallback_fetcher: Any = fetch_wise_fallback,
+        skyview_fallback_fetcher: Any = fetch_skyview_fallback,
     ) -> None:
+        configure_backend_logging()
         self.cache = cache or SpatialSqliteCache()
         self.admin_token = os.environ.get("ADMIN_TOKEN", "star-hunters-dev-token")
         self.catalog_pipeline = AutomatedCelestialPipeline(cache=self.cache)
@@ -1109,6 +1139,12 @@ class StarHuntersBackendService:
             enable_archival_data = configured in {"1", "true", "yes", "on"}
         self.enable_archival_data = enable_archival_data
         self.wise_fallback_fetcher = wise_fallback_fetcher
+        self.skyview_fallback_fetcher = skyview_fallback_fetcher
+        self._inflight_tasks: dict[str, asyncio.Future[Any]] = {}
+        _logger.info(
+            "StarHuntersBackendService initialized (enable_archival_data=%s)",
+            self.enable_archival_data,
+        )
 
     def prewarm_known_data(self) -> int:
         """Aggressively pre-warm all showcase manifests, spectra, frames, and search index."""
@@ -1255,11 +1291,8 @@ class StarHuntersBackendService:
                 cached_dec = float(cached_zenith["zenith_icrs"]["dec"])
                 cached_grid_key, _, _ = compute_grid_key(cached_ra, cached_dec, 5.0)
                 cached_patch = self.cache.get_manifest(cached_grid_key)
-                cached_summary = (cached_patch or {}).get("data_source_summary", {})
-                cached_note = str(cached_summary.get("status_note", ""))
                 needs_archival_refresh = (
-                    self.enable_archival_data
-                    and cached_note == "2 SPHEREx survey passes (6-month baseline)"
+                    self.enable_archival_data and self._is_pending_archival_demo(cached_patch)
                 )
                 if cached_patch is None or needs_archival_refresh:
                     self.get_sky_patch(cached_ra, cached_dec, fov=5.0)
@@ -1341,69 +1374,185 @@ class StarHuntersBackendService:
         validate_catalogs_response(response)
         return response
 
-    async def get_catalogs_async(
-        self,
-        ra: float,
-        dec: float,
-        fov: float = 5.0,
-        live_catalogs: bool = True,
-    ) -> dict[str, Any]:
-        manifest = await self.get_sky_patch_async(
-            ra=ra,
-            dec=dec,
-            fov=fov,
-            live_catalogs=live_catalogs,
+    async def _run_singleflight(self, key: str, coro_factory: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        existing = self._inflight_tasks.get(key)
+        if existing is not None and not existing.done() and existing.get_loop() is loop:
+            _logger.info("Single-flight coalescing hit for %s", key)
+            return await asyncio.shield(existing)
+
+        fut: asyncio.Future[Any] = loop.create_future()
+        self._inflight_tasks[key] = fut
+        try:
+            result = await coro_factory()
+            if not fut.done():
+                fut.set_result(result)
+            return result
+        except BaseException as exc:
+            if not fut.done():
+                fut.set_exception(exc)
+            raise
+        finally:
+            if self._inflight_tasks.get(key) is fut:
+                self._inflight_tasks.pop(key, None)
+
+    @staticmethod
+    def _is_pending_archival_demo(manifest: dict[str, Any] | None) -> bool:
+        if not manifest:
+            return False
+        summary = manifest.get("data_source_summary", {})
+        note = str(summary.get("status_note", ""))
+        return (
+            note == "2 SPHEREx survey passes (6-month baseline)"
+            or "archival lookup pending" in note.lower()
         )
-        response = {
-            "query": manifest["query"],
-            "wcs": manifest["wcs"],
-            "catalog_overlays": manifest["catalog_overlays"],
-        }
-        validate_catalogs_response(response)
-        return response
 
-    def get_sky_patch(
+    def _apply_solar_system_ephemeris_to_frames(
         self,
+        manifest: dict[str, Any],
+        frames: dict[str, bytes],
+    ) -> tuple[dict[str, Any], dict[str, bytes]]:
+        """Inject live JPL Horizons planetary markers onto historical archival sky plates."""
+        primary = manifest.get("data_source_summary", {}).get("primary_mission")
+        if primary not in {"WISE", "SkyView"}:
+            return manifest, frames
+        known = list(manifest.get("catalog_overlays", {}).get("known_objects", []))
+        solar_bodies = [
+            obj
+            for obj in known
+            if (
+                str(obj.get("object_id", "")).startswith("ephem:")
+                or obj.get("object_class") in {"planet", "moon", "comet", "asteroid"}
+            )
+            and obj.get("epoch_positions")
+        ]
+        if not solar_bodies:
+            return manifest, frames
+
+        updated_frames = dict(frames)
+        epochs = list(manifest.get("epochs", []))
+        applied_names: list[str] = []
+        for ep in epochs:
+            ep_id = str(ep.get("epoch_id", ""))
+            det_url = str(ep.get("detectors_data_url", ""))
+            filename = det_url.rsplit("/", 1)[-1]
+            raw = updated_frames.get(filename)
+            if not raw or len(raw) != TOTAL_DETECTOR_VALUES * 4:
+                continue
+            cube = np.frombuffer(raw, dtype="<f4").reshape((6, GRID_HEIGHT, GRID_WIDTH)).copy()
+            ep_avail = list(ep.get("available_detectors") or [1, 2])
+            for body in solar_bodies:
+                pos = next(
+                    (p for p in body["epoch_positions"] if str(p.get("epoch_id")) == ep_id),
+                    body["epoch_positions"][0],
+                )
+                cube = inject_solar_system_ephemeris_overlay(
+                    cube,
+                    x_px=float(pos["x"]),
+                    y_px=float(pos["y"]),
+                    body_name=str(body.get("label", "Solar System Target")),
+                    body_class=str(body.get("object_class", "planet")),
+                    available_detectors=ep_avail,
+                )
+                if str(body.get("label")) not in applied_names:
+                    applied_names.append(str(body.get("label")))
+            updated_frames[filename] = np.ascontiguousarray(cube, dtype="<f4").tobytes(order="C")
+
+        if applied_names:
+            out_manifest = copy.deepcopy(manifest)
+            summary = out_manifest["data_source_summary"]
+            base_survey = str(summary.get("survey_name") or summary.get("primary_mission"))
+            summary["survey_name"] = f"JPL Horizons Ephemeris + {base_survey}"
+            summary["status_note"] = (
+                f"{summary.get('status_note', '')}; Horizons ({', '.join(applied_names[:2])})"
+            ).strip("; ")
+            _logger.info(
+                "Injected JPL Horizons ephemeris marker for %s onto %s frames",
+                applied_names,
+                primary,
+            )
+            return out_manifest, updated_frames
+        return manifest, frames
+
+    def _resolve_archival_patch_sync(
+        self,
+        *,
+        manifest: dict[str, Any],
+        grid_key: str,
         ra: float,
         dec: float,
-        fov: float = 5.0,
-    ) -> dict[str, Any]:
-        grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
-        cached_manifest = self.cache.get_manifest(grid_key)
-        if cached_manifest is not None:
-            # Do not let pre-ISS-12 synthetic demo patches mask the archival
-            # fetch path after the backend is upgraded/configured for real data.
-            cached_summary = cached_manifest.get("data_source_summary", {})
-            cached_note = str(cached_summary.get("status_note", ""))
-            is_legacy_demo = cached_note == "2 SPHEREx survey passes (6-month baseline)"
-            if not (self.enable_archival_data and is_legacy_demo):
-                validate_sky_patch_manifest(cached_manifest)
-                return cached_manifest
+        fov: float,
+        fallback_frames: dict[str, bytes],
+    ) -> tuple[dict[str, Any], dict[str, bytes]]:
+        """Run archival retrieval chain: SPHEREx -> WISE -> NASA SkyView -> Simulated."""
+        out_manifest = copy.deepcopy(manifest)
+        frames = dict(fallback_frames)
+        fallback_errors: list[str] = []
+        t0 = time.perf_counter()
 
-        manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
-        manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
-        slug = manifest["target_metadata"]["slug"]
-        if slug in SHOWCASE_TARGETS:
-            self.cache.pin_grid_key(grid_key)
-        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
+        try:
+            from .services.spherex_coadd import build_target_wcs_header, coadd_spherex_epochs
+            from .services.spherex_ingest import ingest_spherex_cutouts
 
-        if self.enable_archival_data:
+            fov_deg = float(fov) / 60.0
+            target_header = build_target_wcs_header(ra, dec, fov_deg)
+
+            # Stage archival tiers with tiny speculative delays so fast/mocked hits never
+            # trigger unnecessary downstream HTTP requests while slow WAN hosts run concurrently.
+            pool = ThreadPoolExecutor(max_workers=3)
+            fut_wise = None
+            fut_skyview = None
             try:
-                from .services.spherex_coadd import (
-                    build_target_wcs_header,
-                    coadd_spherex_epochs,
+                fut_spherex = pool.submit(
+                    ingest_spherex_cutouts,
+                    ra=ra,
+                    dec=dec,
+                    fov_arcmin=fov,
+                    allow_synthetic_fallback=False,
                 )
-                from .services.spherex_ingest import ingest_spherex_cutouts
+                wait_futures([fut_spherex], timeout=0.15)
+                spherex_fast_ok = False
+                if fut_spherex.done():
+                    try:
+                        cutouts = fut_spherex.result()
+                        fast_coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
+                        spherex_fast_ok = (
+                            len(fast_coadd.epochs) >= 2 and not fast_coadd.needs_wise_fallback
+                        )
+                    except Exception:
+                        spherex_fast_ok = False
 
-                fov_deg = float(fov) / 60.0
-                try:
-                    cutouts = ingest_spherex_cutouts(
-                        ra=ra, dec=dec, fov_arcmin=fov, allow_synthetic_fallback=False
+                if not spherex_fast_ok:
+                    fut_wise = pool.submit(
+                        self.wise_fallback_fetcher,
+                        ra=ra,
+                        dec=dec,
+                        fov_arcmin=fov,
+                        target_wcs_header=target_header,
                     )
-                except Exception:
-                    # An empty SPHEREx result is exactly the condition ISS-12
-                    # is intended to recover from; proceed to archival WISE.
+                    wait_futures([fut_wise], timeout=0.15)
+                    wise_fast_ok = False
+                    if fut_wise.done():
+                        try:
+                            fut_wise.result()
+                            wise_fast_ok = True
+                        except Exception:
+                            wise_fast_ok = False
+                    if not wise_fast_ok:
+                        fut_skyview = pool.submit(
+                            self.skyview_fallback_fetcher,
+                            ra=ra,
+                            dec=dec,
+                            fov_arcmin=fov,
+                            target_wcs_header=target_header,
+                        )
+
+                try:
+                    cutouts = fut_spherex.result()
+                except Exception as exc:
+                    fallback_errors.append(f"SPHEREx:{type(exc).__name__}")
                     cutouts = []
+
                 coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
                 epoch_entries: list[dict[str, Any]] = []
                 actual_frames: dict[str, bytes] = {}
@@ -1421,71 +1570,319 @@ class StarHuntersBackendService:
                             "mission": "SPHEREx",
                             "mjd": float(epoch.mjd),
                             "iso_date": mjd_to_iso(epoch.mjd),
-                            "detectors_data_url": (f"/api/v1/frames/{grid_key}/{filename}"),
-                            "flags_mask_url": (f"/api/v1/frames/{grid_key}/{flags_filename}"),
+                            "detectors_data_url": f"/api/v1/frames/{grid_key}/{filename}",
+                            "flags_mask_url": f"/api/v1/frames/{grid_key}/{flags_filename}",
                             "available_detectors": epoch.available_detectors or [1],
                             "binary_dtype": "float32",
                         }
                     )
 
                 if coadd.needs_wise_fallback:
-                    target_header = build_target_wcs_header(ra, dec, fov_deg)
-                    wise = self.wise_fallback_fetcher(
-                        ra=ra, dec=dec, fov_arcmin=fov, target_wcs_header=target_header
-                    )
-                    wise_data_name = "wise_fallback.bin"
-                    wise_flags_name = "wise_fallback_flags.bin"
-                    actual_frames[wise_data_name] = wise.detector_buffer
-                    actual_frames[wise_flags_name] = wise.flags_buffer
-                    epoch_entries.append(
-                        {
-                            "epoch_id": "wise_fallback",
-                            "label": "WISE/NEOWISE archival fallback (W1/W2)",
-                            "mission": "WISE",
-                            "mjd": float(wise.mjd),
-                            "iso_date": mjd_to_iso(wise.mjd),
-                            "detectors_data_url": (f"/api/v1/frames/{grid_key}/{wise_data_name}"),
-                            "flags_mask_url": (f"/api/v1/frames/{grid_key}/{wise_flags_name}"),
-                            "available_detectors": wise.available_detectors or [4, 5, 6],
-                            "binary_dtype": "float32",
+                    try:
+                        if fut_wise is None:
+                            wise = self.wise_fallback_fetcher(
+                                ra=ra,
+                                dec=dec,
+                                fov_arcmin=fov,
+                                target_wcs_header=target_header,
+                            )
+                        else:
+                            wise = fut_wise.result()
+                        wise_data_name = "wise_fallback.bin"
+                        wise_flags_name = "wise_fallback_flags.bin"
+                        actual_frames[wise_data_name] = wise.detector_buffer
+                        actual_frames[wise_flags_name] = wise.flags_buffer
+                        epoch_entries.append(
+                            {
+                                "epoch_id": "wise_fallback",
+                                "label": "WISE/NEOWISE archival fallback (W1/W2)",
+                                "mission": "WISE",
+                                "mjd": float(wise.mjd),
+                                "iso_date": mjd_to_iso(wise.mjd),
+                                "detectors_data_url": f"/api/v1/frames/{grid_key}/{wise_data_name}",
+                                "flags_mask_url": f"/api/v1/frames/{grid_key}/{wise_flags_name}",
+                                "available_detectors": wise.available_detectors or [4, 5, 6],
+                                "binary_dtype": "float32",
+                            }
+                        )
+                        all_mjds = epoch_mjds + [float(wise.mjd_start), float(wise.mjd_end)]
+                        baseline_days = (
+                            max(all_mjds) - min(all_mjds) if all_mjds else wise.baseline_days
+                        )
+                        out_manifest["data_source_summary"] = {
+                            "primary_mission": "WISE",
+                            "has_multi_epoch_spherex": False,
+                            "uses_wise_fallback": True,
+                            "baseline_days": max(float(wise.baseline_days), float(baseline_days)),
+                            "status_note": (
+                                f"WISE/NEOWISE W1/W2 fallback; {len(coadd.epochs)} SPHEREx epoch(s)"
+                            ),
+                            "provenance_tier": "extension",
+                            "survey_name": "WISE / NEOWISE W1-W2",
                         }
-                    )
-                    all_mjds = epoch_mjds + [
-                        float(wise.mjd_start),
-                        float(wise.mjd_end),
-                    ]
-                    baseline_days = (
-                        max(all_mjds) - min(all_mjds) if all_mjds else wise.baseline_days
-                    )
-                    manifest["data_source_summary"] = {
-                        "primary_mission": "WISE",
-                        "has_multi_epoch_spherex": False,
-                        "uses_wise_fallback": True,
-                        "baseline_days": max(float(wise.baseline_days), float(baseline_days)),
-                        "status_note": (
-                            f"WISE/NEOWISE W1/W2 fallback; {len(coadd.epochs)} SPHEREx epoch(s)"
-                        ),
-                    }
-                    manifest["epochs"] = epoch_entries
-                    frames = actual_frames
-                elif len(coadd.epochs) >= 2:
-                    manifest["epochs"] = epoch_entries
-                    manifest["data_source_summary"] = {
+                        out_manifest["epochs"] = epoch_entries
+                        frames = actual_frames
+                        _logger.info(
+                            "Archival patch %s served from WISE/NEOWISE (%d SPHEREx + WISE) "
+                            "in %.2fs",
+                            grid_key,
+                            len(coadd.epochs),
+                            time.perf_counter() - t0,
+                        )
+                        return out_manifest, frames
+                    except Exception as wise_exc:
+                        fallback_errors.append(f"WISE:{type(wise_exc).__name__}")
+
+                if len(coadd.epochs) >= 2:
+                    out_manifest["epochs"] = epoch_entries
+                    out_manifest["data_source_summary"] = {
                         "primary_mission": "SPHEREx",
                         "has_multi_epoch_spherex": True,
                         "uses_wise_fallback": False,
                         "baseline_days": float(coadd.baseline_days),
                         "status_note": f"{len(coadd.epochs)} real SPHEREx comparison epoch(s)",
+                        "provenance_tier": "primary",
+                        "survey_name": "SPHEREx IRSA Archival",
                     }
                     frames = actual_frames
-            except Exception as exc:
-                # A missing IRSA dependency/network response must not fabricate WISE
-                # measurements or label a synthetic fixture as archival data.
-                # Preserve the existing demo patch, but keep its source summary intact.
-                manifest["data_source_summary"]["status_note"] = (
-                    "Archival SPHEREx/WISE data unavailable; demo patch returned "
-                    f"({type(exc).__name__})"
-                )
+                    _logger.info(
+                        "Archival patch %s served from primary SPHEREx (%d epochs) in %.2fs",
+                        grid_key,
+                        len(coadd.epochs),
+                        time.perf_counter() - t0,
+                    )
+                    return out_manifest, frames
+
+                # Tier 3: NASA SkyView optical/NIR archival extension (DSS2 IR / DSS2 Red / DSS)
+                if not epoch_entries:
+                    try:
+                        if fut_skyview is None:
+                            sv_epochs = self.skyview_fallback_fetcher(
+                                ra=ra,
+                                dec=dec,
+                                fov_arcmin=fov,
+                                target_wcs_header=target_header,
+                            )
+                        else:
+                            sv_epochs = fut_skyview.result()
+                        sv_entries: list[dict[str, Any]] = []
+                        sv_frames: dict[str, bytes] = {}
+                        sv_mjds: list[float] = []
+                        for ep_res in sv_epochs:
+                            dname = f"{ep_res.epoch_id}.bin"
+                            fname = f"{ep_res.epoch_id}_flags.bin"
+                            sv_frames[dname] = ep_res.detector_buffer
+                            sv_frames[fname] = ep_res.flags_buffer
+                            sv_mjds.append(float(ep_res.mjd))
+                            sv_entries.append(
+                                {
+                                    "epoch_id": ep_res.epoch_id,
+                                    "label": ep_res.label,
+                                    "mission": "SkyView",
+                                    "mjd": float(ep_res.mjd),
+                                    "iso_date": mjd_to_iso(ep_res.mjd),
+                                    "detectors_data_url": f"/api/v1/frames/{grid_key}/{dname}",
+                                    "flags_mask_url": f"/api/v1/frames/{grid_key}/{fname}",
+                                    "available_detectors": list(
+                                        ep_res.available_detectors or [1, 2]
+                                    ),
+                                    "binary_dtype": "float32",
+                                }
+                            )
+                        baseline_sv = (max(sv_mjds) - min(sv_mjds)) if len(sv_mjds) >= 2 else 365.0
+                        out_manifest["epochs"] = sv_entries
+                        out_manifest["data_source_summary"] = {
+                            "primary_mission": "SkyView",
+                            "has_multi_epoch_spherex": False,
+                            "uses_wise_fallback": False,
+                            "baseline_days": max(1.0, float(baseline_sv)),
+                            "status_note": (
+                                f"NASA SkyView archival extension ({len(sv_entries)} plate(s))"
+                            ),
+                            "provenance_tier": "extension",
+                            "survey_name": "NASA SkyView (DSS2 IR / Red)",
+                        }
+                        frames = sv_frames
+                        _logger.info(
+                            "Archival patch %s served from NASA SkyView (%d plate(s)) in %.2fs",
+                            grid_key,
+                            len(sv_entries),
+                            time.perf_counter() - t0,
+                        )
+                        return out_manifest, frames
+                    except Exception as sv_exc:
+                        fallback_errors.append(f"SkyView:{type(sv_exc).__name__}")
+                elif len(coadd.epochs) == 1:
+                    out_manifest["epochs"] = epoch_entries
+                    out_manifest["data_source_summary"] = {
+                        "primary_mission": "SPHEREx",
+                        "has_multi_epoch_spherex": False,
+                        "uses_wise_fallback": False,
+                        "baseline_days": 0.0,
+                        "status_note": "1 real SPHEREx epoch (WISE/SkyView unavailable)",
+                        "provenance_tier": "primary",
+                        "survey_name": "SPHEREx Single-Epoch Archival",
+                    }
+                    frames = actual_frames
+                    return out_manifest, frames
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:
+            fallback_errors.append(f"Archival:{type(exc).__name__}")
+
+        err_text = "; ".join(fallback_errors) or "no archival coverage"
+        out_manifest["data_source_summary"] = {
+            "primary_mission": "Simulated",
+            "has_multi_epoch_spherex": False,
+            "uses_wise_fallback": False,
+            "baseline_days": float(out_manifest["data_source_summary"].get("baseline_days", 182.7)),
+            "status_note": (
+                f"Archival SPHEREx/WISE/SkyView unavailable; simulated baseline ({err_text})"
+            ),
+            "provenance_tier": "simulated",
+            "survey_name": "Simulated Multi-Band Baseline",
+        }
+        _logger.warning(
+            "All archival providers exhausted for %s (%s); returning labeled simulated baseline",
+            grid_key,
+            err_text,
+        )
+        return out_manifest, frames
+
+    async def search_known_objects_async(
+        self,
+        query: str = "",
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Fuzzy-search known objects and refresh live JPL Horizons coordinates for queries."""
+        results = self.search_known_objects(query=query, limit=limit)
+        if not results:
+            return results
+
+        clean_q = query.strip().lower()
+        body_by_naif = {spec["naif_id"]: spec for spec in HORIZONS_FEATURED_BODIES}
+        now_mjd = (datetime.now(UTC) - datetime(1858, 11, 17, tzinfo=UTC)).total_seconds() / 86400.0
+
+        async def _refresh_item(item: dict[str, Any]) -> dict[str, Any]:
+            oid = str(item.get("object_id", ""))
+            if not oid.startswith("horizons:"):
+                return item
+            naif_id = oid.split(":", 1)[1]
+            spec = body_by_naif.get(naif_id)
+            if spec is None:
+                return item
+
+            ephem_match = self.cache.get_ephemeris_for_body(naif_id, now_mjd)
+            if ephem_match is None and clean_q and self.enable_archival_data:
+                try:
+                    ephem_match = await self.catalog_pipeline.resolve_live_horizons_for_body(spec)
+                except Exception:
+                    ephem_match = None
+            if ephem_match is None:
+                return item
+
+            ra_live = round(float(ephem_match["ra"]), 5)
+            dec_live = round(float(ephem_match["dec"]), 5)
+            enriched = copy.deepcopy(item)
+            enriched["ra"] = ra_live
+            enriched["dec"] = dec_live
+            enriched["patch_ra"] = round(ra_live, 4)
+            enriched["patch_dec"] = round(dec_live, 4)
+            enriched["constellation"] = lookup_constellation(ra_live, dec_live)
+            if ephem_match.get("vmag") is not None:
+                enriched["magnitude"] = round(float(ephem_match["vmag"]), 2)
+            enriched["data_source"] = "jpl_horizons_live"
+            _logger.info(
+                "Resolved Horizons ephemeris for %s -> RA=%.4f Dec=%.4f",
+                enriched.get("label"),
+                ra_live,
+                dec_live,
+            )
+            return enriched
+
+        return list(await asyncio.gather(*(_refresh_item(item) for item in results)))
+
+    async def get_catalogs_async(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+        live_catalogs: bool = True,
+    ) -> dict[str, Any]:
+        grid_key, _, _ = compute_grid_key(ra, dec, fov)
+        cached_catalogs = self.cache.get_catalogs(grid_key)
+        if cached_catalogs is not None:
+            _logger.info("Catalogs cache hit for %s", grid_key)
+            validate_catalogs_response(cached_catalogs)
+            return cached_catalogs
+
+        async def _build_catalogs() -> dict[str, Any]:
+            cached_again = self.cache.get_catalogs(grid_key)
+            if cached_again is not None:
+                validate_catalogs_response(cached_again)
+                return cached_again
+            manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+            pipeline_result = await self._run_singleflight(
+                f"catalog_pipeline:{grid_key}:live{int(live_catalogs)}",
+                lambda: self.catalog_pipeline.resolve_patch_objects(
+                    ra_deg=ra,
+                    dec_deg=dec,
+                    fov_arcmin=fov,
+                    wcs=manifest["wcs"],
+                    epochs_meta=manifest["epochs"],
+                    allow_live=live_catalogs,
+                ),
+            )
+            merged = _merge_pipeline_overlays(
+                manifest,
+                pipeline_result,
+                prefer_pipeline_when_uncached=bool(pipeline_result.get("known_objects")),
+            )
+            response = {
+                "query": merged["query"],
+                "wcs": merged["wcs"],
+                "catalog_overlays": merged["catalog_overlays"],
+            }
+            validate_catalogs_response(response)
+            return response
+
+        return await self._run_singleflight(
+            f"catalogs:{grid_key}:live{int(live_catalogs)}",
+            _build_catalogs,
+        )
+
+    def get_sky_patch(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+    ) -> dict[str, Any]:
+        grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
+        cached_manifest = self.cache.get_manifest(grid_key)
+        if cached_manifest is not None:
+            is_legacy_demo = self._is_pending_archival_demo(cached_manifest)
+            if not (self.enable_archival_data and is_legacy_demo):
+                validate_sky_patch_manifest(cached_manifest)
+                return cached_manifest
+
+        manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+        manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
+        slug = manifest["target_metadata"]["slug"]
+        if slug in SHOWCASE_TARGETS:
+            self.cache.pin_grid_key(grid_key)
+        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
+
+        if self.enable_archival_data:
+            manifest, frames = self._resolve_archival_patch_sync(
+                manifest=manifest,
+                grid_key=grid_key,
+                ra=ra,
+                dec=dec,
+                fov=fov,
+                fallback_frames=frames,
+            )
+            manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
+            manifest, frames = self._apply_solar_system_ephemeris_to_frames(manifest, frames)
 
         validate_sky_patch_manifest(manifest)
         self.cache.put_sky_patch(
@@ -1506,40 +1903,101 @@ class StarHuntersBackendService:
         fov: float = 5.0,
         live_catalogs: bool = True,
     ) -> dict[str, Any]:
+        t0 = time.perf_counter()
         grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
         cached_manifest = self.cache.get_manifest(grid_key)
         if cached_manifest is not None:
-            validate_sky_patch_manifest(cached_manifest)
-            return cached_manifest
+            is_legacy_demo = self._is_pending_archival_demo(cached_manifest)
+            if not (self.enable_archival_data and is_legacy_demo):
+                _logger.info("Sky patch cache hit for %s", grid_key)
+                validate_sky_patch_manifest(cached_manifest)
+                return cached_manifest
 
-        manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
-        pipeline_result = await self.catalog_pipeline.resolve_patch_objects(
-            ra_deg=ra,
-            dec_deg=dec,
-            fov_arcmin=fov,
-            wcs=manifest["wcs"],
-            epochs_meta=manifest["epochs"],
-            allow_live=live_catalogs,
+        async def _compute_patch() -> dict[str, Any]:
+            base_manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+            slug = base_manifest["target_metadata"]["slug"]
+            if slug in SHOWCASE_TARGETS:
+                self.cache.pin_grid_key(grid_key)
+            synthetic_frames = generate_synthetic_epoch_frames(slug=slug, manifest=base_manifest)
+
+            catalog_coro = self._run_singleflight(
+                f"catalog_pipeline:{grid_key}:live{int(live_catalogs)}",
+                lambda: self.catalog_pipeline.resolve_patch_objects(
+                    ra_deg=ra,
+                    dec_deg=dec,
+                    fov_arcmin=fov,
+                    wcs=base_manifest["wcs"],
+                    epochs_meta=base_manifest["epochs"],
+                    allow_live=live_catalogs,
+                ),
+            )
+
+            if self.enable_archival_data:
+                archival_coro = asyncio.to_thread(
+                    self._resolve_archival_patch_sync,
+                    manifest=base_manifest,
+                    grid_key=grid_key,
+                    ra=ra,
+                    dec=dec,
+                    fov=fov,
+                    fallback_frames=synthetic_frames,
+                )
+                pipeline_result, (resolved_manifest, frames) = await asyncio.gather(
+                    catalog_coro, archival_coro
+                )
+            else:
+                pipeline_result = await catalog_coro
+                resolved_manifest = base_manifest
+                frames = synthetic_frames
+
+            # Recompute Solar System & Gaia epoch projections cleanly if archival epochs changed.
+            epoch_ids_before = [e["epoch_id"] for e in base_manifest["epochs"]]
+            epoch_ids_after = [e["epoch_id"] for e in resolved_manifest["epochs"]]
+            if epoch_ids_after != epoch_ids_before:
+                realigned = self.catalog_pipeline.resolve_cached_patch_objects(
+                    ra_deg=ra,
+                    dec_deg=dec,
+                    fov_arcmin=fov,
+                    wcs=resolved_manifest["wcs"],
+                    epochs_meta=resolved_manifest["epochs"],
+                )
+                if realigned.get("known_objects"):
+                    pipeline_result = realigned
+
+            merged_manifest = _merge_pipeline_overlays(
+                resolved_manifest,
+                pipeline_result,
+                prefer_pipeline_when_uncached=bool(pipeline_result.get("known_objects")),
+            )
+            if self.enable_archival_data:
+                merged_manifest, frames = self._apply_solar_system_ephemeris_to_frames(
+                    merged_manifest, frames
+                )
+
+            self.cache.put_sky_patch(
+                grid_key=grid_key,
+                ra_center=ra_q,
+                dec_center=dec_q,
+                fov_arcmin=fov,
+                manifest=merged_manifest,
+                frames=frames,
+            )
+            validate_sky_patch_manifest(merged_manifest)
+            _logger.info(
+                "Sky patch %s assembled (mission=%s, tier=%s, epochs=%d, known=%d) in %.2fs",
+                grid_key,
+                merged_manifest["data_source_summary"].get("primary_mission"),
+                merged_manifest["data_source_summary"].get("provenance_tier"),
+                len(merged_manifest.get("epochs", [])),
+                len(merged_manifest["catalog_overlays"].get("known_objects", [])),
+                time.perf_counter() - t0,
+            )
+            return merged_manifest
+
+        return await self._run_singleflight(
+            f"patch:{grid_key}:arch{int(self.enable_archival_data)}:live{int(live_catalogs)}",
+            _compute_patch,
         )
-        manifest = _merge_pipeline_overlays(
-            manifest,
-            pipeline_result,
-            prefer_pipeline_when_uncached=bool(pipeline_result.get("known_objects")),
-        )
-        slug = manifest["target_metadata"]["slug"]
-        if slug in SHOWCASE_TARGETS:
-            self.cache.pin_grid_key(grid_key)
-        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
-        self.cache.put_sky_patch(
-            grid_key=grid_key,
-            ra_center=ra_q,
-            dec_center=dec_q,
-            fov_arcmin=fov,
-            manifest=manifest,
-            frames=frames,
-        )
-        validate_sky_patch_manifest(manifest)
-        return manifest
 
     def get_solar_system_in_fov(
         self,
@@ -1768,8 +2226,8 @@ if HAS_FASTAPI:
         q: str = Query("", description="Fuzzy search query for celestial object names/IDs"),
         limit: int = Query(30, ge=1, le=200),
     ) -> dict[str, Any]:
-        response.headers["Cache-Control"] = "public, max-age=86400"
-        results = backend_service.search_known_objects(query=q, limit=limit)
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        results = await backend_service.search_known_objects_async(query=q, limit=limit)
         return {
             "query": q,
             "count": len(results),

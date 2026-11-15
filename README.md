@@ -1,31 +1,62 @@
-# Star Hunters — Planet X & SPHEREx Blinker
+# Star Hunters: Planet X & SPHEREx Blinker
 
-An interactive multi-epoch near-infrared sky discovery web application ($0.75\text{–}5.0\ \mu\text{m}$ across 6 detector arrays and 102 spectral channels). Built for the [NASA Space Apps Challenge](https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=details), Star Hunters lets both space enthusiasts and researchers visually compare sky images taken at different times, filter by infrared wavelength, track moving celestial objects, inspect full near-infrared spectra, and explore what is currently above their location.
+An interactive multi-epoch near-infrared sky discovery web application ($0.75\text{-}5.0\ \mu\text{m}$ across 6 detector arrays and 102 spectral channels). Built for the [NASA Space Apps Challenge](https://www.spaceappschallenge.org/2026/challenges/planet-x-and-spherex/?tab=details), Star Hunters lets both space enthusiasts and researchers visually compare sky images taken at different times, filter by infrared wavelength, track moving celestial objects, inspect full near-infrared spectra, and explore what is currently above their location.
 
 ---
 
 ## Background Context
 
-Modern wide-field infrared sky surveys capture the same patches of sky multiple times over months or years. By comparing ("blinking" or subtracting) images from different epochs, stationary background stars cancel out—making moving objects (such as high-proper-motion stars, ultra-cold brown dwarfs, comets, asteroids, or hypothetical outer Solar System bodies like Planet X) and variable stars stand out immediately.
+Modern wide-field infrared sky surveys capture the same patches of sky multiple times over months or years. By comparing ("blinking" or subtracting) images from different epochs, stationary background stars cancel out cleanly, making moving objects (such as high-proper-motion stars, ultra-cold brown dwarfs, comets, asteroids, or hypothetical outer Solar System bodies like Planet X) and variable stars stand out immediately.
 
-Star Hunters turns this workflow into a fast, browser-based discovery tool with pre-computed showcase targets as well as live sky-patch queries.
+Star Hunters turns this workflow into a fast, browser-based discovery tool with pre-computed showcase targets, live multi-survey sky-patch queries, and real-time Solar System ephemeris lookups.
 
 ---
 
 ## Data Sources & Technologies
 
 ### Astronomical Data Sources
-- **[NASA SPHEREx](https://spherex.caltech.edu/)** (*Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer*) — Multi-epoch near-infrared spectral images ($0.75\text{–}5.0\ \mu\text{m}$) queried via the [NASA/IPAC IRSA](https://irsa.ipac.caltech.edu/Missions/spherex.html) (*Infrared Processing and Analysis Center / Infrared Science Archive*) [TAP](https://irsa.ipac.caltech.edu/TAP) (*Table Access Protocol*) service.
-- **[WISE / NEOWISE](https://irsa.ipac.caltech.edu/Missions/wise.html)** (*Wide-field Infrared Survey Explorer / Near-Earth Object WISE*) — Archival $W1$ ($3.4\ \mu\text{m}$) and $W2$ ($4.6\ \mu\text{m}$) infrared cutouts used to supplement sparse SPHEREx coverage with a 10–15 year time baseline.
-- **[SIMBAD TAP (IDIA & Harvard CfA Mirrors)](https://simbad.idia.ac.za/simbad/sim-tap/sync)** — Canonical astronomical object identifiers (`main_id`) and object classifications (`otype`), routed through official IDIA (`simbad.idia.ac.za`) and Harvard CfA (`simbad.cfa.harvard.edu`) mirrors (avoiding `cds.unistra.fr`).
-- **[ESA Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3)** (*European Space Agency Gaia Data Release 3*) — High-precision optical astrometry and proper motions (`J2016.0` propagated to SPHEREx pass epochs), queried via ESA TAP (`gea.esac.esa.int`) with automatic ARI Heidelberg TAP and VizieR Harvard CfA TSV fallbacks.
-- **[NASA/JPL Horizons](https://ssd.jpl.nasa.gov/api/horizons.api)** — Daily geocentric ephemerides for major planets, Galilean/Saturnian moons, comets (`3I/ATLAS`), and main-belt asteroids (`(1) Ceres`, `(4) Vesta`) indexed in SQLite for sub-millisecond FOV intersection lookups.
-- **[NASA/IPAC MOST](https://irsa.ipac.caltech.edu/applications/MOST/)** (*Moving Object Search Tool*) — Solar System object intersections against specific SPHEREx exposures (`output_mode=Brief`).
+- **[NASA SPHEREx](https://spherex.caltech.edu/)** (*Spectro-Photometer for the History of the Universe, Epoch of Reionization and Ices Explorer*): Multi-epoch near-infrared spectral images ($0.75\text{-}5.0\ \mu\text{m}$) queried via the [NASA/IPAC IRSA](https://irsa.ipac.caltech.edu/Missions/spherex.html) [TAP](https://irsa.ipac.caltech.edu/TAP) service.
+- **[WISE / NEOWISE](https://irsa.ipac.caltech.edu/Missions/wise.html)** (*Wide-field Infrared Survey Explorer / Near-Earth Object WISE*): Archival $W1$ ($3.4\ \mu\text{m}$) and $W2$ ($4.6\ \mu\text{m}$) infrared cutouts used to extend multi-epoch coverage across a 10 to 15 year baseline.
+- **[NASA SkyView](https://skyview.gsfc.nasa.gov/)** (*2MASS J/H/K & DSS2 IR / Red*): Secondary archival FITS cutout fallback when both SPHEREx and WISE have zero spatial coverage at the requested sky coordinate (commonly needed near active Solar System planetary longitudes).
+- **[SIMBAD TAP (IDIA & Harvard CfA Mirrors)](https://simbad.idia.ac.za/simbad/sim-tap/sync)**: Canonical astronomical object identifiers (`main_id`) and object classifications (`otype`), routed through IDIA (`simbad.idia.ac.za`) and Harvard CfA (`simbad.cfa.harvard.edu`) mirrors.
+- **[ESA Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3)**: High-precision optical astrometry and proper motions (`J2016.0` propagated to pass epochs), queried via ESA TAP (`gea.esac.esa.int`) with ARI Heidelberg TAP and VizieR Harvard CfA fallbacks.
+- **[NASA/JPL Horizons](https://ssd.jpl.nasa.gov/api/horizons.api)**: Live current-epoch geocentric ephemerides and daily SQLite-indexed tracks for major planets (e.g., Saturn, Jupiter), moons, comets (`3I/ATLAS`), and asteroids.
+- **[NASA/IPAC MOST](https://irsa.ipac.caltech.edu/applications/MOST/)**: Solar System object intersections against specific SPHEREx exposures.
 
 ### Tech Stack
-- **Backend:** [Python 3.11+](https://www.python.org/), [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [Pydantic](https://docs.pydantic.dev/), [NumPy](https://numpy.org/), [Astropy](https://www.astropy.org/), [Reproject](https://reproject.readthedocs.io/), [Astroquery](https://astroquery.readthedocs.io/), and [SQLite](https://www.sqlite.org/) (using Write-Ahead Logging / `WAL` mode for spatial caching).
-- **Frontend:** [React 18](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/), [pnpm](https://pnpm.io/), HTML5 Canvas + SVG, [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) for offline/3G-friendly client-side frame caching, and [CDS Aladin Lite v3](https://aladin.cds.unistra.fr/AladinLite/doc/) (*Centre de Données astronomiques de Strasbourg* WebGL all-sky map).
+- **Backend:** [Python 3.11+](https://www.python.org/), [FastAPI](https://fastapi.tiangolo.com/), [Uvicorn](https://www.uvicorn.org/), [Pydantic](https://docs.pydantic.dev/), [NumPy](https://numpy.org/), [Astropy](https://www.astropy.org/), [Reproject](https://reproject.readthedocs.io/), [Astroquery](https://astroquery.readthedocs.io/), and [SQLite](https://www.sqlite.org/) (`WAL` mode for quantized $0.05^\circ$ spatial caching).
+- **Frontend:** [React 18](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/), [pnpm](https://pnpm.io/), HTML5 Canvas + SVG, [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) two-tier client caching, and [CDS Aladin Lite v3](https://aladin.cds.unistra.fr/AladinLite/doc/) WebGL all-sky globe.
 - **Deployment:** Multi-stage [Docker](https://www.docker.com/) image configured for [Fly.io](https://fly.io/docs/reference/configuration/) scale-to-zero hosting with a persistent SQLite volume.
+
+---
+
+## Configuration & Environment Variables
+
+### Backend Runtime Configuration (`fly.toml` & Local Env)
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `ENABLE_ARCHIVAL_DATA` | `"false"` locally (`"true"` in `fly.toml`) | Enables live remote archival cutout fetching in `/api/v1/sky-patch` using the ordered fallback chain: **SPHEREx IRSA** -> **WISE / NEOWISE** -> **NASA SkyView (2MASS / DSS2 IR / Red)** -> **Labeled Simulated Multi-Band Baseline**, with optional **JPL Horizons** ephemeris rendering when an active Solar System body crosses the patch. When `"false"`, live uncached patches return the labeled simulated baseline cleanly for offline/test determinism. |
+| `SQLITE_DB_PATH` | `backend/data/spherex_cache.db` (`/data/spherex_cache.db` on Fly.io) | Path to the WAL-mode SQLite spatial and ephemeris cache database. |
+| `LOG_LEVEL` | `INFO` | Backend startup logging threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
+| `LOG_FORMAT` | `text` | Backend log output format (`text` for human-readable structured lines, `json` for single-line JSON log records). |
+| `PORT` | `8000` | HTTP listen port for FastAPI / Uvicorn. |
+
+### Frontend Build & Runtime Logging Configuration
+| Variable / Override | Default | Description |
+| :--- | :--- | :--- |
+| `VITE_LOG_LEVEL` | `info` | Build-time frontend logger level (`debug`, `info`, `warn`, `error`, `silent`). |
+| `VITE_LOG_BUFFER_SIZE` | `250` | Maximum number of discrete event entries retained in the in-memory ring buffer (`window.__STAR_HUNTERS_LOGS__`, clamped between `20` and `2000`). |
+| `localStorage` / Global Console Helpers | Unset | Override at runtime via `localStorage.setItem('star_hunters_log_level', 'debug')` or `window.__STAR_HUNTERS_SET_LOG_LEVEL__('debug')` to inspect real-time globe, search, loader, and blinker events. |
+
+---
+
+## Interactive Observatory Features
+
+- **Curated NASA Curtain Landing:** Random high-definition landscape NASA imagery with attribution badge while background warmup fetches `/health` and the 12 showcase presets.
+- **Night-Sky Globe & Progressive Click Zoom:** Starry black WebGL sphere powered by Aladin Lite v3 with IRSA `allWISE`, `2MASS`, and `SPHEREx` HiPS Level-of-Detail switching, toggleable IAU constellation lines and labels, accessible `N / W / S / E` pan and `+/- / Reset` zoom controls, progressive 2-click zoom into visible $0.05^\circ$ sky panels, and direct click-to-inspect inside any panel.
+- **Multi-Pass Blinker & Provenance Display:** Synchronized `(6, 256, 256)` scientific cutouts supporting Blink, Subtract (`IMAGE - ZODI`), and Co-Add stacking modes, dual-thumb `0.75-5.0 um` wavelength slider, explicit image survey provenance pill (`SPHEREx Archival (Primary)`, `WISE / NEOWISE (Extension)`, `NASA SkyView (DSS2 IR / Red)`, `JPL Horizons Ephemeris`, or `Simulated Multi-Band Baseline`), and an inline **Known Objects** tab inside Blinker controls for quick checking/unchecking without leaving the inspector.
+- **Hover-Delay & Click-Locked Callout Details:** Hovering a labeled source shows a frosted glass callout card after a short delay without occluding the object (flipping away from edges and controls automatically), while clicking locks the card until clicking elsewhere or closing it.
+- **102-Band Forced Photometry Spectra:** Interactive spectral plot with a reserved bottom readout strip below the plot canvas so hovering across channels causes zero layout jitter, plus CSV export.
 
 ---
 
@@ -35,21 +66,23 @@ Star Hunters turns this workflow into a fast, browser-based discovery tool with 
 star-hunters/
 ├── backend/                  # Python 3.11+ FastAPI backend & scientific data pipeline
 │   ├── app/
-│   │   ├── main.py           # FastAPI routes (/api/v1/* & /api/* aliases), binary streaming & SPA serving
-│   │   ├── models/           # Shared contracts, JSON schemas & seeded catalog/ephemeris metadata
-│   │   └── services/         # Quantized SQLite spatial/ephemeris cache & SIMBAD/Gaia/Horizons/MOST pipeline
-│   └── tests/                # Backend contract, ingestion, coadd & catalog pipeline test suite
+│   │   ├── main.py           # FastAPI routes, single-flight coalescing, archival cascade & SPA serving
+│   │   ├── models/           # Shared Pydantic contracts & seeded catalog/ephemeris metadata
+│   │   └── services/         # Quantized SQLite cache, structured logging, SkyView/WISE/SPHEREx & catalogs
+│   └── tests/                # Backend contract, ingestion, fallback, logging & pipeline test suite
 ├── frontend/                 # React + TypeScript + Vite single-page application
 │   ├── public/presets/       # Pre-computed static bundles for the 12 showcase targets + global search index
 │   ├── src/
-│   │   ├── context/          # SkyExplorerContext shared application state
-│   │   ├── services/         # Two-tier client cache (in-memory + IndexedDB)
-│   │   └── types/            # TypeScript contracts, Float16 decoder & multi-frame tracker
-│   └── tests/                # Frontend contract, cache & tracking test suite
-├── plans/                    # Architecture, phase execution plans & API reference links
+│   │   ├── components/       # NightSkyGlobe, BlinkerModal, SpectraModal, Search/Zenith, Curtain, Tutorial
+│   │   ├── context/          # SkyExplorerContext & NotificationContext
+│   │   ├── services/         # Two-tier ClientPatchCache (memory + IndexedDB) & progressive loader
+│   │   └── utils/            # Contracts math, smart callout placement, observatoryLogger & globe helpers
+│   └── tests/                # Frontend unit test suite (node --test)
+├── ARCHITECTURE.md           # System design, binary protocols, archival pipeline & state-flow reference
+├── plans/                    # Historical phase execution plans & API reference links
 ├── scripts/                  # Preset generators & GitHub issue management scripts
 ├── Dockerfile                # Multi-stage container build (pnpm frontend + FastAPI backend)
-└── fly.toml                  # Fly.io deployment & persistent volume configuration
+└── fly.toml                  # Fly.io deployment, env vars & persistent volume configuration
 ```
 
 ---
@@ -58,7 +91,7 @@ star-hunters/
 
 ### Prerequisites
 - **Python 3.11+**
-- **Node.js 20+** and **[pnpm](https://pnpm.io/installation)** (or `corepack enable`)
+- **Node.js 20+** and **[pnpm](https://pnpm.io/installation)** (never `npm`)
 
 ### 1. Start the Backend API
 ```bash
@@ -66,54 +99,45 @@ cd backend
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+ENABLE_ARCHIVAL_DATA=true LOG_LEVEL=INFO uvicorn app.main:app --reload --port 8000
 ```
-The API will be available at `http://127.0.0.1:8000` (health check at `/health`).
+The API runs at `http://127.0.0.1:8000` (health check at `/health`).
 
 ### 2. Start the Frontend Dev Server
 In a separate terminal:
 ```bash
 cd frontend
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev
 ```
-Open `http://localhost:5173` in your browser. Vite automatically proxies `/api` and `/health` requests to `http://127.0.0.1:8000`.
+Open `http://localhost:5173`. Vite proxies `/api` and `/health` requests to `http://127.0.0.1:8000`.
 
-### 3. Optional: Seed Cache, Regenerate Presets & Run Tests
+### 3. Optional: Seed Cache, Regenerate Presets & Verify Suites
 ```bash
-# Pre-seed SQLite with JPL Horizons ephemerides (planets/moons/comets/asteroids),
-# SIMBAD/Gaia DR3 regions, and IRSA MOST SPHEREx matches
+# Pre-seed SQLite with JPL Horizons ephemerides, SIMBAD/Gaia regions & IRSA MOST matches
 backend/.venv/bin/python scripts/seed_celestial_cache.py --db-path /tmp/star_hunters_cache.db
 
-# Regenerate static preset bundles for the 12 showcase targets
+# Regenerate static preset bundles for showcase targets
 python3 scripts/generate_synthetic_presets.py
 
-# Run backend tests
+# Backend checks
+python -m compileall -q backend/
+ruff check backend/ && ruff format --check backend/
 (cd backend && .venv/bin/pytest -v)
 
-# Run frontend tests & build
-cd frontend && pnpm test
+# Frontend checks
+pnpm --dir frontend exec tsc --noEmit
+pnpm --dir frontend lint
+pnpm --dir frontend format:check
+pnpm --dir frontend test
+pnpm --dir frontend build
 ```
 
 ### 4. Production Deployment (Fly.io)
-The root `Dockerfile` builds `frontend/dist` with `pnpm` and serves both the static SPA and `/api/v1/*` endpoints from a single FastAPI container. `fly.toml` configures `primary_region = "iad"`, scale-to-zero (`auto_stop_machines = "suspend"`, `min_machines_running = 0`), and a persistent `/data` volume for `/data/spherex_cache.db`:
-
 ```bash
-flyctl apps create star-hunters-spherex --org personal
-flyctl volumes create spherex_cache_vol --region iad --size 1 -a star-hunters-spherex -y
-flyctl deploy --remote-only
+flyctl deploy
 ```
-
----
-
-## Further Documentation
-
-Detailed architecture, data contracts, and phase-by-phase implementation notes live in [`plans/`](plans/):
-- [Phase 0: Master Architecture, Team Parallelization & Shared Contracts](plans/phase_0_master_architecture_shared_contracts.md)
-- [Phase 1: Foundation, Monorepo Scaffolding & Golden Target Presets](plans/phase_1_foundation_scaffolding_and_presets.md)
-- [Phase 2: Core Parallel Workstreams](plans/phase_2_core_parallel_workstreams.md)
-- [Phase 3: End-to-End Integration, Scale-to-Zero Deployment & Verification](plans/phase_3_integration_deployment_and_verification.md)
-- [Links, APIs & Technical References](plans/links.md)
+See [ARCHITECTURE.md](ARCHITECTURE.md) for container lifecycle, binary streaming format, archival fallback flow, and client-side rendering details.
 
 ---
 

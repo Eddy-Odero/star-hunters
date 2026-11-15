@@ -8,6 +8,7 @@ import {
   type SpectrumPayload,
 } from '../types/contracts.ts';
 import type { ClientPatchCache } from './clientPatchCache.ts';
+import { observatoryLogger } from '../utils/observatoryLogger.ts';
 
 export type ProgressiveLoadingStage =
   | { stage: 'idle' }
@@ -147,6 +148,7 @@ export async function loadLiveCoordinatesFlow(
   if (signal?.aborted) return { aborted: true };
 
   if (cached) {
+    observatoryLogger.info('patch_loader', 'Live patch cache hit', { gridKey });
     onReady({
       manifest: cached.manifest,
       epochBuffers: cached.epochBuffers,
@@ -157,9 +159,15 @@ export async function loadLiveCoordinatesFlow(
     return { aborted: false, fromClientCache: true };
   }
 
+  observatoryLogger.info('patch_loader', 'Fetching live sky patch & catalogs', {
+    gridKey,
+    ra,
+    dec,
+    fovArcmin,
+  });
   onStageChange?.({
     stage: 'loading_catalogs',
-    message: `Querying known celestial objects at (${ra.toFixed(2)}, ${dec.toFixed(2)})...`,
+    message: 'Querying sky catalogs...',
   });
   const qs = `ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}&fov=${encodeURIComponent(fovArcmin)}`;
 

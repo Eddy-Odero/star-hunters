@@ -19,6 +19,7 @@ import {
   decodeFloat16Word,
   detectAndTrackBodiesAtClick,
   detectAndTrackBrightBodyAcrossEpochs,
+  formatImageProvenanceBadge,
   getDefaultCheckedObjectIds,
   mergeTrackedTargets,
   pickDistinctHighlighterColors,
@@ -65,6 +66,7 @@ import {
   angularSeparationDeg,
   computeMagneticSnap,
   decodeHygieneFlagMask,
+  formatRaDecCompact,
   getMarkerShapeKind,
   isObjectInPatchViewBox,
   isObjectInSkyFrustum,
@@ -72,6 +74,18 @@ import {
   resolvePositionFromAnchor,
   sortKnownObjectsCheckedFirst,
 } from '../src/utils/observatoryMath.ts';
+import {
+  computeSmartCalloutLayout,
+  HOVER_DETAILS_DELAY_MS,
+} from '../src/utils/calloutPlacement.ts';
+import {
+  buildVisibleSkyPanels,
+  clampGlobeFov,
+  resolveGlobeClickAction,
+  stepPanCoordinates,
+  targetFovForClickAction,
+} from '../src/utils/globeNavigation.ts';
+import { ObservatoryLogger } from '../src/utils/observatoryLogger.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
@@ -1474,10 +1488,10 @@ test('ISS-16: known-object rows show a catalog badge, magnitude and proper motio
   assert.equal(catalogBadgeLabel('most'), 'MOST');
 
   assert.equal(formatMagnitude(16.44), 'mag 16.4');
-  assert.equal(formatMagnitude(null), 'mag —');
+  assert.equal(formatMagnitude(null), 'mag n/a');
   assert.equal(formatProperMotion(0.013), 'μ 0.013″/yr');
   assert.equal(formatProperMotion(8.12), 'μ 8.12″/yr');
-  assert.equal(formatProperMotion(null), 'μ —');
+  assert.equal(formatProperMotion(null), 'μ n/a');
 
   for (const slug of PRESET_SLUGS) {
     for (const obj of loadPresetKnownObjects(slug)) {
@@ -2067,4 +2081,126 @@ test('Redesign math helpers enforce frustum filtering, deferred sorting, magneti
   for (const requiredClass of ['planet', 'moon', 'comet', 'asteroid', 'nebula', 'galaxy']) {
     assert.ok(classes.has(requiredClass), `Missing expanded class ${requiredClass}`);
   }
+});
+
+test('Progressive globe click navigation reveals sky panels without auto-opening on zoom', () => {
+  assert.equal(resolveGlobeClickAction(70), 'zoom_medium');
+  assert.equal(targetFovForClickAction('zoom_medium'), 8.0);
+  assert.equal(resolveGlobeClickAction(8.0), 'zoom_panels');
+  assert.equal(targetFovForClickAction('zoom_panels'), 1.6);
+  assert.equal(resolveGlobeClickAction(1.6), 'open_panel');
+
+  assert.equal(buildVisibleSkyPanels(133.79, -7.25, 8.0).length, 0);
+  const panels = buildVisibleSkyPanels(133.79, -7.25, 1.6);
+  assert.ok(panels.length > 0);
+  assert.ok(panels.some((cell) => cell.key === '133.80_-7.25'));
+
+  const pannedNorth = stepPanCoordinates(359.5, 88.0, 20, 'north');
+  assert.ok(pannedNorth.dec <= 89.9);
+  const pannedEast = stepPanCoordinates(359.0, 0, 20, 'east');
+  assert.ok(pannedEast.ra >= 0 && pannedEast.ra < 360);
+  assert.equal(clampGlobeFov(999), 160);
+  assert.equal(clampGlobeFov(0.01), 0.25);
+});
+
+test('Smart callout placement flips away from right edge & UI panels without occluding object', () => {
+  assert.ok(HOVER_DETAILS_DELAY_MS >= 700 && HOVER_DETAILS_DELAY_MS <= 1500);
+
+  // Target near right edge must flip card to the left so marker remains uncovered
+  const rightTargetLayout = computeSmartCalloutLayout({
+    markerStageX: 890,
+    markerStageY: 310,
+    stageW: 960,
+    stageH: 640,
+    cardW: 316,
+    cardH: 186,
+  });
+  assert.equal(rightTargetLayout.side, 'left');
+  assert.ok(rightTargetLayout.cardLeft + 316 < 890);
+
+  // Target overlapping top-left controls box should avoid avoidRects cleanly
+  const avoidControlsLayout = computeSmartCalloutLayout({
+    markerStageX: 355,
+    markerStageY: 160,
+    stageW: 1100,
+    stageH: 700,
+    cardW: 316,
+    cardH: 186,
+    avoidRects: [{ left: 14, top: 14, right: 310, bottom: 420 }],
+  });
+  assert.equal(avoidControlsLayout.side, 'right');
+  assert.ok(avoidControlsLayout.cardLeft > 355);
+});
+
+test('Coordinate labels use full names and image provenance distinguishes primary, extension & simulated', () => {
+  const coordText = formatRaDecCompact(133.7951, -7.2451);
+  assert.ok(coordText.startsWith('Right Ascension 133.7951°, Declination -7.2451°'));
+  assert.equal(coordText.includes('—'), false);
+
+  const primaryBadge = formatImageProvenanceBadge({
+    primary_mission: 'SPHEREx',
+    has_multi_epoch_spherex: true,
+    uses_wise_fallback: false,
+    baseline_days: 180,
+    status_note: 'SPHEREx',
+  });
+  assert.equal(primaryBadge.tier, 'primary');
+
+  const extBadge = formatImageProvenanceBadge({
+    primary_mission: 'SkyView',
+    has_multi_epoch_spherex: false,
+    uses_wise_fallback: false,
+    baseline_days: 0,
+    status_note: 'DSS2 IR',
+    provenance_tier: 'extension',
+    survey_name: 'NASA SkyView (DSS2 IR / Red)',
+  });
+  assert.equal(extBadge.tier, 'extension');
+  assert.equal(extBadge.label, 'NASA SkyView (DSS2 IR / Red)');
+
+  const simBadge = formatImageProvenanceBadge({
+    primary_mission: 'Simulated',
+    has_multi_epoch_spherex: false,
+    uses_wise_fallback: false,
+    baseline_days: 0,
+    status_note: 'Synthetic baseline',
+  });
+  assert.equal(simBadge.tier, 'simulated');
+});
+
+test('ObservatoryLogger enforces configurable levels and FIFO bufferSize, and replaceUrlState deduplicates', () => {
+  const logger = new ObservatoryLogger({ level: 'warn', bufferSize: 20 });
+  assert.equal(logger.shouldLog('debug'), false);
+  assert.equal(logger.shouldLog('info'), false);
+  assert.equal(logger.info('test', 'ignored_info'), null);
+  assert.ok(logger.warn('test', 'recorded_warn', { ok: true }));
+
+  logger.configure({ level: 'debug', bufferSize: 20 });
+  assert.equal(logger.shouldLog('debug'), true);
+  for (let i = 0; i < 25; i += 1) {
+    logger.debug('test', `evt_${i}`);
+  }
+  const entries = logger.getEntries();
+  assert.equal(entries.length, 20);
+  assert.equal(entries[entries.length - 1].event, 'evt_24');
+
+  let calls = 0;
+  const mockLocation = { pathname: '/', search: '', hash: '' };
+  const mockHistory = {
+    replaceState(_state, _unused, url) {
+      calls += 1;
+      const qIdx = url.indexOf('?');
+      mockLocation.search = qIdx >= 0 ? url.slice(qIdx) : '';
+    },
+  };
+  const firstUrl = replaceUrlState(
+    { target: 'wise0855', fov: 70 },
+    { location: mockLocation, history: mockHistory },
+  );
+  replaceUrlState(
+    { target: 'wise0855', fov: 70 },
+    { location: mockLocation, history: mockHistory },
+  );
+  assert.ok(firstUrl.includes('target=wise0855'));
+  assert.equal(calls, 1);
 });

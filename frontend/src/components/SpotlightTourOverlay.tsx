@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useNotifications } from '../context/NotificationContext';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { CloseIcon } from './icons/ObservatoryIcons';
@@ -12,29 +12,29 @@ interface TourStep {
 
 const TOUR_STEPS: ReadonlyArray<TourStep> = [
   {
-    title: '1. True Night-Sky Globe & Cursor Patch',
-    body: 'Pan across the infrared sphere and hover to outline a single 5′×5′ SPHEREx cell. Click at wide FoV to fly closer, then click again (or zoom below 0.5°) to inspect full-resolution science planes.',
+    title: '1. Night-Sky Globe & Panel Grid',
+    body: 'Pan and zoom the full-sky globe, or toggle constellations from the HUD. Click once to focus closer, click again to reveal the sky panel grid, then click a visible panel to open its cutout.',
     selector: '[data-testid="night-sky-globe"]',
   },
   {
-    title: '2. Search Bar & What’s Above Me?',
-    body: 'Click the magnifying glass to shrink or expand the sky search bar, jump to coordinates, or open the Zenith drawer to see what infrared targets sit overhead anywhere on Earth.',
+    title: '2. Search Bar & Zenith Drawer',
+    body: 'Click the magnifying glass to expand or fold the sky search bar, jump to Right Ascension and Declination coordinates or Solar System targets like Saturn, or inspect what sits overhead.',
     selector: '[data-testid="search-zenith-hud"]',
   },
   {
     title: '3. Viewport-Filtered Known Objects',
-    body: 'Objects update automatically from your visible sky frustum. Checking boxes highlights markers right away—list sorting waits cleanly until you click outside the panel.',
+    body: 'Objects update automatically from your visible sky view. Checking boxes highlights markers right away, and the Known Objects list stays reachable inside the Blinker view.',
     selector: '[data-testid="known-objects-panel"]',
   },
   {
-    title: '4. Blinker Sliders & Hygiene Tooltips',
-    body: 'Scrub the Dual-Thumb Wavelength Slider (0.75–5.0 µm) for real-time Dim & Pop, switch between Blink, Subtract, and Add across SPHEREx/WISE passes, and hover flagged pixels to read artifact masks.',
+    title: '4. Blinker Controls & Data Source Badge',
+    body: 'Scrub the Dual-Thumb Wavelength Slider (0.75 to 5.0 um) for Dim and Pop, switch between Blink, Subtract, and Add passes, and check the Image Source badge (SPHEREx, WISE, or SkyView).',
     selector: '[data-testid="blinker-controls-card"]',
     requiresBlinker: true,
   },
   {
-    title: '5. Zero-Occlusion Tracking & 102-Band Spectra',
-    body: 'Hollow Triangles (stars), Diamonds (Solar System movers), and tracked Squares keep target centers unobscured. Click a source once to track it, click again to untrack, or inspect its 102-band SED.',
+    title: '5. Object Details, Tracking & Spectra',
+    body: 'Hollow Triangles (stars), Diamonds (movers), and Squares keep centers clear. Hover a marker briefly to preview details, click to lock the callout card, or open the 102-band spectrum view.',
     selector: '[data-testid="blinker-modal"]',
     requiresBlinker: true,
   },
@@ -42,9 +42,10 @@ const TOUR_STEPS: ReadonlyArray<TourStep> = [
 
 export const SpotlightTourOverlay: React.FC = () => {
   const { tourOpen, tourStepIndex, setTourStepIndex, closeTour } = useNotifications();
-  const { isBlinkerModalOpen = false, openBlinkerModal } = useSkyExplorer();
+  const { isBlinkerModalOpen = false, openBlinkerModal, closeBlinkerModal } = useSkyExplorer();
 
   const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+  const tourOpenedBlinkerRef = useRef<boolean>(false);
 
   const step = TOUR_STEPS[Math.max(0, Math.min(TOUR_STEPS.length - 1, tourStepIndex))];
 
@@ -52,23 +53,43 @@ export const SpotlightTourOverlay: React.FC = () => {
   useEffect(() => {
     if (!tourOpen) return;
     if (step.requiresBlinker && !isBlinkerModalOpen) {
+      tourOpenedBlinkerRef.current = true;
       openBlinkerModal?.('wise_0855');
     }
   }, [isBlinkerModalOpen, openBlinkerModal, step.requiresBlinker, tourOpen]);
 
-  // Measure target spotlight element bounds cleanly
+  const handleCloseTour = useCallback(() => {
+    if (tourOpenedBlinkerRef.current) {
+      tourOpenedBlinkerRef.current = false;
+      closeBlinkerModal?.();
+    }
+    closeTour(true);
+  }, [closeBlinkerModal, closeTour]);
+
+  // Measure target spotlight element bounds cleanly without stalling the compositor
   useEffect(() => {
     if (!tourOpen) return undefined;
 
+    let ro: ResizeObserver | null = null;
     const measure = () => {
       const el = document.querySelector(step.selector);
       setTargetRect(el ? el.getBoundingClientRect() : null);
+      if (el && !ro && typeof ResizeObserver !== 'undefined') {
+        ro = new ResizeObserver(() => {
+          setTargetRect(el.getBoundingClientRect());
+        });
+        ro.observe(el);
+      }
     };
-    const timer = window.setTimeout(measure, 80);
+
+    const rafId = window.requestAnimationFrame(measure);
+    const timer = window.setTimeout(measure, 150);
     window.addEventListener('resize', measure);
     return () => {
+      window.cancelAnimationFrame(rafId);
       window.clearTimeout(timer);
       window.removeEventListener('resize', measure);
+      ro?.disconnect();
     };
   }, [step.selector, tourOpen, tourStepIndex, isBlinkerModalOpen]);
 
@@ -79,6 +100,17 @@ export const SpotlightTourOverlay: React.FC = () => {
   const activeTargetRect = targetRect;
 
   const isLast = tourStepIndex >= TOUR_STEPS.length - 1;
+
+  const cutLeft = activeTargetRect ? Math.max(4, Math.floor(activeTargetRect.left - 4)) : 0;
+  const cutTop = activeTargetRect ? Math.max(4, Math.floor(activeTargetRect.top - 4)) : 0;
+  const cutRight = activeTargetRect
+    ? Math.min(window.innerWidth - 4, Math.ceil(activeTargetRect.right + 4))
+    : 0;
+  const cutBottom = activeTargetRect
+    ? Math.min(window.innerHeight - 4, Math.ceil(activeTargetRect.bottom + 4))
+    : 0;
+  const cutW = Math.max(0, cutRight - cutLeft);
+  const cutH = Math.max(0, cutBottom - cutTop);
 
   // Keep spotlight card nicely anchored near bottom-left or away from target box
   const cardTop =
@@ -92,23 +124,68 @@ export const SpotlightTourOverlay: React.FC = () => {
 
   return (
     <>
-      {activeTargetRect && (
+      {activeTargetRect && cutW > 0 && cutH > 0 && (
         <div
           aria-hidden="true"
           style={{
             position: 'fixed',
-            left: Math.max(4, activeTargetRect.left - 4),
-            top: Math.max(4, activeTargetRect.top - 4),
-            width: Math.min(window.innerWidth - 8, activeTargetRect.width + 8),
-            height: Math.min(window.innerHeight - 8, activeTargetRect.height + 8),
-            borderRadius: 16,
-            border: '2px solid rgba(251, 191, 36, 0.85)',
-            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.55)',
+            inset: 0,
             pointerEvents: 'none',
             zIndex: 47,
-            transition: 'all 220ms ease',
           }}
-        />
+        >
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              top: 0,
+              right: 0,
+              height: cutTop,
+              background: 'rgba(0, 0, 0, 0.56)',
+            }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              top: cutBottom,
+              right: 0,
+              bottom: 0,
+              background: 'rgba(0, 0, 0, 0.56)',
+            }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              top: cutTop,
+              width: cutLeft,
+              height: cutH,
+              background: 'rgba(0, 0, 0, 0.56)',
+            }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: cutRight,
+              top: cutTop,
+              right: 0,
+              height: cutH,
+              background: 'rgba(0, 0, 0, 0.56)',
+            }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: cutLeft,
+              top: cutTop,
+              width: cutW,
+              height: cutH,
+              borderRadius: 14,
+              border: '2px solid rgba(251, 191, 36, 0.88)',
+            }}
+          />
+        </div>
       )}
 
       <div
@@ -140,7 +217,7 @@ export const SpotlightTourOverlay: React.FC = () => {
             type="button"
             className="hud-icon-btn"
             aria-label="Close Guided Tour"
-            onClick={() => closeTour(true)}
+            onClick={handleCloseTour}
           >
             <CloseIcon size={14} />
           </button>
@@ -163,7 +240,14 @@ export const SpotlightTourOverlay: React.FC = () => {
             type="button"
             className="hud-btn-secondary"
             disabled={tourStepIndex === 0}
-            onClick={() => setTourStepIndex(Math.max(0, tourStepIndex - 1))}
+            onClick={() => {
+              const prevIndex = Math.max(0, tourStepIndex - 1);
+              if (!TOUR_STEPS[prevIndex].requiresBlinker && tourOpenedBlinkerRef.current) {
+                tourOpenedBlinkerRef.current = false;
+                closeBlinkerModal?.();
+              }
+              setTourStepIndex(prevIndex);
+            }}
           >
             Previous
           </button>
@@ -173,7 +257,7 @@ export const SpotlightTourOverlay: React.FC = () => {
             className="hud-btn-primary"
             onClick={() => {
               if (isLast) {
-                closeTour(true);
+                handleCloseTour();
               } else {
                 setTourStepIndex(tourStepIndex + 1);
               }
