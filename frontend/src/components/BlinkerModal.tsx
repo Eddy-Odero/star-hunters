@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from '../context/NotificationContext';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { useResizableSplit } from '../hooks/useResizableSplit';
@@ -7,7 +7,6 @@ import type { DetailsCalloutOrigin } from '../utils/calloutPlacement';
 import { extractAvailableMissions } from '../utils/knownObjectSelection';
 import { formatImageProvenanceBadge, formatRaDecCompact } from '../utils/observatoryMath';
 import { computeViewportViewBox } from '../utils/wcsViewport';
-import { SpectraModal } from './SpectraModal';
 import { BlinkerCalloutOverlay } from './blinker/BlinkerCalloutOverlay';
 import { BlinkerCanvasViewport } from './blinker/BlinkerCanvasViewport';
 import { BlinkerHeader } from './blinker/BlinkerHeader';
@@ -19,6 +18,10 @@ import {
   type CalloutRef,
   type CanvasFrameRect,
 } from './blinker/calloutBuilder';
+
+const LazySpectraModal = React.lazy(() =>
+  import('./SpectraModal').then((m) => ({ default: m.SpectraModal })),
+);
 
 /**
  * Centered multi-epoch Blinker modal combining the resizable controls & known-objects
@@ -429,7 +432,11 @@ export const BlinkerModal: React.FC = () => {
         </div>
       </div>
 
-      <SpectraModal />
+      {isSpectraModalOpen && (
+        <Suspense fallback={null}>
+          <LazySpectraModal />
+        </Suspense>
+      )}
     </div>
   );
 };

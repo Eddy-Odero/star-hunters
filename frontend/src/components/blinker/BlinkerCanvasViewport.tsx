@@ -204,42 +204,52 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
     if (!epochBuffers || epochBuffers.length === 0) {
       hasOffscreenFrameRef.current = false;
       blitOffscreenToVisible(viewBoxRef.current);
-      return;
+      return undefined;
     }
 
-    if (!offscreenCanvasRef.current) {
-      const off = document.createElement('canvas');
-      off.width = GRID_WIDTH;
-      off.height = GRID_HEIGHT;
-      offscreenCanvasRef.current = off;
+    const synthesizeAndBlit = () => {
+      if (!offscreenCanvasRef.current) {
+        const off = document.createElement('canvas');
+        off.width = GRID_WIDTH;
+        off.height = GRID_HEIGHT;
+        offscreenCanvasRef.current = off;
+      }
+      const offscreen = offscreenCanvasRef.current;
+      const offCtx = offscreen.getContext('2d');
+      if (!offCtx) return;
+
+      let imageData = offscreenImageDataRef.current;
+      if (!imageData) {
+        imageData = offCtx.createImageData(GRID_WIDTH, GRID_HEIGHT);
+        offscreenImageDataRef.current = imageData;
+      }
+
+      renderEpochBuffersToRgba({
+        epochBuffers,
+        flagsBuffers: flagsBuffers ?? undefined,
+        activeEpochIndex: renderSettings.activeEpochIndex,
+        comparisonMode: renderSettings.mode,
+        contrastStretch: renderSettings.contrastStretch,
+        wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+        passAIndex: renderSettings.passAIndex,
+        passBIndex: renderSettings.passBIndex,
+        coaddIndices: renderSettings.coaddIndices,
+        showFlagsOverlay: false,
+        outBuffer: imageData.data,
+      });
+
+      offCtx.putImageData(imageData, 0, 0);
+      hasOffscreenFrameRef.current = true;
+      blitOffscreenToVisible(viewBoxRef.current);
+    };
+
+    if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+      synthesizeAndBlit();
+      return undefined;
     }
-    const offscreen = offscreenCanvasRef.current;
-    const offCtx = offscreen.getContext('2d');
-    if (!offCtx) return;
 
-    let imageData = offscreenImageDataRef.current;
-    if (!imageData) {
-      imageData = offCtx.createImageData(GRID_WIDTH, GRID_HEIGHT);
-      offscreenImageDataRef.current = imageData;
-    }
-
-    renderEpochBuffersToRgba({
-      epochBuffers,
-      flagsBuffers: flagsBuffers ?? undefined,
-      activeEpochIndex: renderSettings.activeEpochIndex,
-      comparisonMode: renderSettings.mode,
-      contrastStretch: renderSettings.contrastStretch,
-      wavelengthRangeUm: renderSettings.wavelengthRangeUm,
-      passAIndex: renderSettings.passAIndex,
-      passBIndex: renderSettings.passBIndex,
-      coaddIndices: renderSettings.coaddIndices,
-      showFlagsOverlay: false,
-      outBuffer: imageData.data,
-    });
-
-    offCtx.putImageData(imageData, 0, 0);
-    hasOffscreenFrameRef.current = true;
-    blitOffscreenToVisible(viewBoxRef.current);
+    const rafId = window.requestAnimationFrame(synthesizeAndBlit);
+    return () => window.cancelAnimationFrame(rafId);
   }, [
     blitOffscreenToVisible,
     epochBuffers,

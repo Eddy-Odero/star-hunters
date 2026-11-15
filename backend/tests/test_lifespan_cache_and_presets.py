@@ -14,12 +14,15 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.main import create_app
+from app.main import CachedStaticFiles, create_app
 from app.models.contracts import (
+    BINARY_DETECTOR_FLOAT16_BYTES,
     SHOWCASE_TARGETS,
     TRACKING_SQUARE_COLORS,
+    convert_float32_bytes_to_float16_bytes,
     validate_catalogs_response,
     validate_sky_patch_manifest,
 )
@@ -498,6 +501,195 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
             entry.get("target_slug") for entry in global_index if entry.get("target_slug")
         }
         self.assertTrue(set(SHOWCASE_TARGETS).issubset(indexed_slugs))
+
+    def test_sqlite_throttled_last_accessed_writes(self) -> None:
+        throttled_db = str(self.tmp_path / "throttled.db")
+        throttled_cache = SpatialSqliteCache(
+            db_path=throttled_db,
+            max_cache_bytes=64 * 1024 * 1024,
+            last_access_update_interval=300.0,
+        )
+        try:
+            meta = SHOWCASE_TARGETS["wise_0855"]
+            manifest = build_sky_patch_manifest_payload(
+                ra=meta["ra"], dec=meta["dec"], fov_arcmin=5.0, slug="wise_0855"
+            )
+            frames = generate_synthetic_epoch_frames(slug="wise_0855", manifest=manifest)
+            grid_key, ra_q, dec_q = compute_grid_key(meta["ra"], meta["dec"], 5.0)
+            throttled_cache.put_sky_patch(grid_key, ra_q, dec_q, 5.0, manifest, frames)
+
+            with throttled_cache.connection() as conn:
+                initial_ts = float(
+                    conn.execute(
+                        "SELECT last_accessed FROM sky_patches WHERE grid_key = ?",
+                        (grid_key,),
+                    ).fetchone()["last_accessed"]
+                )
+
+            # Reading immediately from SQLite must NOT rewrite last_accessed within 300s
+            self.assertIsNotNone(throttled_cache.get_manifest(grid_key))
+            throttled_cache._mem_cache.clear()
+            self.assertIsNotNone(throttled_cache.get_frame(grid_key, "pass_1.bin"))
+            with throttled_cache.connection() as conn:
+                after_fast_read_ts = float(
+                    conn.execute(
+                        "SELECT last_accessed FROM sky_patches WHERE grid_key = ?",
+                        (grid_key,),
+                    ).fetchone()["last_accessed"]
+                )
+            self.assertEqual(after_fast_read_ts, initial_ts)
+
+            # Backdate last_accessed beyond interval and clear memory cache -> read updates SQLite
+            stale_ts = initial_ts - 600.0
+            with throttled_cache.connection() as conn:
+                conn.execute(
+                    "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
+                    (stale_ts, grid_key),
+                )
+            throttled_cache._mem_cache.clear()
+            self.assertIsNotNone(throttled_cache.get_manifest(grid_key))
+            with throttled_cache.connection() as conn:
+                refreshed_ts = float(
+                    conn.execute(
+                        "SELECT last_accessed FROM sky_patches WHERE grid_key = ?",
+                        (grid_key,),
+                    ).fetchone()["last_accessed"]
+                )
+            self.assertGreater(refreshed_ts, stale_ts)
+        finally:
+            throttled_cache.close()
+
+    def test_in_process_lru_cache_hit_immutability_eviction_and_invalidation(self) -> None:
+        tiny_mem_db = str(self.tmp_path / "mem_lru.db")
+        mem_cache = SpatialSqliteCache(
+            db_path=tiny_mem_db,
+            max_cache_bytes=64 * 1024 * 1024,
+            max_memory_bytes=2 * 1024 * 1024,
+        )
+        try:
+            meta = SHOWCASE_TARGETS["wise_0855"]
+            manifest = build_sky_patch_manifest_payload(
+                ra=meta["ra"], dec=meta["dec"], fov_arcmin=5.0, slug="wise_0855"
+            )
+            frames = generate_synthetic_epoch_frames(slug="wise_0855", manifest=manifest)
+            grid_key, ra_q, dec_q = compute_grid_key(meta["ra"], meta["dec"], 5.0)
+            mem_cache.put_sky_patch(grid_key, ra_q, dec_q, 5.0, manifest, frames)
+
+            # Immutability: mutating returned manifest must not corrupt cached copy
+            m1 = mem_cache.get_manifest(grid_key)
+            assert m1 is not None
+            m1["query"]["grid_key"] = "mutated_by_caller"
+            m2 = mem_cache.get_manifest(grid_key)
+            assert m2 is not None
+            self.assertEqual(m2["query"]["grid_key"], grid_key)
+
+            # Byte-budget eviction: adding multiple 1.5 MB raw frames stays <= 2 MB cap
+            self.assertIsNotNone(mem_cache.get_frame(grid_key, "pass_1.bin"))
+            self.assertIsNotNone(mem_cache.get_frame(grid_key, "pass_2.bin"))
+            self.assertLessEqual(mem_cache._mem_cache.current_bytes, 2 * 1024 * 1024)
+            self.assertIsNone(mem_cache._mem_cache.get(f"frame_raw:{grid_key}:pass_1.bin"))
+
+            # put_sky_patch invalidates manifest & frames in memory
+            self.assertIsNotNone(mem_cache.get_manifest(grid_key))
+            self.assertIsNotNone(mem_cache._mem_cache.get(f"manifest:{grid_key}"))
+            mem_cache.put_sky_patch(grid_key, ra_q, dec_q, 5.0, manifest, frames)
+            self.assertIsNone(mem_cache._mem_cache.get(f"manifest:{grid_key}"))
+            self.assertIsNone(mem_cache._mem_cache.get(f"frame_raw:{grid_key}:pass_2.bin"))
+
+            # clear() wipes memory cache too
+            self.assertIsNotNone(mem_cache.get_manifest(grid_key))
+            self.assertGreater(mem_cache._mem_cache.entry_count, 0)
+            mem_cache.clear()
+            self.assertEqual(mem_cache._mem_cache.entry_count, 0)
+
+            # SQLite _prune_if_needed invalidates memory entries for evicted patches & regions
+            mem_cache.put_sky_patch(grid_key, ra_q, dec_q, 5.0, manifest, frames)
+            self.assertIsNotNone(mem_cache.get_manifest(grid_key))
+            mem_cache.put_cached_catalog_region("simbad", 10.0, 10.0, 0.1, {"rows": [1, 2, 3]})
+            self.assertIsNotNone(mem_cache.get_cached_catalog_region("simbad", 10.0, 10.0, 0.1))
+
+            one_size = mem_cache.get_patch_byte_size(grid_key)
+            mem_cache.max_cache_bytes = int(one_size * 1.2)
+            other_manifest = build_sky_patch_manifest_payload(
+                ra=55.0, dec=22.0, fov_arcmin=5.0, slug="custom_sky"
+            )
+            other_frames = generate_synthetic_epoch_frames(
+                slug="custom_sky", manifest=other_manifest
+            )
+            other_key, o_ra, o_dec = compute_grid_key(55.0, 22.0, 5.0)
+            mem_cache.put_sky_patch(other_key, o_ra, o_dec, 5.0, other_manifest, other_frames)
+
+            self.assertIsNone(mem_cache._mem_cache.get(f"manifest:{grid_key}"))
+            self.assertIsNone(mem_cache.get_manifest(grid_key))
+        finally:
+            mem_cache.close()
+
+    def test_pre_gzipped_float16_frame_endpoint_and_identity_fallback(self) -> None:
+        service = StarHuntersBackendService(cache=self.cache)
+        manifest = service.get_sky_patch(133.7951, -7.2451, 5.0)
+        grid_key = manifest["query"]["grid_key"]
+        client = TestClient(create_app(service))
+
+        with patch(
+            "app.services.spatial_cache.convert_float32_bytes_to_float16_bytes",
+            wraps=convert_float32_bytes_to_float16_bytes,
+        ) as mock_f16:
+            r1 = client.get(
+                f"/api/v1/frames/{grid_key}/pass_1.bin",
+                params={"precision": "float16"},
+                headers={"Accept-Encoding": "gzip"},
+            )
+            r2 = client.get(
+                f"/api/v1/frames/{grid_key}/pass_1.bin",
+                params={"precision": "float16"},
+                headers={"Accept-Encoding": "gzip"},
+            )
+            self.assertEqual(mock_f16.call_count, 1)
+
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r1.headers.get("content-encoding"), "gzip")
+        self.assertEqual(r2.headers.get("content-encoding"), "gzip")
+        self.assertIn("Accept-Encoding", r1.headers.get("vary", ""))
+        self.assertEqual(r1.headers.get("x-binary-dtype"), "float16")
+        self.assertEqual(len(r1.content), BINARY_DETECTOR_FLOAT16_BYTES)
+        self.assertEqual(r1.content, r2.content)
+
+        identity_resp = client.get(
+            f"/api/v1/frames/{grid_key}/pass_1.bin",
+            params={"precision": "float16"},
+            headers={"Accept-Encoding": "identity"},
+        )
+        self.assertEqual(identity_resp.status_code, 200)
+        self.assertIsNone(identity_resp.headers.get("content-encoding"))
+        self.assertEqual(len(identity_resp.content), BINARY_DETECTOR_FLOAT16_BYTES)
+        self.assertEqual(identity_resp.content, r1.content)
+
+    def test_cached_static_files_headers(self) -> None:
+        dist_dir = self.tmp_path / "dist"
+        assets_dir = dist_dir / "assets"
+        assets_dir.mkdir(parents=True)
+        (dist_dir / "index.html").write_text("<html><body>ok</body></html>", encoding="utf-8")
+        (assets_dir / "app-abc123.js").write_text("console.log('ok');", encoding="utf-8")
+
+        static_app = FastAPI()
+        static_app.mount("/", CachedStaticFiles(directory=str(dist_dir), html=True), name="spa")
+        client = TestClient(static_app)
+
+        asset_resp = client.get("/assets/app-abc123.js")
+        self.assertEqual(asset_resp.status_code, 200)
+        self.assertEqual(
+            asset_resp.headers.get("cache-control"),
+            "public, max-age=31536000, immutable",
+        )
+
+        root_resp = client.get("/")
+        self.assertEqual(root_resp.status_code, 200)
+        self.assertEqual(root_resp.headers.get("cache-control"), "no-cache")
+
+        html_resp = client.get("/index.html")
+        self.assertEqual(html_resp.status_code, 200)
+        self.assertEqual(html_resp.headers.get("cache-control"), "no-cache")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -10,15 +11,103 @@ import threading
 import time
 import weakref
 import zlib
+from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
+from app.models.contracts import convert_float32_bytes_to_float16_bytes
 from app.utils.astronomy import angular_separation_deg, mjd_to_date_bucket
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
+DEFAULT_MAX_MEMORY_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB
 DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+LAST_ACCESS_UPDATE_INTERVAL_SECONDS = 300.0  # 5 minutes
+
+
+def _resolve_max_memory_bytes(max_memory_bytes: int | None) -> int:
+    """Resolve the in-process LRU byte budget from argument or ``IN_MEMORY_CACHE_MB``."""
+    if max_memory_bytes is not None:
+        return max(0, int(max_memory_bytes))
+    raw = os.environ.get("IN_MEMORY_CACHE_MB", "").strip()
+    if not raw:
+        return DEFAULT_MAX_MEMORY_CACHE_BYTES
+    try:
+        return max(0, int(float(raw) * 1024 * 1024))
+    except ValueError:
+        return DEFAULT_MAX_MEMORY_CACHE_BYTES
+
+
+class _MemoryLruCache:
+    """Thread-safe, byte-budgeted in-process LRU cache storing immutable ``bytes``."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max(0, int(max_bytes))
+        self._lock = threading.RLock()
+        self._entries: OrderedDict[str, bytes] = OrderedDict()
+        self._current_bytes = 0
+
+    @property
+    def current_bytes(self) -> int:
+        """Total bytes currently held by cached entries."""
+        with self._lock:
+            return self._current_bytes
+
+    @property
+    def entry_count(self) -> int:
+        """Number of entries currently held in the in-process LRU cache."""
+        with self._lock:
+            return len(self._entries)
+
+    def get(self, key: str) -> bytes | None:
+        """Return cached bytes and mark ``key`` as most recently used, or ``None``."""
+        if self.max_bytes <= 0:
+            return None
+        with self._lock:
+            val = self._entries.get(key)
+            if val is None:
+                return None
+            self._entries.move_to_end(key)
+            return val
+
+    def put(self, key: str, value: bytes) -> None:
+        """Insert ``value`` under ``key``, evicting oldest entries to stay under ``max_bytes``."""
+        if self.max_bytes <= 0:
+            return
+        size = len(value)
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self._current_bytes -= len(old)
+            if size > self.max_bytes:
+                return
+            while self._entries and self._current_bytes + size > self.max_bytes:
+                _, evicted = self._entries.popitem(last=False)
+                self._current_bytes -= len(evicted)
+            self._entries[key] = value
+            self._current_bytes += size
+
+    def delete(self, key: str) -> None:
+        """Remove ``key`` if present."""
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self._current_bytes -= len(old)
+
+    def delete_prefix(self, prefix: str) -> None:
+        """Remove all entries whose keys begin with ``prefix``."""
+        with self._lock:
+            keys = [key for key in self._entries if key.startswith(prefix)]
+            for key in keys:
+                old = self._entries.pop(key)
+                self._current_bytes -= len(old)
+
+    def clear(self) -> None:
+        """Remove all cached entries."""
+        with self._lock:
+            self._entries.clear()
+            self._current_bytes = 0
 
 
 def quantize_bucket(
@@ -78,6 +167,8 @@ class SpatialSqliteCache:
         db_path: str | None = None,
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
         pinned_grid_keys: set[str] | None = None,
+        max_memory_bytes: int | None = None,
+        last_access_update_interval: float = LAST_ACCESS_UPDATE_INTERVAL_SECONDS,
     ) -> None:
         """Initialize the SQLite spatial cache and schema.
 
@@ -89,10 +180,16 @@ class SpatialSqliteCache:
             pinned_grid_keys: Optional set of showcase ``grid_key`` values that
                 LRU eviction should preserve unless pinned entries alone exceed
                 ``max_cache_bytes``.
+            max_memory_bytes: Optional byte budget for the in-process LRU cache.
+                Defaults to ``IN_MEMORY_CACHE_MB`` env var or 128 MB (``0`` disables).
+            last_access_update_interval: Minimum seconds between SQLite
+                ``last_accessed`` timestamp writes for the same row.
         """
         self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
         self.max_cache_bytes = max_cache_bytes
         self.pinned_grid_keys: set[str] = set(pinned_grid_keys or ())
+        self.last_access_update_interval = max(0.0, float(last_access_update_interval))
+        self._mem_cache = _MemoryLruCache(max_bytes=_resolve_max_memory_bytes(max_memory_bytes))
         self._local = threading.local()
         self._pool_lock = threading.Lock()
         self._connections: list[sqlite3.Connection] = []
@@ -255,37 +352,55 @@ class SpatialSqliteCache:
                 """
             )
 
+    def _invalidate_grid_key_memory(self, grid_key: str) -> None:
+        """Remove all in-process LRU cache entries associated with ``grid_key``."""
+        self._mem_cache.delete(f"manifest:{grid_key}")
+        self._mem_cache.delete(f"catalogs:{grid_key}")
+        self._mem_cache.delete_prefix(f"frame_raw:{grid_key}:")
+        self._mem_cache.delete_prefix(f"frame_gz:{grid_key}:")
+
     def _get_json_row(
         self,
         table: Literal["sky_patches", "spectra_cache", "capital_zenith_cache"],
         json_column: Literal["manifest_json", "catalogs_json", "payload_json"],
         key_column: Literal["grid_key", "spectrum_key", "cache_key"],
         key_value: str,
+        mem_key: str | None = None,
     ) -> dict[str, Any] | None:
-        """Fetch a JSON payload from a cache table and update ``last_accessed``.
+        """Fetch a JSON payload from memory or SQLite and throttle ``last_accessed`` writes.
 
         Args:
             table: Target SQLite cache table name.
             json_column: Column holding serialized JSON text.
             key_column: Primary key column name to filter on.
             key_value: Lookup key value.
+            mem_key: Optional in-process LRU cache key.
 
         Returns:
             Deserialized JSON dictionary, or ``None`` on cache miss.
         """
+        if mem_key is not None:
+            cached_bytes = self._mem_cache.get(mem_key)
+            if cached_bytes is not None:
+                return json.loads(cached_bytes)
+
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
-                f"SELECT {json_column} FROM {table} WHERE {key_column} = ?",
+                f"SELECT {json_column}, last_accessed FROM {table} WHERE {key_column} = ?",
                 (key_value,),
             ).fetchone()
             if not row:
                 return None
-            conn.execute(
-                f"UPDATE {table} SET last_accessed = ? WHERE {key_column} = ?",
-                (now, key_value),
-            )
-            return json.loads(row[json_column])
+            if now - float(row["last_accessed"]) >= self.last_access_update_interval:
+                conn.execute(
+                    f"UPDATE {table} SET last_accessed = ? WHERE {key_column} = ?",
+                    (now, key_value),
+                )
+            raw_json = str(row[json_column])
+        if mem_key is not None:
+            self._mem_cache.put(mem_key, raw_json.encode("utf-8"))
+        return json.loads(raw_json)
 
     def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
         """Fetch a cached sky-patch manifest, rehydrating deduplicated catalog overlays.
@@ -296,24 +411,34 @@ class SpatialSqliteCache:
         Returns:
             Manifest dictionary with ``query.cached = True``, or ``None``.
         """
+        mem_key = f"manifest:{grid_key}"
+        cached_bytes = self._mem_cache.get(mem_key)
+        if cached_bytes is not None:
+            manifest: dict[str, Any] = json.loads(cached_bytes)
+            manifest["query"]["cached"] = True
+            return manifest
+
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT manifest_json, catalogs_json FROM sky_patches WHERE grid_key = ?",
+                "SELECT manifest_json, catalogs_json, last_accessed "
+                "FROM sky_patches WHERE grid_key = ?",
                 (grid_key,),
             ).fetchone()
             if not row:
                 return None
-            conn.execute(
-                "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
-                (now, grid_key),
-            )
-            manifest: dict[str, Any] = json.loads(row["manifest_json"])
+            if now - float(row["last_accessed"]) >= self.last_access_update_interval:
+                conn.execute(
+                    "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
+                    (now, grid_key),
+                )
+            manifest = json.loads(row["manifest_json"])
             if "catalog_overlays" not in manifest:
                 catalogs_payload = json.loads(row["catalogs_json"])
                 manifest["catalog_overlays"] = catalogs_payload["catalog_overlays"]
-            manifest["query"]["cached"] = True
-            return manifest
+        manifest["query"]["cached"] = True
+        self._mem_cache.put(mem_key, json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
+        return manifest
 
     def get_catalogs(self, grid_key: str) -> dict[str, Any] | None:
         """Fetch cached catalog overlays for a sky patch and mark as cached.
@@ -324,7 +449,13 @@ class SpatialSqliteCache:
         Returns:
             Catalogs dictionary with ``query.cached = True``, or ``None``.
         """
-        payload = self._get_json_row("sky_patches", "catalogs_json", "grid_key", grid_key)
+        payload = self._get_json_row(
+            "sky_patches",
+            "catalogs_json",
+            "grid_key",
+            grid_key,
+            mem_key=f"catalogs:{grid_key}",
+        )
         if payload is not None:
             payload["query"]["cached"] = True
         return payload
@@ -339,19 +470,63 @@ class SpatialSqliteCache:
         Returns:
             Decompressed binary frame bytes, or ``None`` if missing.
         """
+        mem_key = f"frame_raw:{grid_key}:{filename}"
+        cached_raw = self._mem_cache.get(mem_key)
+        if cached_raw is not None:
+            return cached_raw
+
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT compressed_blob FROM binary_frames WHERE grid_key = ? AND filename = ?",
+                """
+                SELECT bf.compressed_blob, sp.last_accessed
+                FROM binary_frames bf
+                JOIN sky_patches sp ON sp.grid_key = bf.grid_key
+                WHERE bf.grid_key = ? AND bf.filename = ?
+                """,
                 (grid_key, filename),
             ).fetchone()
             if not row:
                 return None
-            conn.execute(
-                "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
-                (now, grid_key),
-            )
-            return zlib.decompress(row["compressed_blob"])
+            if now - float(row["last_accessed"]) >= self.last_access_update_interval:
+                conn.execute(
+                    "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
+                    (now, grid_key),
+                )
+            raw_bytes = zlib.decompress(row["compressed_blob"])
+        self._mem_cache.put(mem_key, raw_bytes)
+        return raw_bytes
+
+    def get_frame_gzip(
+        self,
+        grid_key: str,
+        filename: str,
+        precision: Literal["float32", "float16"] = "float32",
+    ) -> tuple[bytes, str] | None:
+        """Fetch a cached binary frame pre-converted and gzip-compressed in RAM.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+            filename: Frame filename (e.g. ``"pass_1.bin"``).
+            precision: Target floating-point precision for detector cubes.
+
+        Returns:
+            Tuple of ``(gzip_bytes, dtype_header)``, or ``None`` if missing.
+        """
+        dtype_header = "uint8" if filename.endswith("_flags.bin") else precision
+        gz_key = f"frame_gz:{grid_key}:{filename}:{dtype_header}"
+        cached_gz = self._mem_cache.get(gz_key)
+        if cached_gz is not None:
+            return cached_gz, dtype_header
+
+        raw = self.get_frame(grid_key, filename)
+        if raw is None:
+            return None
+
+        payload = convert_float32_bytes_to_float16_bytes(raw) if dtype_header == "float16" else raw
+        gz_bytes = gzip.compress(payload, compresslevel=6)
+        self._mem_cache.put(gz_key, gz_bytes)
+        return gz_bytes, dtype_header
 
     def put_sky_patch(
         self,
@@ -422,6 +597,7 @@ class SpatialSqliteCache:
                     frame_rows,
                 )
             self._prune_if_needed(conn, preserve_grid_key=grid_key)
+        self._invalidate_grid_key_memory(grid_key)
 
     def get_patch_byte_size(self, grid_key: str) -> int:
         """Return the stored compressed byte size of a cached sky patch.
@@ -448,7 +624,13 @@ class SpatialSqliteCache:
         Returns:
             Cached spectrum payload dictionary, or ``None``.
         """
-        return self._get_json_row("spectra_cache", "payload_json", "spectrum_key", spectrum_key)
+        return self._get_json_row(
+            "spectra_cache",
+            "payload_json",
+            "spectrum_key",
+            spectrum_key,
+            mem_key=f"spectrum:{spectrum_key}",
+        )
 
     def put_spectrum(
         self,
@@ -476,6 +658,7 @@ class SpatialSqliteCache:
                 """,
                 (spectrum_key, ra, dec, payload_str, now, now),
             )
+        self._mem_cache.delete(f"spectrum:{spectrum_key}")
 
     def get_zenith_response(self, cache_key: str) -> dict[str, Any] | None:
         """Fetch a cached Earth-to-Sky zenith lookup and mark it as cached.
@@ -486,7 +669,13 @@ class SpatialSqliteCache:
         Returns:
             Zenith response dictionary with ``earth.cached = True``, or ``None``.
         """
-        payload = self._get_json_row("capital_zenith_cache", "payload_json", "cache_key", cache_key)
+        payload = self._get_json_row(
+            "capital_zenith_cache",
+            "payload_json",
+            "cache_key",
+            cache_key,
+            mem_key=f"zenith:{cache_key}",
+        )
         if payload is not None:
             payload["earth"]["cached"] = True
         return payload
@@ -519,6 +708,7 @@ class SpatialSqliteCache:
                 """,
                 (cache_key, city_slug, lat, lon, payload_str, now, now),
             )
+        self._mem_cache.delete(f"zenith:{cache_key}")
 
     @staticmethod
     def _catalog_region_key(
@@ -556,10 +746,22 @@ class SpatialSqliteCache:
         """
         now = time.time()
         region_key, _, _, _ = self._catalog_region_key(source, ra, dec, radius_deg)
+        mem_key = f"catreg:{region_key}"
+        cached_mem = self._mem_cache.get(mem_key)
+        if cached_mem is not None:
+            wrapper = json.loads(cached_mem)
+            is_expired = float(wrapper["expires_at"]) < now
+            if is_expired and not allow_stale:
+                return None
+            payload: dict[str, Any] = wrapper["payload"]
+            payload["cache_hit"] = True
+            payload["stale"] = is_expired
+            return payload
+
         with self.connection() as conn:
             row = conn.execute(
                 """
-                SELECT payload_json, expires_at
+                SELECT payload_json, expires_at, last_accessed
                 FROM catalog_region_cache
                 WHERE region_key = ?
                 """,
@@ -567,17 +769,24 @@ class SpatialSqliteCache:
             ).fetchone()
             if not row:
                 return None
-            is_expired = float(row["expires_at"]) < now
+            expires_at = float(row["expires_at"])
+            is_expired = expires_at < now
             if is_expired and not allow_stale:
                 return None
-            conn.execute(
-                "UPDATE catalog_region_cache SET last_accessed = ? WHERE region_key = ?",
-                (now, region_key),
-            )
-            payload: dict[str, Any] = json.loads(row["payload_json"])
-            payload["cache_hit"] = True
-            payload["stale"] = is_expired
-            return payload
+            if now - float(row["last_accessed"]) >= self.last_access_update_interval:
+                conn.execute(
+                    "UPDATE catalog_region_cache SET last_accessed = ? WHERE region_key = ?",
+                    (now, region_key),
+                )
+            payload = json.loads(row["payload_json"])
+        wrapper_bytes = json.dumps(
+            {"expires_at": expires_at, "payload": payload},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self._mem_cache.put(mem_key, wrapper_bytes)
+        payload["cache_hit"] = True
+        payload["stale"] = is_expired
+        return payload
 
     def put_cached_catalog_region(
         self,
@@ -625,6 +834,7 @@ class SpatialSqliteCache:
                 ),
             )
             self._prune_if_needed(conn)
+        self._mem_cache.delete(f"catreg:{region_key}")
 
     def upsert_ephemeris_points(self, points: list[dict[str, Any]]) -> int:
         """Upsert JPL Horizons / MOST rows indexed by ``(date_bucket, ra_bucket, dec_bucket)``.
@@ -926,6 +1136,7 @@ class SpatialSqliteCache:
                     "DELETE FROM catalog_region_cache WHERE region_key = ?",
                     (r["region_key"],),
                 )
+                self._mem_cache.delete(f"catreg:{r['region_key']}")
                 total_bytes -= int(r["byte_size"])
                 evicted += 1
             if total_bytes > self.max_cache_bytes:
@@ -940,6 +1151,7 @@ class SpatialSqliteCache:
                         "DELETE FROM catalog_region_cache WHERE region_key = ?",
                         (r["region_key"],),
                     )
+                    self._mem_cache.delete(f"catreg:{r['region_key']}")
                     total_bytes -= int(r["byte_size"])
                     evicted += 1
 
@@ -959,6 +1171,7 @@ class SpatialSqliteCache:
             if r["grid_key"] in self.pinned_grid_keys:
                 continue
             conn.execute("DELETE FROM sky_patches WHERE grid_key = ?", (r["grid_key"],))
+            self._invalidate_grid_key_memory(str(r["grid_key"]))
             total_bytes -= int(r["byte_size"])
             evicted += 1
         # Pass 2: Only if pinned patches alone exceed max_cache_bytes, evict oldest pinned patches
@@ -971,6 +1184,7 @@ class SpatialSqliteCache:
                 if r["grid_key"] not in self.pinned_grid_keys:
                     continue
                 conn.execute("DELETE FROM sky_patches WHERE grid_key = ?", (r["grid_key"],))
+                self._invalidate_grid_key_memory(str(r["grid_key"]))
                 total_bytes -= int(r["byte_size"])
                 evicted += 1
         return evicted
@@ -984,3 +1198,4 @@ class SpatialSqliteCache:
             conn.execute("DELETE FROM capital_zenith_cache")
             conn.execute("DELETE FROM catalog_region_cache")
             conn.execute("DELETE FROM solar_system_ephemeris")
+        self._mem_cache.clear()

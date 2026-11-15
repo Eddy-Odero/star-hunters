@@ -1,7 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { NotificationProvider } from './context/NotificationContext';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
-import { BlinkerModal } from './components/BlinkerModal';
 import { FloatingSearchZenithMenu } from './components/FloatingSearchZenithMenu';
 import { KnownObjectsPanel } from './components/KnownObjectsPanel';
 import { LandingCurtainOverlay } from './components/LandingCurtainOverlay';
@@ -11,12 +10,17 @@ import { SpotlightTourOverlay } from './components/SpotlightTourOverlay';
 import { URL_STATE_DEFAULTS, parseUrlState, replaceUrlState } from './utils/urlStateSync';
 import { observatoryLogger } from './utils/observatoryLogger';
 
+const LazyBlinkerModal = React.lazy(() =>
+  import('./components/BlinkerModal').then((m) => ({ default: m.BlinkerModal })),
+);
+
 const ObservatoryWorkspace: React.FC = () => {
   const {
     activePresetSlug,
     coordinates,
     manifest,
     loadingState,
+    isBlinkerModalOpen = false,
     renderSettings,
     updateRenderSettings,
     selectPreset,
@@ -115,7 +119,11 @@ const ObservatoryWorkspace: React.FC = () => {
       <KnownObjectsPanel />
 
       {/* Centered Patch Inspector / Blinker Modal + Collapsible 102-Band Spectra Modal */}
-      <BlinkerModal />
+      {isBlinkerModalOpen && (
+        <Suspense fallback={null}>
+          <LazyBlinkerModal />
+        </Suspense>
+      )}
 
       {/* Top-Center Warning Banner + Bottom-Right Async Toast + Persistent 40x40 Help Icon */}
       <NotificationOverlay />

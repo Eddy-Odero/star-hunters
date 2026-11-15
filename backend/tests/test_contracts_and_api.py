@@ -700,10 +700,14 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         fly_cfg = tomllib.loads((repo_root / "fly.toml").read_text(encoding="utf-8"))
         self.assertEqual(fly_cfg["primary_region"], "iad")
         self.assertEqual(fly_cfg["env"]["SQLITE_DB_PATH"], "/data/spherex_cache.db")
+        self.assertEqual(fly_cfg["env"]["IN_MEMORY_CACHE_MB"], "512")
         self.assertEqual(fly_cfg["http_service"]["auto_stop_machines"], "suspend")
         self.assertEqual(fly_cfg["http_service"]["min_machines_running"], 0)
+        self.assertEqual(fly_cfg["http_service"]["concurrency"]["soft_limit"], 20)
+        self.assertEqual(fly_cfg["http_service"]["concurrency"]["hard_limit"], 40)
         self.assertEqual(fly_cfg["mounts"][0]["destination"], "/data")
-        self.assertEqual(fly_cfg["vm"][0]["memory"], "2048mb")
+        self.assertEqual(fly_cfg["vm"][0]["size"], "shared-cpu-4x")
+        self.assertEqual(fly_cfg["vm"][0]["memory"], "4096mb")
 
         frontend_dist = repo_root / "frontend" / "dist"
         if (frontend_dist / "index.html").is_file():

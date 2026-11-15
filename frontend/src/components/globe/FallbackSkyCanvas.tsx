@@ -32,7 +32,7 @@ export const FallbackSkyCanvas: React.FC<FallbackSkyCanvasProps> = ({
     const rafId = window.requestAnimationFrame(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = width || window.innerWidth;
       const h = height || window.innerHeight;
       if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {

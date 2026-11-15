@@ -12,6 +12,8 @@ from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response as StarletteResponse
+from starlette.types import Scope
 
 from app.services.backend_service import StarHuntersBackendService
 from app.services.logging_config import configure_backend_logging
@@ -19,6 +21,25 @@ from app.services.spectrum_extractor import SpectrumExtractionError
 
 _HTTP_CLIENT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 _HTTP_CLIENT_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+
+
+class CachedStaticFiles(StaticFiles):
+    """StaticFiles mount setting immutable headers on hashed assets and no-cache on HTML."""
+
+    async def get_response(self, path: str, scope: Scope) -> StarletteResponse:
+        """Return static file response with long-lived cache headers for Vite assets."""
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            normalized = path.lstrip("./")
+            if normalized.startswith("assets/") or "/assets/" in f"/{normalized}":
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif (
+                normalized in {"", "index.html"}
+                or normalized.endswith(".html")
+                or "text/html" in response.headers.get("content-type", "")
+            ):
+                response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
@@ -192,13 +213,16 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         grid_key: str,
         filename: str,
         precision: Literal["float32", "float16"] = Query("float32"),
+        accept_encoding: str | None = Header(None),
     ) -> Response:
         """Stream a packed binary detector cube or uint8 hygiene mask."""
+        accept_gzip = "gzip" in (accept_encoding or "").lower()
         try:
             body, headers = active_service.get_frame_bytes(
                 grid_key=grid_key,
                 filename=filename,
                 precision=precision,
+                accept_gzip=accept_gzip,
             )
             return Response(
                 content=body,
@@ -256,7 +280,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
     if frontend_dist.is_dir():
         fastapi_app.mount(
             "/",
-            StaticFiles(directory=str(frontend_dist), html=True),
+            CachedStaticFiles(directory=str(frontend_dist), html=True),
             name="frontend_spa",
         )
 
