@@ -1,5 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
+import {
+  catalogBadgeLabel,
+  formatMagnitude,
+  formatProperMotion,
+} from '../utils/knownObjectSelection';
 
 export const KnownObjectsCheckboxMenu: React.FC = () => {
   const {
@@ -69,7 +74,11 @@ export const KnownObjectsCheckboxMenu: React.FC = () => {
                   <div className="known-object-details">
                     <span className="obj-name">{obj.label}</span>
                     <span className="obj-meta">
-                      [{obj.catalog}] {obj.object_type} • ({obj.x.toFixed(1)}, {obj.y.toFixed(1)})
+                      <span className={`catalog-badge catalog-badge-${obj.catalog}`}>
+                        {catalogBadgeLabel(obj.catalog)}
+                      </span>{' '}
+                      {obj.object_type} • {formatMagnitude(obj.magnitude)} •{' '}
+                      {formatProperMotion(obj.proper_motion_arcsec_yr)}
                     </span>
                   </div>
                 </label>

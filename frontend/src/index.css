@@ -215,6 +215,28 @@ button.active {
   color: #94a3b8;
 }
 
+.catalog-badge {
+  display: inline-block;
+  padding: 0 0.35rem;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.catalog-badge-gaia_dr3 {
+  color: #38bdf8;
+}
+
+.catalog-badge-wise {
+  color: #f472b6;
+}
+
+.catalog-badge-most {
+  color: #fbbf24;
+}
+
 .no-objects-item {
   color: #64748b;
   font-size: 0.85rem;

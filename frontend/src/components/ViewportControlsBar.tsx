@@ -1,17 +1,7 @@
 import React from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import type { ComparisonMode, ContrastStretch } from '../types/contracts';
-
-const WAVELENGTH_PRESETS: ReadonlyArray<{
-  id: string;
-  label: string;
-  range: [number, number];
-}> = [
-  { id: 'all', label: 'All Bands (0.75–5.0 µm)', range: [0.75, 5.0] },
-  { id: 'cold', label: 'Cold Objects / Planet X (3.8–5.0 µm)', range: [3.8, 5.0] },
-  { id: 'molecules', label: 'H₂O / CH₄ Band (2.4–3.8 µm)', range: [2.4, 3.8] },
-  { id: 'hot', label: 'Hot Stars (0.75–2.4 µm)', range: [0.75, 2.4] },
-];
+import { WAVELENGTH_PRESETS, isWavelengthPresetActive } from '../utils/knownObjectSelection';
 
 export const ViewportControlsBar: React.FC = () => {
   const {
@@ -51,7 +41,7 @@ export const ViewportControlsBar: React.FC = () => {
   };
 
   const isPresetActive = (range: [number, number]) =>
-    Math.abs(minWave - range[0]) < 0.05 && Math.abs(maxWave - range[1]) < 0.05;
+    isWavelengthPresetActive([minWave, maxWave], range);
 
   return (
     <div className="viewport-controls-bar" role="region" aria-label="Viewport Controls Bar">
