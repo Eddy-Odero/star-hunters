@@ -22,10 +22,10 @@ import {
   GRID_WIDTH,
   NUM_DETECTORS,
   PIXELS_PER_PLANE,
-  computeDetectorWeights,
   type ComparisonMode,
   type ContrastStretch,
 } from '../types/contracts.ts';
+import { computeDetectorWeights } from './wcsViewport.ts';
 
 /** Input parameters for {@link renderEpochBuffersToRgba} and {@link renderEpochBuffersToImageData}. */
 export interface PixelEngineRenderParams {
@@ -540,8 +540,6 @@ export function renderEpochBuffersToRgba(params: PixelEngineRenderParams): Uint8
   const flags = flagsBuffers?.[activeIdx];
   return renderColorFrame(epochBuffers, [activeIdx], weights, lut, flags, showFlagsOverlay, out);
 }
-
-export { computeDetectorWeights };
 
 /**
  * Create a browser `ImageData` object directly from rendered epoch buffers.

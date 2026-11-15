@@ -13,12 +13,12 @@ from unittest.mock import patch
 import numpy as np
 from astropy.io import fits
 
-from app.main import StarHuntersBackendService
 from app.models.contracts import (
     BINARY_DETECTOR_FLOAT32_BYTES,
     BINARY_FLAGS_UINT8_BYTES,
     validate_sky_patch_manifest,
 )
+from app.services.backend_service import StarHuntersBackendService
 from app.services.logging_config import (
     ROOT_LOGGER_NAME,
     configure_backend_logging,
@@ -178,9 +178,12 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
         def fail_wise(**_kwargs: object) -> None:
             raise WiseFallbackError("No WISE coverage")
 
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
         svc = StarHuntersBackendService(
-            cache=SpatialSqliteCache(self.db_path),
+            cache=cache,
             enable_archival_data=True,
+            spherex_cutout_fetcher=lambda **_kw: [],
             wise_fallback_fetcher=fail_wise,
             skyview_fallback_fetcher=lambda **_kw: sv_epochs,
         )
@@ -193,11 +196,8 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
                 "known_objects": [],
             }
 
-        with (
-            patch("app.services.spherex_ingest.ingest_spherex_cutouts", return_value=[]),
-            patch.object(
-                svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
-            ),
+        with patch.object(
+            svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
         ):
             manifest = await svc.get_sky_patch_async(
                 ra=8.483, dec=0.785, fov=5.0, live_catalogs=False
@@ -215,9 +215,12 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
     async def test_get_sky_patch_async_uses_labeled_simulated_when_all_archives_fail(
         self,
     ) -> None:
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
         svc = StarHuntersBackendService(
-            cache=SpatialSqliteCache(self.db_path),
+            cache=cache,
             enable_archival_data=True,
+            spherex_cutout_fetcher=lambda **_kw: [],
             wise_fallback_fetcher=lambda **_kw: (_ for _ in ()).throw(WiseFallbackError("down")),
             skyview_fallback_fetcher=lambda **_kw: (_ for _ in ()).throw(
                 SkyViewFallbackError("down")
@@ -232,11 +235,8 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
                 "known_objects": [],
             }
 
-        with (
-            patch("app.services.spherex_ingest.ingest_spherex_cutouts", return_value=[]),
-            patch.object(
-                svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
-            ),
+        with patch.object(
+            svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
         ):
             manifest = await svc.get_sky_patch_async(
                 ra=150.25, dec=2.15, fov=5.0, live_catalogs=False
@@ -247,9 +247,9 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(manifest["data_source_summary"]["provenance_tier"], "simulated")
 
     async def test_concurrent_catalogs_and_patch_coalesce_via_singleflight(self) -> None:
-        svc = StarHuntersBackendService(
-            cache=SpatialSqliteCache(self.db_path), enable_archival_data=False
-        )
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
+        svc = StarHuntersBackendService(cache=cache, enable_archival_data=False)
         calls = 0
 
         async def slow_pipeline(**_kwargs: object) -> dict[str, object]:
@@ -274,9 +274,9 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
         self.assertIn("epochs", patch_res)
 
     async def test_search_known_objects_async_refreshes_saturn_live_ephemeris(self) -> None:
-        svc = StarHuntersBackendService(
-            cache=SpatialSqliteCache(self.db_path), enable_archival_data=True
-        )
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
+        svc = StarHuntersBackendService(cache=cache, enable_archival_data=True)
 
         async def fake_horizons(spec: dict[str, str]) -> dict[str, object] | None:
             if spec.get("naif_id") == "699":
@@ -316,9 +316,18 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
             skyview_calls += 1
             raise SkyViewFallbackError("should not be called")
 
+        coadd_calls = 0
+
+        def counting_coadder(*_args: object, **_kwargs: object) -> SpherexCoaddResult:
+            nonlocal coadd_calls
+            coadd_calls += 1
+            return coadd_result
+
         svc = StarHuntersBackendService(
             cache=cache,
             enable_archival_data=True,
+            spherex_cutout_fetcher=lambda **_kw: ["dummy"],
+            spherex_coadder=counting_coadder,
             wise_fallback_fetcher=fail_wise,
             skyview_fallback_fetcher=fail_skyview,
         )
@@ -367,21 +376,15 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
                 "known_objects": [],
             }
 
-        with (
-            patch("app.services.spherex_ingest.ingest_spherex_cutouts", return_value=["dummy"]),
-            patch(
-                "app.services.spherex_coadd.coadd_spherex_epochs", return_value=coadd_result
-            ) as mock_coadd,
-            patch.object(
-                svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
-            ),
+        with patch.object(
+            svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
         ):
             manifest = await svc.get_sky_patch_async(
                 ra=133.7951, dec=-7.2451, fov=5.0, live_catalogs=False
             )
 
         validate_sky_patch_manifest(manifest)
-        self.assertEqual(mock_coadd.call_count, 1)
+        self.assertEqual(coadd_calls, 1)
         self.assertEqual(wise_calls, 0)
         self.assertEqual(skyview_calls, 0)
         self.assertEqual(manifest["data_source_summary"]["primary_mission"], "SPHEREx")

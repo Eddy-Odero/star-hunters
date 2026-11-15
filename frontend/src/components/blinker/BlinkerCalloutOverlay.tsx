@@ -3,6 +3,7 @@ import type { DetailsCalloutOrigin } from '../../utils/calloutPlacement';
 import { CloseIcon, SpectrumWaveIcon } from '../icons/ObservatoryIcons';
 import { isImagePointInBounds, type CalloutDetail, type CalloutGeometry } from './calloutBuilder';
 
+/** Props for {@link BlinkerCalloutOverlay}. */
 interface BlinkerCalloutOverlayProps {
   calloutDetail: CalloutDetail;
   calloutGeometry: CalloutGeometry;
@@ -15,7 +16,12 @@ interface BlinkerCalloutOverlayProps {
   onOpenSpectrum?: (params: { ra: number; dec: number; label: string }) => void;
 }
 
-/** Non-occluding 1px leader line and translucent frosted-glass object details card. */
+/**
+ * Non-occluding 1px leader line and translucent frosted-glass object details card.
+ *
+ * @param props - Callout detail fields, smart geometry coordinates, and action handlers.
+ * @returns Rendered leader SVG and floating callout card.
+ */
 export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
   calloutDetail,
   calloutGeometry,
@@ -31,17 +37,7 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
 
   return (
     <>
-      <svg
-        aria-hidden="true"
-        style={{
-          position: 'absolute',
-          inset: 0,
-          width: '100%',
-          height: '100%',
-          pointerEvents: 'none',
-          zIndex: 6,
-        }}
-      >
+      <svg aria-hidden="true" className="callout-leader-svg">
         <polyline
           points={`${calloutGeometry.lineStartX.toFixed(1)},${calloutGeometry.lineStartY.toFixed(1)} ${calloutGeometry.kneeX.toFixed(1)},${calloutGeometry.kneeY.toFixed(1)} ${calloutGeometry.anchorX.toFixed(1)},${calloutGeometry.anchorY.toFixed(1)}`}
           fill="none"
@@ -66,41 +62,16 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
         onPointerDown={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}
       >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: 8,
-          }}
-        >
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div
-              style={{
-                fontSize: 13,
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-                lineHeight: 1.3,
-                overflowWrap: 'anywhere',
-              }}
-            >
-              {calloutDetail.title}
-            </div>
-            <div
-              className="mono"
-              style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}
-            >
-              {calloutDetail.subtitle}
-            </div>
+        <div className="callout-header-row">
+          <div className="callout-header-text">
+            <div className="callout-title">{calloutDetail.title}</div>
+            <div className="mono callout-subtitle">{calloutDetail.subtitle}</div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+          <div className="callout-header-actions">
             <span
-              className="mono"
+              className="mono callout-pin-pill"
               style={{
-                fontSize: 9.5,
-                padding: '1px 6px',
-                borderRadius: 999,
-                border: `1px solid ${calloutGeometry.color}66`,
+                borderColor: `${calloutGeometry.color}66`,
                 color: calloutDetail.isLocked ? calloutGeometry.color : 'var(--text-secondary)',
               }}
             >
@@ -108,8 +79,7 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
             </span>
             <button
               type="button"
-              className="hud-icon-btn"
-              style={{ width: 22, height: 22 }}
+              className="hud-icon-btn callout-close-btn"
               aria-label="Close object details"
               data-testid="callout-close-btn"
               onClick={onClose}
@@ -119,56 +89,26 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
           </div>
         </div>
 
-        <p
-          style={{
-            margin: 0,
-            fontSize: 11.5,
-            lineHeight: 1.42,
-            color: 'var(--text-secondary)',
-            overflowWrap: 'anywhere',
-          }}
-          data-testid="callout-description"
-        >
+        <p className="callout-description" data-testid="callout-description">
           {calloutDetail.description}
         </p>
 
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 10.5,
-          }}
-        >
+        <div className="callout-meta-row">
           <span className="badge-pill">{calloutDetail.catalogBadge}</span>
-          <span className="mono" style={{ color: 'var(--text-secondary)' }}>
-            {calloutDetail.magnitudeText}
-          </span>
+          <span className="mono callout-meta-mag">{calloutDetail.magnitudeText}</span>
           <span className="mono" style={{ color: calloutGeometry.color }}>
             {calloutDetail.properMotionText}
           </span>
           {calloutDetail.w1W2Text && (
-            <span className="mono" style={{ color: 'var(--text-muted)' }}>
-              {calloutDetail.w1W2Text}
-            </span>
+            <span className="mono callout-meta-color">{calloutDetail.w1W2Text}</span>
           )}
         </div>
 
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-            paddingTop: 2,
-          }}
-        >
+        <div className="callout-footer-row">
           {calloutDetail.trackId ? (
             <button
               type="button"
-              className="hud-btn-secondary"
-              style={{ height: 26, padding: '0 9px', fontSize: 11 }}
+              className="hud-btn-secondary callout-action-btn"
               data-testid="callout-untrack-btn"
               onClick={() => onUntrack(calloutDetail.trackId!)}
             >
@@ -177,8 +117,7 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
           ) : (
             <button
               type="button"
-              className="hud-btn-secondary"
-              style={{ height: 26, padding: '0 9px', fontSize: 11 }}
+              className="hud-btn-secondary callout-action-btn"
               data-testid="callout-pin-track-btn"
               disabled={!isInPatchBounds || isCutoutLoading}
               title={
@@ -197,8 +136,7 @@ export const BlinkerCalloutOverlay: React.FC<BlinkerCalloutOverlayProps> = ({
 
           <button
             type="button"
-            className="hud-btn-primary"
-            style={{ height: 28, padding: '0 10px', fontSize: 11 }}
+            className="hud-btn-primary callout-spectrum-btn"
             data-testid="view-spectrum-btn"
             onClick={() =>
               onOpenSpectrum?.({

@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import gzip
 import io
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock, patch
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 from astropy.io import fits
 
-from app.main import StarHuntersBackendService
+from app.services.backend_service import StarHuntersBackendService
 from app.services.spatial_cache import SpatialSqliteCache, compute_grid_key
 from app.services.wise_fallback import (
     WiseFallbackError,
@@ -120,6 +119,7 @@ class TestWiseFallback(unittest.TestCase):
     def test_backend_uses_wise_when_spherex_has_fewer_than_two_epochs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = SpatialSqliteCache(db_path=str(Path(temp_dir) / "wise.db"))
+            self.addCleanup(cache.close)
             w1 = np.full((256, 256), 0.75, dtype=np.float32)
             w2 = np.full((256, 256), 1.5, dtype=np.float32)
             data, flags, detector_bytes, flags_bytes = assemble_wise_detector_planes(w1, w2)
@@ -135,29 +135,20 @@ class TestWiseFallback(unittest.TestCase):
                 available_detectors=[4, 5, 6],
                 exposure_count=8,
             )
-            ingest_module = ModuleType("app.services.spherex_ingest")
-            ingest_module.ingest_spherex_cutouts = lambda **kwargs: []
-            coadd_module = ModuleType("app.services.spherex_coadd")
-            coadd_module.build_target_wcs_header = lambda *args: {
-                "CTYPE1": "RA---TAN",
-                "CTYPE2": "DEC--TAN",
-            }
-            coadd_module.coadd_spherex_epochs = lambda *args: SimpleNamespace(
-                epochs=[], needs_wise_fallback=True, baseline_days=0.0
-            )
             service = StarHuntersBackendService(
                 cache=cache,
                 enable_archival_data=True,
-                wise_fallback_fetcher=lambda **kwargs: wise_result,
-            )
-            with patch.dict(
-                sys.modules,
-                {
-                    "app.services.spherex_ingest": ingest_module,
-                    "app.services.spherex_coadd": coadd_module,
+                spherex_cutout_fetcher=lambda **_kwargs: [],
+                wcs_header_builder=lambda *_args: {
+                    "CTYPE1": "RA---TAN",
+                    "CTYPE2": "DEC--TAN",
                 },
-            ):
-                manifest = service.get_sky_patch(120.0, 5.0, 5.0)
+                spherex_coadder=lambda *_args: SimpleNamespace(
+                    epochs=[], needs_wise_fallback=True, baseline_days=0.0
+                ),
+                wise_fallback_fetcher=lambda **_kwargs: wise_result,
+            )
+            manifest = service.get_sky_patch(120.0, 5.0, 5.0)
 
             self.assertTrue(manifest["data_source_summary"]["uses_wise_fallback"])
             self.assertFalse(manifest["data_source_summary"]["has_multi_epoch_spherex"])
@@ -174,6 +165,7 @@ class TestWiseFallback(unittest.TestCase):
     def test_capital_fallback_prewarms_wise_patch_and_cross_mission_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache = SpatialSqliteCache(db_path=str(Path(temp_dir) / "capital.db"))
+            self.addCleanup(cache.close)
             w1 = np.full((256, 256), 0.5, dtype=np.float32)
             w2 = np.full((256, 256), 1.25, dtype=np.float32)
             data, flags, detector_bytes, flags_bytes = assemble_wise_detector_planes(w1, w2)
@@ -196,42 +188,33 @@ class TestWiseFallback(unittest.TestCase):
                 flags_buffer=bytes(65_536),
                 available_detectors=[1, 2, 3, 4, 5, 6],
             )
-            ingest_module = ModuleType("app.services.spherex_ingest")
-            ingest_module.ingest_spherex_cutouts = lambda **kwargs: []
-            coadd_module = ModuleType("app.services.spherex_coadd")
-            coadd_module.build_target_wcs_header = lambda *args: {
-                "CTYPE1": "RA---TAN",
-                "CTYPE2": "DEC--TAN",
-            }
-            coadd_module.coadd_spherex_epochs = lambda *args: SimpleNamespace(
-                epochs=[spherex_epoch], needs_wise_fallback=True, baseline_days=0.0
-            )
             service = StarHuntersBackendService(
                 cache=cache,
                 enable_archival_data=True,
-                wise_fallback_fetcher=lambda **kwargs: wise_result,
-            )
-            with patch.dict(
-                sys.modules,
-                {
-                    "app.services.spherex_ingest": ingest_module,
-                    "app.services.spherex_coadd": coadd_module,
+                spherex_cutout_fetcher=lambda **_kwargs: [],
+                wcs_header_builder=lambda *_args: {
+                    "CTYPE1": "RA---TAN",
+                    "CTYPE2": "DEC--TAN",
                 },
-            ):
-                first = service.get_earth_to_sky(
-                    lat=None,
-                    lon=None,
-                    iso_time="2026-11-14T16:21:00Z",
-                    fallback_seed=7,
-                    prewarm_patch=True,
-                )
-                second = service.get_earth_to_sky(
-                    lat=None,
-                    lon=None,
-                    iso_time="2026-11-14T16:21:00Z",
-                    fallback_seed=7,
-                    prewarm_patch=True,
-                )
+                spherex_coadder=lambda *_args: SimpleNamespace(
+                    epochs=[spherex_epoch], needs_wise_fallback=True, baseline_days=0.0
+                ),
+                wise_fallback_fetcher=lambda **_kwargs: wise_result,
+            )
+            first = service.get_earth_to_sky(
+                lat=None,
+                lon=None,
+                iso_time="2026-11-14T16:21:00Z",
+                fallback_seed=7,
+                prewarm_patch=True,
+            )
+            second = service.get_earth_to_sky(
+                lat=None,
+                lon=None,
+                iso_time="2026-11-14T16:21:00Z",
+                fallback_seed=7,
+                prewarm_patch=True,
+            )
 
             self.assertTrue(first["earth"]["is_fallback_capital"])
             self.assertTrue(second["earth"]["cached"])

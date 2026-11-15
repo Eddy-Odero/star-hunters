@@ -15,28 +15,31 @@ BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from app.main import HAS_FASTAPI, StarHuntersBackendService, backend_service  # noqa: E402
+from app.main import create_app  # noqa: E402
 from app.models.contracts import (  # noqa: E402
     validate_catalogs_response,
     validate_sky_patch_manifest,
 )
-from app.services.celestial_catalog_pipeline import (  # noqa: E402
+from app.services.backend_service import StarHuntersBackendService  # noqa: E402
+from app.services.catalog_clients import (  # noqa: E402
     GAIA_DR3_TAP_ENDPOINTS,
     IRSA_MOST_ENDPOINT,
     JPL_HORIZONS_ENDPOINT,
     SIMBAD_TAP_ENDPOINTS,
     VIZIER_GAIA_CFA_ENDPOINT,
-    AutomatedCelestialPipeline,
     fetch_gaia_dr3_objects,
     fetch_horizons_ephemeris,
     fetch_most_spherex_matches,
     fetch_simbad_objects,
+)
+from app.services.catalog_parsers import (  # noqa: E402
     map_simbad_otype,
     parse_horizons_ephemeris_result,
     parse_ipac_brief_table,
-    propagate_gaia_epoch,
 )
-from app.services.spatial_cache import SpatialSqliteCache, mjd_to_date_bucket  # noqa: E402
+from app.services.celestial_catalog_pipeline import AutomatedCelestialPipeline  # noqa: E402
+from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
+from app.utils.astronomy import mjd_to_date_bucket, propagate_proper_motion  # noqa: E402
 
 SAMPLE_MOST_BRIEF = (
     "\\catalog = spherex\n"
@@ -73,6 +76,7 @@ class CelestialPipelineTests(unittest.TestCase):
         self.cache = SpatialSqliteCache(db_path=self.db_path, max_cache_bytes=10 * 1024 * 1024)
 
     def tearDown(self) -> None:
+        self.cache.close()
         self._tmpdir.cleanup()
 
     def test_no_cds_unistra_endpoints_configured(self) -> None:
@@ -91,10 +95,10 @@ class CelestialPipelineTests(unittest.TestCase):
         )
         self.assertEqual(GAIA_DR3_TAP_ENDPOINTS[0], "https://gea.esac.esa.int/tap-server/tap/sync")
 
-    def test_propagate_gaia_epoch_math_accounts_for_cos_dec(self) -> None:
+    def test_propagate_proper_motion_math_accounts_for_cos_dec(self) -> None:
         # Dec=60 deg (cos=0.5): +1000 mas/yr * 10 yr -> +20" RA, -10" Dec.
         mjd_j2026 = 57388.0 + 3652.5  # J2026.0 (+10 Julian years from J2016.0)
-        ra_out, dec_out = propagate_gaia_epoch(
+        ra_out, dec_out = propagate_proper_motion(
             ra_deg=180.0,
             dec_deg=60.0,
             pmra_mas_yr=1000.0,
@@ -385,53 +389,41 @@ class CelestialPipelineTests(unittest.TestCase):
         self.assertEqual(mjd_to_date_bucket(float(comet_pts[0]["mjd"])), "2025-11-10")
 
     def test_fastapi_routes_and_unversioned_aliases(self) -> None:
-        if not HAS_FASTAPI:
-            self.skipTest("FastAPI not installed")
         from fastapi.testclient import TestClient
 
-        from app.main import app
+        service = StarHuntersBackendService(cache=self.cache)
+        client = TestClient(create_app(service))
+        for prefix in ("/api/v1", "/api"):
+            r_patch = client.get(
+                f"{prefix}/sky-patch",
+                params={
+                    "ra": 133.7868,
+                    "dec": -7.2451,
+                    "fov": 5.0,
+                    "live_catalogs": "false",
+                },
+            )
+            self.assertEqual(r_patch.status_code, 200)
+            validate_sky_patch_manifest(r_patch.json())
 
-        assert app is not None
-        orig_cache = backend_service.cache
-        orig_pipeline_cache = backend_service.catalog_pipeline.cache
-        try:
-            backend_service.cache = self.cache
-            backend_service.catalog_pipeline.cache = self.cache
-            client = TestClient(app)
-            for prefix in ("/api/v1", "/api"):
-                r_patch = client.get(
-                    f"{prefix}/sky-patch",
-                    params={
-                        "ra": 133.7868,
-                        "dec": -7.2451,
-                        "fov": 5.0,
-                        "live_catalogs": "false",
-                    },
-                )
-                self.assertEqual(r_patch.status_code, 200)
-                validate_sky_patch_manifest(r_patch.json())
+            r_cat = client.get(
+                f"{prefix}/catalogs",
+                params={
+                    "ra": 133.7868,
+                    "dec": -7.2451,
+                    "fov": 5.0,
+                    "live_catalogs": "false",
+                },
+            )
+            self.assertEqual(r_cat.status_code, 200)
+            validate_catalogs_response(r_cat.json())
 
-                r_cat = client.get(
-                    f"{prefix}/catalogs",
-                    params={
-                        "ra": 133.7868,
-                        "dec": -7.2451,
-                        "fov": 5.0,
-                        "live_catalogs": "false",
-                    },
-                )
-                self.assertEqual(r_cat.status_code, 200)
-                validate_catalogs_response(r_cat.json())
-
-                r_fov = client.get(
-                    f"{prefix}/solar-system/in-fov",
-                    params={"ra": 133.7868, "dec": -7.2451, "fov": 5.0},
-                )
-                self.assertEqual(r_fov.status_code, 200)
-                self.assertIn("bodies", r_fov.json())
-        finally:
-            backend_service.cache = orig_cache
-            backend_service.catalog_pipeline.cache = orig_pipeline_cache
+            r_fov = client.get(
+                f"{prefix}/solar-system/in-fov",
+                params={"ra": 133.7868, "dec": -7.2451, "fov": 5.0},
+            )
+            self.assertEqual(r_fov.status_code, 200)
+            self.assertIn("bodies", r_fov.json())
 
 
 if __name__ == "__main__":

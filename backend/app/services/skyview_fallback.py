@@ -16,13 +16,17 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from reproject import reproject_interp
 
+from app.models.contracts import (
+    BINARY_DETECTOR_FLOAT32_BYTES,
+    BINARY_FLAGS_UINT8_BYTES,
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    NUM_DETECTORS,
+)
 from app.services.logging_config import get_logger
 
 SKYVIEW_IMAGE_URL = "https://skyview.gsfc.nasa.gov/cgi-bin/images"
 SKYVIEW_TIMEOUT = 25.0
-GRID_SIZE = 256
-BYTES_FLOAT32_CUBE = 6 * GRID_SIZE * GRID_SIZE * 4
-BYTES_UINT8_MASK = GRID_SIZE * GRID_SIZE
 
 SKYVIEW_DEFAULT_SURVEYS: tuple[tuple[str, str, str, float], ...] = (
     ("dss2_red", "DSS2 Red", "NASA SkyView DSS2 Red (0.65 um)", 49353.0),
@@ -117,7 +121,7 @@ def _download_skyview_fits(
     params = {
         "Position": f"{float(ra):.6f},{float(dec):.6f}",
         "Survey": survey,
-        "Pixels": str(GRID_SIZE),
+        "Pixels": str(GRID_WIDTH),
         "Size": f"{size_deg:.6f}",
         "Coordinates": "J2000",
         "Projection": "Tan",
@@ -135,16 +139,16 @@ def _assemble_skyview_cube(
     detector_channels: tuple[int, ...] = (0, 1),
 ) -> tuple[np.ndarray, np.ndarray, bytes, bytes]:
     """Pack a normalized 256x256 SkyView plate into a ``(6, 256, 256)`` float32 cube."""
-    expected = (GRID_SIZE, GRID_SIZE)
+    expected = (GRID_HEIGHT, GRID_WIDTH)
     plane = np.asarray(projected_plane, dtype=np.float64)
     invalid = np.asarray(invalid_mask, dtype=bool)
     if plane.shape != expected or invalid.shape != expected:
         raise SkyViewFallbackError(f"SkyView cutout must have shape {expected}.")
 
-    cube = np.zeros((6, GRID_SIZE, GRID_SIZE), dtype="<f4")
+    cube = np.zeros((NUM_DETECTORS, GRID_HEIGHT, GRID_WIDTH), dtype="<f4")
     clean_plane = np.nan_to_num(plane, nan=0.0, posinf=0.0, neginf=0.0).astype("<f4")
     for ch_idx in detector_channels:
-        if 0 <= ch_idx < 6:
+        if 0 <= ch_idx < NUM_DETECTORS:
             # Slightly attenuate secondary band so multi-detector slices remain responsive.
             scale = 1.0 if ch_idx == detector_channels[0] else 0.88
             cube[ch_idx] = (clean_plane * scale).astype("<f4")
@@ -155,7 +159,10 @@ def _assemble_skyview_cube(
     flags = np.ascontiguousarray(flags, dtype=np.uint8)
     det_bytes = cube.tobytes(order="C")
     flag_bytes = flags.tobytes(order="C")
-    if len(det_bytes) != BYTES_FLOAT32_CUBE or len(flag_bytes) != BYTES_UINT8_MASK:
+    if (
+        len(det_bytes) != BINARY_DETECTOR_FLOAT32_BYTES
+        or len(flag_bytes) != BINARY_FLAGS_UINT8_BYTES
+    ):
         raise SkyViewFallbackError("SkyView packed buffers failed canonical binary size check.")
     return cube, flags, det_bytes, flag_bytes
 
@@ -202,7 +209,7 @@ def fetch_skyview_fallback(
                 reprojected, footprint = reproject_interp(
                     (raw_img, WCS(src_hdr).celestial),
                     WCS(target_wcs_header).celestial,
-                    shape_out=(GRID_SIZE, GRID_SIZE),
+                    shape_out=(GRID_HEIGHT, GRID_WIDTH),
                     order="bilinear",
                 )
                 plane = np.asarray(reprojected, dtype=np.float64)
@@ -214,7 +221,7 @@ def fetch_skyview_fallback(
         else:
             norm_plane, invalid = _normalize_skyview_plate(raw_img)
 
-        if norm_plane.shape != (GRID_SIZE, GRID_SIZE):
+        if norm_plane.shape != (GRID_HEIGHT, GRID_WIDTH):
             return None
 
         cube, flags, det_bytes, flag_bytes = _assemble_skyview_cube(
@@ -279,10 +286,10 @@ def inject_solar_system_ephemeris_overlay(
     JPL Horizons pixel coordinate on the real archival background starfield.
     """
     out = np.array(cube, dtype="<f4", copy=True)
-    if not (-12.0 <= x_px <= GRID_SIZE + 12.0 and -12.0 <= y_px <= GRID_SIZE + 12.0):
+    if not (-12.0 <= x_px <= GRID_WIDTH + 12.0 and -12.0 <= y_px <= GRID_HEIGHT + 12.0):
         return out
 
-    yy, xx = np.mgrid[0:GRID_SIZE, 0:GRID_SIZE]
+    yy, xx = np.mgrid[0:GRID_HEIGHT, 0:GRID_WIDTH]
     dx = xx - float(x_px)
     dy = yy - float(y_px)
     r2 = dx * dx + dy * dy
@@ -305,6 +312,6 @@ def inject_solar_system_ephemeris_overlay(
     channels = available_detectors or [1, 2]
     for det_num in channels:
         ch_idx = int(det_num) - 1
-        if 0 <= ch_idx < 6:
+        if 0 <= ch_idx < NUM_DETECTORS:
             out[ch_idx] = (out[ch_idx] + disk.astype("<f4")).astype("<f4")
     return np.ascontiguousarray(out, dtype="<f4")

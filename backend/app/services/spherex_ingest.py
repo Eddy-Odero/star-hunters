@@ -1,31 +1,18 @@
-"""
-SPHEREx IRSA cutout ingestion and preprocessing.
-
-Responsibilities:
-- Query SPHEREx observations from IRSA.
-- Retrieve FITS cutouts asynchronously.
-- Subtract zodiacal background (IMAGE - ZODI).
-- Extract variance and observation metadata.
-- Convert native SPHEREx flags into the application hygiene mask.
-"""
+"""SPHEREx IRSA TAP discovery and synchronous/asynchronous cutout ingestion."""
 
 from __future__ import annotations
 
 import asyncio
-import io
 import os
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 
+import httpx
 import numpy as np
 import requests
-from astropy.io import fits
 from astropy.time import Time
 
 try:
@@ -33,26 +20,24 @@ try:
 except ImportError:  # pragma: no cover
     TAPService = None  # type: ignore[assignment,misc]
 
-from .logging_config import get_logger
+from app.services.logging_config import get_logger
+from app.services.spherex_fits import (
+    SPHEREX_BANDPASSES,
+    SpherexCutout,
+    SpherexDownloadError,
+    SpherexIngestError,
+    SpherexObservation,
+    SpherexValidationError,
+    process_spherex_fits,
+    validate_coordinates,
+)
+from app.services.spherex_synthetic import fallback_cutout
+from app.utils.astronomy import offline_requested
 
 logger = get_logger("spherex_ingest")
 
-
-# ---------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------
-
 IRSA_TAP_URL = "https://irsa.ipac.caltech.edu/TAP/"
 IRSA_BASE_URL = "https://irsa.ipac.caltech.edu/"
-
-SPHEREX_BANDPASSES = (
-    "SPHEREx-D1",
-    "SPHEREx-D2",
-    "SPHEREx-D3",
-    "SPHEREx-D4",
-    "SPHEREx-D5",
-    "SPHEREx-D6",
-)
 
 DEFAULT_HTTP_TIMEOUT = 8.0
 DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 3
@@ -63,7 +48,8 @@ DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 class TimeoutSession(requests.Session):
     """Requests session with bounded connection and response timeouts."""
 
-    def request(self, method, url, **kwargs):
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """Issue an HTTP request with a default ``(4, 8)`` second timeout tuple."""
         kwargs.setdefault("timeout", (4, 8))
         return super().request(method, url, **kwargs)
 
@@ -88,175 +74,6 @@ def _is_transient_upstream_error(exc: Exception) -> bool:
     )
 
 
-# Application-level hygiene mask bits.
-FLAG_TRANSIENT = np.uint8(1)
-FLAG_SATURATED = np.uint8(2)
-FLAG_BAD_REFERENCE = np.uint8(4)
-FLAG_STRAY_LIGHT = np.uint8(8)
-
-HYGIENE_FLAG_BITS = {
-    "TRANSIENT_OR_COSMIC_RAY": int(FLAG_TRANSIENT),
-    "SATURATED_PIXEL": int(FLAG_SATURATED),
-    "DEAD_OR_BAD_REFERENCE": int(FLAG_BAD_REFERENCE),
-    "STRAY_LIGHT_OR_BORDER": int(FLAG_STRAY_LIGHT),
-}
-
-# Native SPHEREx Level 2 flag bit numbers (SPHEREx Explanatory Supplement,
-# Table 16).  The first four entries also make the low byte of the raw FLAGS
-# bitmap directly usable by clients that provide simplified fixture masks.
-SPHEREX_FLAG_BITS = {
-    "TRANSIENT": 0,
-    "OVERFLOW": 1,
-    "SUR_ERROR": 2,
-    "NONFUNC": 6,
-    "DICHROIC": 7,
-    "MISSING_DATA": 9,
-    "HOT": 10,
-    "COLD": 11,
-    "FULLSAMPLE": 12,
-    "PHANMISS": 14,
-    "NONLINEAR": 15,
-    "PERSIST": 17,
-    "OUTLIER": 19,
-    "CROSSTALK": 20,
-    "SOURCE": 21,
-    "GHOST": 22,
-    "GHOST_FPA": 23,
-    "GHOST_EXT": 24,
-    "STREAK": 25,
-    "BLOOM": 26,
-    "SNOWBALL": 27,
-    "HALO": 28,
-    "SATELLITE_HALO": 29,
-}
-
-SPHEREX_FLAG_GROUPS = {
-    "TRANSIENT_OR_COSMIC_RAY": (
-        "TRANSIENT",
-        "OUTLIER",
-        "STREAK",
-        "SNOWBALL",
-    ),
-    "SATURATED_PIXEL": (
-        "OVERFLOW",
-        "NONLINEAR",
-        "BLOOM",
-    ),
-    "DEAD_OR_BAD_REFERENCE": (
-        "SUR_ERROR",
-        "NONFUNC",
-        "DICHROIC",
-        "MISSING_DATA",
-        "HOT",
-        "COLD",
-        "FULLSAMPLE",
-        "PHANMISS",
-        "PERSIST",
-        "CROSSTALK",
-    ),
-    "STRAY_LIGHT_OR_BORDER": (
-        "GHOST",
-        "GHOST_FPA",
-        "GHOST_EXT",
-        "HALO",
-        "SATELLITE_HALO",
-    ),
-}
-
-FITS_SOURCE = str | os.PathLike | bytes | bytearray | memoryview | BinaryIO | fits.HDUList
-
-
-# ---------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------
-
-
-class SpherexIngestError(Exception):
-    """Base exception for SPHEREx ingestion failures."""
-
-
-class SpherexValidationError(SpherexIngestError):
-    """Raised when observation query parameters are invalid."""
-
-
-class SpherexDownloadError(SpherexIngestError):
-    """Raised when an IRSA cutout cannot be downloaded."""
-
-
-class SpherexProcessingError(SpherexIngestError):
-    """Raised when a FITS cutout cannot be processed."""
-
-
-# ---------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class SpherexObservation:
-    """Metadata describing one SPHEREx observation."""
-
-    uri: str
-    bandpass: str
-    time_bounds_lower: str | None = None
-    mjd_obs: float | None = None
-
-
-@dataclass
-class SpherexCutout:
-    """Processed SPHEREx FITS cutout."""
-
-    clean_image: np.ndarray
-    variance: np.ndarray
-    weight_map: np.ndarray
-    flags_mask: np.ndarray
-    mjd_obs: float
-    bandpass: str
-    uri: str | None = None
-    source: str = "fits"
-    header: dict[str, Any] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------
-# Input validation
-# ---------------------------------------------------------
-
-
-def validate_coordinates(
-    ra: float,
-    dec: float,
-    fov_arcmin: float,
-) -> None:
-    """Validate sky coordinates and field of view.
-
-    Args:
-        ra: Right Ascension in degrees (``0 <= ra < 360``).
-        dec: Declination in degrees (``-90 <= dec <= 90``).
-        fov_arcmin: Field of view in arcminutes (``fov_arcmin > 0``).
-
-    Raises:
-        SpherexValidationError: If any coordinate or FOV is non-finite or out
-            of bounds.
-    """
-
-    values = np.asarray(
-        [ra, dec, fov_arcmin],
-        dtype=np.float64,
-    )
-
-    if not np.all(np.isfinite(values)):
-        raise SpherexValidationError("Coordinates and field of view must be finite numbers.")
-
-    if not 0.0 <= ra < 360.0:
-        raise SpherexValidationError("Right Ascension must be between 0 and 360 degrees.")
-
-    if not -90.0 <= dec <= 90.0:
-        raise SpherexValidationError("Declination must be between -90 and 90 degrees.")
-
-    if fov_arcmin <= 0.0:
-        raise SpherexValidationError("Field of view must be greater than zero.")
-
-
 def build_adql_query(
     ra: float,
     dec: float,
@@ -277,19 +94,16 @@ def build_adql_query(
     Raises:
         SpherexValidationError: If coordinates or bandpasses are invalid.
     """
-
     validate_coordinates(ra, dec, fov_arcmin)
 
     if not bandpasses:
         raise SpherexValidationError("At least one bandpass must be provided.")
 
     invalid_bandpasses = [band for band in bandpasses if band not in SPHEREX_BANDPASSES]
-
     if invalid_bandpasses:
         raise SpherexValidationError(f"Unsupported SPHEREx bandpasses: {invalid_bandpasses}")
 
     fov_deg = fov_arcmin / 60.0
-
     bandpass_list = ", ".join(f"'{band}'" for band in bandpasses)
 
     query = f"""
@@ -310,11 +124,11 @@ def build_adql_query(
         AND p.energy_bandpassname IN ({bandpass_list})
     ORDER BY p.time_bounds_lower
     """
-
     return query.strip()
 
 
 def _mjd_from_time_value(value: Any) -> float | None:
+    """Convert an IRSA TAP time value into a Modified Julian Date."""
     if value is None:
         return None
     try:
@@ -351,7 +165,6 @@ def query_observations(
         SpherexValidationError: If query parameters are invalid.
         SpherexIngestError: If IRSA TAP query execution fails.
     """
-
     query = build_adql_query(
         ra=ra,
         dec=dec,
@@ -377,8 +190,7 @@ def query_observations(
             results = service.search(query)
             table = results.to_table()
 
-        observations = []
-
+        observations: list[SpherexObservation] = []
         for row in table:
             uri = str(row["uri"])
             bandpass = str(row["bandpass"])
@@ -389,17 +201,17 @@ def query_observations(
                 time_value = None
 
             if time_value is None or np.ma.is_masked(time_value):
-                time_value = None
+                time_value_str = None
                 mjd_obs = None
             else:
-                time_value = str(time_value)
-                mjd_obs = _mjd_from_time_value(time_value)
+                time_value_str = str(time_value)
+                mjd_obs = _mjd_from_time_value(time_value_str)
 
             observations.append(
                 SpherexObservation(
                     uri=uri,
                     bandpass=bandpass,
-                    time_bounds_lower=time_value,
+                    time_bounds_lower=time_value_str,
                     mjd_obs=mjd_obs,
                 )
             )
@@ -415,11 +227,6 @@ def query_observations(
     except Exception as exc:
         logger.warning("IRSA SPHEREx TAP query failed at ra=%.4f dec=%.4f: %s", ra, dec, exc)
         raise SpherexIngestError(f"IRSA TAP query failed: {exc}") from exc
-
-
-# ---------------------------------------------------------
-# URL construction & downloads
-# ---------------------------------------------------------
 
 
 def build_cutout_url(
@@ -442,7 +249,6 @@ def build_cutout_url(
     Raises:
         SpherexValidationError: If ``uri`` is empty or coordinates are invalid.
     """
-
     validate_coordinates(ra, dec, fov_arcmin)
 
     url = str(uri).strip()
@@ -470,6 +276,7 @@ def _read_response_content(
     response: requests.Response,
     max_bytes: int,
 ) -> bytes:
+    """Stream response chunks while enforcing ``max_bytes``."""
     chunks: list[bytes] = []
     total = 0
 
@@ -500,8 +307,24 @@ def download_cutout(
     timeout: float = DEFAULT_HTTP_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> bytes:
-    """Download one SPHEREx MEF cutout synchronously."""
+    """Download one SPHEREx MEF cutout synchronously.
 
+    Args:
+        uri: Artifact URI or full cutout URL.
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        session: Optional HTTP session for connection reuse or test doubles.
+        timeout: Request timeout in seconds.
+        max_bytes: Maximum permitted payload size in bytes.
+
+    Returns:
+        Raw downloaded FITS byte payload.
+
+    Raises:
+        SpherexDownloadError: If the download fails, exceeds ``max_bytes``, or
+            returns an empty response.
+    """
     url = build_cutout_url(uri, ra, dec, fov_arcmin)
     owns_session = session is None
     http = session or TimeoutSession()
@@ -534,17 +357,28 @@ async def download_cutout_async(
     ra: float,
     dec: float,
     fov_arcmin: float,
-    client: Any = None,
+    client: httpx.AsyncClient | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> bytes:
-    """Download one SPHEREx MEF cutout using an async HTTP client."""
+    """Download one SPHEREx MEF cutout using an async HTTP client.
 
-    try:
-        import httpx
-    except ImportError as exc:  # pragma: no cover
-        raise SpherexDownloadError("httpx is required for asynchronous cutout downloads.") from exc
+    Args:
+        uri: Artifact URI or full cutout URL.
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        client: Optional shared :class:`httpx.AsyncClient`.
+        timeout: Request timeout in seconds.
+        max_bytes: Maximum permitted payload size in bytes.
 
+    Returns:
+        Raw downloaded FITS byte payload.
+
+    Raises:
+        SpherexDownloadError: If the download fails, exceeds ``max_bytes``, or
+            returns an empty response.
+    """
     url = build_cutout_url(uri, ra, dec, fov_arcmin)
     owns_client = client is None
     http = client or httpx.AsyncClient(
@@ -575,12 +409,24 @@ async def download_cutouts_async(
     ra: float,
     dec: float,
     fov_arcmin: float,
-    client: Any = None,
+    client: httpx.AsyncClient | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
 ) -> list[bytes | None]:
-    """Download several cutouts concurrently, returning None on failure."""
+    """Download several cutouts concurrently, returning ``None`` on failure.
 
+    Args:
+        observations: Sequence of :class:`SpherexObservation` records.
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        client: Optional shared :class:`httpx.AsyncClient`.
+        timeout: Per-request timeout in seconds.
+        max_bytes: Maximum permitted payload size per cutout.
+
+    Returns:
+        List aligned with ``observations`` containing FITS bytes or ``None``.
+    """
     tasks = [
         download_cutout_async(
             observation.uri,
@@ -597,640 +443,6 @@ async def download_cutouts_async(
     return [None if isinstance(result, BaseException) else result for result in results]
 
 
-# ---------------------------------------------------------
-# Flag hygiene mapping
-# ---------------------------------------------------------
-
-
-def _build_group_bitmask(flag_names: tuple[str, ...]) -> np.uint32:
-    """Combine native SPHEREx flag bit positions into a single ``uint32`` bitmask."""
-    bitmask = 0
-    for name in flag_names:
-        bitmask |= 1 << SPHEREX_FLAG_BITS[name]
-    return np.uint32(bitmask)
-
-
-_HYGIENE_GROUP_BITMASKS: tuple[tuple[np.uint32, np.uint8], ...] = (
-    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["TRANSIENT_OR_COSMIC_RAY"]), FLAG_TRANSIENT),
-    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["SATURATED_PIXEL"]), FLAG_SATURATED),
-    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["DEAD_OR_BAD_REFERENCE"]), FLAG_BAD_REFERENCE),
-    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["STRAY_LIGHT_OR_BORDER"]), FLAG_STRAY_LIGHT),
-)
-
-
-def _as_uint32_bitmap(flags: Any) -> tuple[np.ndarray, np.ndarray]:
-    """Normalize arbitrary flag array values into a ``uint32`` bitmap and invalid mask."""
-    flag_array = np.asarray(flags)
-
-    if np.issubdtype(flag_array.dtype, np.floating):
-        invalid = ~np.isfinite(flag_array)
-        safe = np.nan_to_num(
-            flag_array,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        )
-        raw = (safe.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
-        return raw, invalid
-
-    if flag_array.dtype == np.uint32:
-        raw = flag_array
-    elif flag_array.dtype == np.int32:
-        raw = flag_array.view(np.uint32)
-    else:
-        raw = (flag_array.astype(np.int64, copy=False) & np.int64(0xFFFFFFFF)).astype(np.uint32)
-
-    return raw, np.zeros(flag_array.shape, dtype=bool)
-
-
-def map_flags_to_hygiene(flags: Any) -> np.ndarray:
-    """Map the 32-bit SPHEREx ``FLAGS`` bitmap to the 8-bit web hygiene mask.
-
-    Output bit meanings:
-        - ``1``: Transient / cosmic ray
-        - ``2``: Saturated pixel
-        - ``4``: Dead / bad reference / corrupted
-        - ``8``: Stray light / border / ghost
-
-    Args:
-        flags: Array-like SPHEREx 32-bit flag bitmap.
-
-    Returns:
-        ``uint8`` hygiene mask array matching ``flags`` shape.
-    """
-    raw, invalid = _as_uint32_bitmap(flags)
-    mask = np.array(raw & np.uint32(0x0F), dtype=np.uint8, copy=True)
-
-    for group_mask, hygiene_bit in _HYGIENE_GROUP_BITMASKS:
-        mask[(raw & group_mask) != 0] |= hygiene_bit
-
-    if invalid.any():
-        mask[invalid] |= FLAG_BAD_REFERENCE
-
-    return mask
-
-
-# ---------------------------------------------------------
-# FITS reading & cleaning
-# ---------------------------------------------------------
-
-
-def _normalize_source(source: FITS_SOURCE) -> Any:
-    if isinstance(source, (bytes, bytearray, memoryview)):
-        return io.BytesIO(bytes(source))
-    if hasattr(source, "read"):
-        try:
-            source.seek(0)
-        except Exception:
-            pass
-        return source
-    return os.fspath(source)
-
-
-@contextmanager
-def _open_fits(source: FITS_SOURCE) -> Iterator[fits.HDUList]:
-    if isinstance(source, fits.HDUList):
-        yield source
-        return
-
-    normalized = _normalize_source(source)
-    hdulist = fits.open(
-        normalized,
-        memmap=False,
-        cache=False,
-        lazy_load_hdus=True,
-    )
-    try:
-        yield hdulist
-    finally:
-        hdulist.close()
-
-
-def _find_hdu(
-    hdulist: fits.HDUList,
-    name: str,
-    fallback_indices: Iterable[int] = (),
-) -> fits.hdu.base.ExtensionHDU:
-    wanted = name.strip().upper()
-    for hdu in hdulist:
-        if str(getattr(hdu, "name", "")).strip().upper() == wanted:
-            return hdu
-
-    for index in fallback_indices:
-        if 0 <= index < len(hdulist):
-            return hdulist[index]
-
-    raise SpherexProcessingError(f"SPHEREx FITS file is missing the {name!r} extension.")
-
-
-def _extension_array(hdu: Any, name: str) -> np.ndarray:
-    if hdu.data is None:
-        raise SpherexProcessingError(f"SPHEREx {name!r} extension has no data.")
-    return np.asarray(hdu.data)
-
-
-def _header_value(
-    hdulist: fits.HDUList,
-    keys: Sequence[str],
-) -> Any:
-    for hdu in hdulist:
-        header = getattr(hdu, "header", None)
-        if header is None:
-            continue
-        for key in keys:
-            try:
-                if key in header:
-                    return header[key]
-            except Exception:
-                continue
-    return None
-
-
-def _extract_mjd_obs(hdulist: fits.HDUList) -> float:
-    value = _header_value(
-        hdulist,
-        ("MJD-OBS", "MJD_OBS", "MJD"),
-    )
-
-    if value is not None:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            pass
-
-    start = _header_value(hdulist, ("MJD-BEG", "MJD_BEG"))
-    end = _header_value(hdulist, ("MJD-END", "MJD_END"))
-    try:
-        if start is not None and end is not None:
-            return (float(start) + float(end)) / 2.0
-        if start is not None:
-            return float(start)
-    except (TypeError, ValueError):
-        pass
-
-    date_obs = _header_value(hdulist, ("DATE-OBS", "DATE_OBS"))
-    if date_obs is not None:
-        try:
-            return float(Time(str(date_obs), scale="utc").mjd)
-        except Exception:
-            pass
-
-    raise SpherexProcessingError(
-        "SPHEREx FITS header does not contain MJD-OBS or an equivalent observation time."
-    )
-
-
-def _detector_to_bandpass(value: Any) -> str | None:
-    try:
-        detector = int(value)
-    except (TypeError, ValueError):
-        return None
-    if 1 <= detector <= 6:
-        return f"SPHEREx-D{detector}"
-    return None
-
-
-def _extract_bandpass(hdulist: fits.HDUList, requested: str | None) -> str:
-    if requested:
-        return str(requested)
-
-    value = _header_value(
-        hdulist,
-        ("BANDPASS", "ENERGY_BANDPASSNAME", "BAND"),
-    )
-    if value is not None:
-        text = str(value).strip()
-        if text:
-            mapped = _detector_to_bandpass(text)
-            return mapped or text
-
-    detector = _header_value(hdulist, ("DETECTOR", "DETECTOR_ID"))
-    mapped = _detector_to_bandpass(detector)
-    if mapped:
-        return mapped
-
-    return "unknown"
-
-
-def _build_cutout(
-    image: np.ndarray,
-    zodi: np.ndarray,
-    variance: np.ndarray,
-    raw_flags: np.ndarray,
-    mjd_obs: float,
-    bandpass: str,
-    uri: str | None,
-    source: str,
-    header: dict[str, Any] | None = None,
-    flags_invalid: np.ndarray | None = None,
-) -> SpherexCutout:
-    image = np.asarray(image, dtype=np.float32)
-    zodi = np.asarray(zodi, dtype=np.float32)
-    variance = np.asarray(variance, dtype=np.float32)
-
-    if image.shape != zodi.shape:
-        raise SpherexProcessingError(
-            f"IMAGE and ZODI extensions must have the same shape ({image.shape} != {zodi.shape})."
-        )
-    if variance.shape != image.shape:
-        raise SpherexProcessingError(
-            f"VARIANCE extension must match IMAGE shape ({variance.shape} != {image.shape})."
-        )
-
-    raw_bitmap, raw_invalid = _as_uint32_bitmap(raw_flags)
-    if raw_bitmap.shape != image.shape:
-        raise SpherexProcessingError(
-            f"FLAGS extension must match IMAGE shape ({raw_bitmap.shape} != {image.shape})."
-        )
-
-    if flags_invalid is not None:
-        raw_invalid = np.logical_or(
-            raw_invalid,
-            np.asarray(flags_invalid, dtype=bool),
-        )
-
-    flags_mask = map_flags_to_hygiene(raw_bitmap)
-
-    with np.errstate(invalid="ignore", over="ignore"):
-        clean_image = image - zodi
-
-    image_invalid = ~np.isfinite(image)
-    zodi_invalid = ~np.isfinite(zodi)
-    variance_invalid = ~np.isfinite(variance) | (variance < 0.0)
-    clean_invalid = ~np.isfinite(clean_image)
-
-    corrupted = image_invalid | zodi_invalid | variance_invalid | clean_invalid | raw_invalid
-
-    flags_mask = flags_mask.astype(np.uint8, copy=True)
-    if corrupted.any():
-        flags_mask[corrupted] |= FLAG_BAD_REFERENCE
-
-    clean_image = np.array(clean_image, dtype=np.float32, copy=True)
-    clean_image[corrupted] = 0.0
-
-    variance_out = np.array(variance, dtype=np.float32, copy=True)
-    variance_out[variance_invalid] = 0.0
-
-    weight_map = np.zeros_like(variance_out, dtype=np.float32)
-    usable = (
-        ~corrupted
-        & np.isfinite(clean_image)
-        & np.isfinite(variance_out)
-        & (variance_out > 0.0)
-        & (flags_mask == 0)
-    )
-    weight_map[usable] = 1.0 / variance_out[usable]
-
-    return SpherexCutout(
-        clean_image=clean_image,
-        variance=variance_out,
-        weight_map=weight_map,
-        flags_mask=flags_mask,
-        mjd_obs=float(mjd_obs),
-        bandpass=str(bandpass),
-        uri=uri,
-        source=source,
-        header=dict(header or {}),
-    )
-
-
-WCS_WAVE_HEADER_KEYS = (
-    "WAVELEN",
-    "WAVELENGTH",
-    "WAVE",
-    "WAVEMEAN",
-    "LAMBDA",
-    "CRVAL3",
-    "CDELT3",
-    "CRPIX3",
-    "CTYPE3",
-    "CUNIT3",
-)
-
-
-def _wcs_wave_header(hdulist: fits.HDUList) -> dict[str, Any]:
-    """Copy spectral wavelength metadata from an optional WCS-WAVE extension."""
-    try:
-        hdu = _find_hdu(hdulist, "WCS-WAVE")
-    except SpherexProcessingError:
-        return {}
-
-    header: dict[str, Any] = {}
-    for key in WCS_WAVE_HEADER_KEYS:
-        try:
-            if key in hdu.header:
-                header[key] = hdu.header[key]
-        except Exception:
-            continue
-    return header
-
-
-def process_spherex_fits(
-    source: FITS_SOURCE,
-    bandpass: str | None = None,
-    uri: str | None = None,
-    source_name: str = "fits",
-) -> SpherexCutout:
-    """Clean one SPHEREx MEF cutout and extract its hygiene information.
-
-    Args:
-        source: File path, raw FITS bytes, seekable binary stream, or open
-            ``fits.HDUList``. Files opened by this function are always closed
-            before returning.
-        bandpass: Optional bandpass override (e.g. ``"SPHEREx-D1"``).
-        uri: Optional source artifact URI for provenance tracking.
-        source_name: Provenance label assigned to the returned cutout.
-
-    Returns:
-        Cleaned :class:`SpherexCutout` with ``IMAGE - ZODI`` subtraction,
-        inverse-variance weight map, and 8-bit hygiene mask.
-
-    Raises:
-        SpherexProcessingError: If required FITS extensions or metadata are
-            missing or malformed.
-    """
-    with _open_fits(source) as hdulist:
-        image_hdu = _find_hdu(hdulist, "IMAGE", fallback_indices=(1,))
-        zodi_hdu = _find_hdu(hdulist, "ZODI", fallback_indices=(4,))
-        variance_hdu = _find_hdu(hdulist, "VARIANCE", fallback_indices=(3,))
-        flags_hdu = _find_hdu(hdulist, "FLAGS", fallback_indices=(2,))
-
-        image = np.array(
-            _extension_array(image_hdu, "IMAGE"),
-            dtype=np.float32,
-            copy=True,
-        )
-        zodi = np.array(
-            _extension_array(zodi_hdu, "ZODI"),
-            dtype=np.float32,
-            copy=True,
-        )
-        variance = np.array(
-            _extension_array(variance_hdu, "VARIANCE"),
-            dtype=np.float32,
-            copy=True,
-        )
-
-        flags_data = _extension_array(flags_hdu, "FLAGS")
-        raw_flags, flags_invalid = _as_uint32_bitmap(flags_data)
-
-        mjd_obs = _extract_mjd_obs(hdulist)
-        resolved_bandpass = _extract_bandpass(hdulist, bandpass)
-        header = dict(getattr(image_hdu, "header", {}))
-        header.update(_wcs_wave_header(hdulist))
-
-    return _build_cutout(
-        image=image,
-        zodi=zodi,
-        variance=variance,
-        raw_flags=raw_flags,
-        mjd_obs=mjd_obs,
-        bandpass=resolved_bandpass,
-        uri=uri,
-        source=source_name,
-        header=header,
-        flags_invalid=flags_invalid,
-    )
-
-
-# ---------------------------------------------------------
-# Synthetic fixtures & offline fallback
-# ---------------------------------------------------------
-
-
-def _synthetic_arrays(
-    ra: float,
-    dec: float,
-    fov_arcmin: float,
-    bandpass: str,
-    shape: tuple[int, int],
-    seed: int | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    height, width = shape
-    rng = np.random.default_rng(seed if seed is not None else int(ra * 1000 + dec * 1000))
-
-    yy, xx = np.mgrid[0:height, 0:width]
-    x_norm = (xx - (width - 1) / 2.0) / max(width, 1)
-    y_norm = (yy - (height - 1) / 2.0) / max(height, 1)
-
-    detector = 1
-    mapped = _detector_to_bandpass(bandpass.split("-")[-1])
-    if mapped:
-        detector = int(mapped.split("-")[-1])
-
-    background = 0.8 + 0.15 * detector
-    image = (background + 0.4 * x_norm - 0.3 * y_norm + rng.normal(0.0, 0.01, size=shape)).astype(
-        np.float32
-    )
-
-    zodi = (
-        0.35
-        + 0.08 * np.cos(np.linspace(0.0, np.pi, width))[None, :]
-        + 0.05 * np.sin(np.linspace(0.0, np.pi, height))[:, None]
-    )
-    zodi = np.broadcast_to(zodi, shape).astype(np.float32)
-
-    variance = np.full(
-        shape,
-        0.0025,
-        dtype=np.float32,
-    ) * (1.0 + 0.05 * rng.random(shape)).astype(np.float32)
-
-    flags = np.zeros(shape, dtype=np.uint32)
-    flags[::17, ::19] |= np.uint32(1 << SPHEREX_FLAG_BITS["TRANSIENT"])
-    flags[3::23, 5::29] |= np.uint32(1 << SPHEREX_FLAG_BITS["OVERFLOW"])
-    flags[7::31, 11::37] |= np.uint32(1 << SPHEREX_FLAG_BITS["NONFUNC"])
-    flags[13::41, 17::43] |= np.uint32(1 << SPHEREX_FLAG_BITS["GHOST"])
-
-    return image, zodi, variance, flags
-
-
-def build_synthetic_spherex_hdul(
-    ra: float = 0.0,
-    dec: float = 0.0,
-    fov_arcmin: float = 5.0,
-    bandpass: str = "SPHEREx-D1",
-    shape: tuple[int, int] = (64, 64),
-    mjd_obs: float = 60000.0,
-    seed: int | None = None,
-) -> fits.HDUList:
-    """Build a deterministic SPHEREx-like MEF for offline tests/fallback."""
-
-    validate_coordinates(ra, dec, fov_arcmin)
-
-    image, zodi, variance, flags = _synthetic_arrays(
-        ra=ra,
-        dec=dec,
-        fov_arcmin=fov_arcmin,
-        bandpass=bandpass,
-        shape=shape,
-        seed=seed,
-    )
-
-    height, width = shape
-    pixel_scale = fov_arcmin / 60.0 / max(height, width)
-    wcs_header = {
-        "CTYPE1": "RA---TAN",
-        "CTYPE2": "DEC--TAN",
-        "CUNIT1": "deg",
-        "CUNIT2": "deg",
-        "CRVAL1": float(ra),
-        "CRVAL2": float(dec),
-        "CRPIX1": (width + 1) / 2.0,
-        "CRPIX2": (height + 1) / 2.0,
-        "CDELT1": -pixel_scale,
-        "CDELT2": pixel_scale,
-    }
-
-    primary = fits.PrimaryHDU()
-    primary.header["MJD-OBS"] = float(mjd_obs)
-    primary.header["BANDPASS"] = str(bandpass)
-    primary.header["RA"] = float(ra)
-    primary.header["DEC"] = float(dec)
-    primary.header.update(wcs_header)
-
-    image_hdu = fits.ImageHDU(image, name="IMAGE")
-    image_hdu.header["MJD-OBS"] = float(mjd_obs)
-    image_hdu.header["BANDPASS"] = str(bandpass)
-    image_hdu.header["BUNIT"] = "MJy/sr"
-    image_hdu.header.update(wcs_header)
-
-    flags_hdu = fits.ImageHDU(flags.astype(np.int32), name="FLAGS")
-
-    variance_hdu = fits.ImageHDU(variance, name="VARIANCE")
-    variance_hdu.header["BUNIT"] = "(MJy/sr)^2"
-
-    zodi_hdu = fits.ImageHDU(zodi, name="ZODI")
-    zodi_hdu.header["BUNIT"] = "MJy/sr"
-
-    return fits.HDUList([primary, image_hdu, flags_hdu, variance_hdu, zodi_hdu])
-
-
-def write_synthetic_spherex_fits(
-    path: str | os.PathLike,
-    ra: float = 0.0,
-    dec: float = 0.0,
-    fov_arcmin: float = 5.0,
-    bandpass: str = "SPHEREx-D1",
-    shape: tuple[int, int] = (64, 64),
-    mjd_obs: float = 60000.0,
-    seed: int | None = None,
-) -> Path:
-    """Write a synthetic SPHEREx MEF fixture to disk."""
-
-    output = Path(path)
-    hdulist = build_synthetic_spherex_hdul(
-        ra=ra,
-        dec=dec,
-        fov_arcmin=fov_arcmin,
-        bandpass=bandpass,
-        shape=shape,
-        mjd_obs=mjd_obs,
-        seed=seed,
-    )
-    try:
-        hdulist.writeto(output, overwrite=True, output_verify="ignore")
-    finally:
-        hdulist.close()
-    return output
-
-
-def generate_synthetic_spherex_cutout(
-    ra: float = 0.0,
-    dec: float = 0.0,
-    fov_arcmin: float = 5.0,
-    bandpass: str = "SPHEREx-D1",
-    shape: tuple[int, int] = (64, 64),
-    mjd_obs: float = 60000.0,
-    seed: int | None = None,
-) -> SpherexCutout:
-    """Create a processed synthetic SPHEREx cutout without touching IRSA."""
-
-    hdulist = build_synthetic_spherex_hdul(
-        ra=ra,
-        dec=dec,
-        fov_arcmin=fov_arcmin,
-        bandpass=bandpass,
-        shape=shape,
-        mjd_obs=mjd_obs,
-        seed=seed,
-    )
-    try:
-        return process_spherex_fits(
-            hdulist,
-            bandpass=bandpass,
-            source_name="synthetic",
-        )
-    finally:
-        hdulist.close()
-
-
-def _offline_requested() -> bool:
-    value = os.environ.get(
-        "SPHEREX_OFFLINE",
-        os.environ.get("IRSA_OFFLINE", ""),
-    )
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _find_cached_fixture(
-    fixture_dir: str | os.PathLike | None,
-    bandpass: str,
-) -> Path | None:
-    if fixture_dir is None:
-        fixture_dir = os.environ.get("SPHEREX_FIXTURE_DIR")
-    if fixture_dir is None:
-        return None
-
-    directory = Path(fixture_dir)
-    if not directory.is_dir():
-        return None
-
-    names = (
-        f"{bandpass}.fits",
-        f"{bandpass}.fits.gz",
-        f"{bandpass.replace('SPHEREx-', '')}.fits",
-        "cutout.fits",
-        "default.fits",
-        "fixture.fits",
-    )
-    for name in names:
-        candidate = directory / name
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _fallback_cutout(
-    ra: float,
-    dec: float,
-    fov_arcmin: float,
-    bandpass: str,
-    fixture_dir: str | os.PathLike | None = None,
-    mjd_obs: float = 60000.0,
-    seed: int | None = None,
-) -> SpherexCutout:
-    fixture = _find_cached_fixture(fixture_dir, bandpass)
-    if fixture is not None:
-        try:
-            return process_spherex_fits(
-                fixture,
-                bandpass=bandpass,
-                source_name="fixture-cache",
-            )
-        except SpherexIngestError:
-            pass
-
-    return generate_synthetic_spherex_cutout(
-        ra=ra,
-        dec=dec,
-        fov_arcmin=fov_arcmin,
-        bandpass=bandpass,
-        mjd_obs=mjd_obs,
-        seed=seed,
-    )
-
-
 def ingest_spherex_cutouts(
     ra: float,
     dec: float,
@@ -1241,18 +453,35 @@ def ingest_spherex_cutouts(
     session: requests.Session | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
 ) -> list[SpherexCutout]:
-    """
-    Query, download, and clean all SPHEREx cutouts covering a position.
+    """Query, download, and clean all SPHEREx cutouts covering a sky position.
 
-    If IRSA is unreachable, or a cutout cannot be downloaded, cached fixtures
-    or deterministic synthetic cutouts are returned when fallback is enabled.
-    """
+    If IRSA is unreachable or a cutout cannot be downloaded, cached fixtures or
+    deterministic synthetic cutouts are returned when ``allow_synthetic_fallback``
+    is enabled.
 
+    Args:
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        bandpasses: Tuple of SPHEREx bandpasses to ingest.
+        fixture_dir: Optional directory containing cached FITS fixtures.
+        allow_synthetic_fallback: Whether to fall back to local fixtures or
+            synthetic cutouts when IRSA is unavailable.
+        session: Optional synchronous ``requests.Session``.
+        timeout: Per-download timeout in seconds.
+
+    Returns:
+        List of cleaned :class:`SpherexCutout` instances.
+
+    Raises:
+        SpherexIngestError: If ``allow_synthetic_fallback`` is ``False`` and
+            IRSA returns no observations or all downloads fail.
+    """
     validate_coordinates(ra, dec, fov_arcmin)
 
     observations: list[SpherexObservation] = []
     query_error: Exception | None = None
-    if _offline_requested():
+    if offline_requested():
         query_error = SpherexIngestError("IRSA access disabled by environment.")
     else:
         try:
@@ -1284,7 +513,7 @@ def ingest_spherex_cutouts(
             dec,
         )
         return [
-            _fallback_cutout(
+            fallback_cutout(
                 ra=ra,
                 dec=dec,
                 fov_arcmin=fov_arcmin,
@@ -1330,7 +559,7 @@ def ingest_spherex_cutouts(
             )
             if not allow_synthetic_fallback:
                 return index, None, exc
-            fallback = _fallback_cutout(
+            fallback = fallback_cutout(
                 ra=ra,
                 dec=dec,
                 fov_arcmin=fov_arcmin,
@@ -1410,15 +639,33 @@ async def ingest_spherex_cutouts_async(
     bandpasses: tuple[str, ...] = SPHEREX_BANDPASSES,
     fixture_dir: str | os.PathLike | None = None,
     allow_synthetic_fallback: bool = True,
-    client: Any = None,
+    client: httpx.AsyncClient | None = None,
     timeout: float = DEFAULT_HTTP_TIMEOUT,
 ) -> list[SpherexCutout]:
-    """Async variant of :func:`ingest_spherex_cutouts`."""
+    """Async variant of :func:`ingest_spherex_cutouts`.
 
+    Args:
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        bandpasses: Tuple of SPHEREx bandpasses to ingest.
+        fixture_dir: Optional directory containing cached FITS fixtures.
+        allow_synthetic_fallback: Whether to fall back to local fixtures or
+            synthetic cutouts when IRSA is unavailable.
+        client: Optional shared :class:`httpx.AsyncClient`.
+        timeout: Per-download timeout in seconds.
+
+    Returns:
+        List of cleaned :class:`SpherexCutout` instances.
+
+    Raises:
+        SpherexIngestError: If ``allow_synthetic_fallback`` is ``False`` and
+            IRSA is unreachable or downloads fail.
+    """
     validate_coordinates(ra, dec, fov_arcmin)
 
     try:
-        if _offline_requested():
+        if offline_requested():
             raise SpherexIngestError("IRSA access disabled by environment.")
         observations = await asyncio.to_thread(
             query_observations,
@@ -1438,7 +685,7 @@ async def ingest_spherex_cutouts_async(
         if not allow_synthetic_fallback:
             raise SpherexIngestError("No SPHEREx observations cover the requested position.")
         return [
-            _fallback_cutout(
+            fallback_cutout(
                 ra=ra,
                 dec=dec,
                 fov_arcmin=fov_arcmin,
@@ -1463,7 +710,7 @@ async def ingest_spherex_cutouts_async(
         if payload is None:
             if not allow_synthetic_fallback:
                 raise SpherexDownloadError(f"Failed to download cutout {observation.uri}.")
-            cutout = _fallback_cutout(
+            cutout = fallback_cutout(
                 ra=ra,
                 dec=dec,
                 fov_arcmin=fov_arcmin,

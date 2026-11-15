@@ -7,18 +7,16 @@ import unittest
 import numpy as np
 from astropy.wcs import WCS
 
+from app.models.contracts import GRID_WIDTH
 from app.services.spherex_coadd import (
-    GRID_SIZE,
     SpherexCoaddError,
     build_target_wcs_header,
     cluster_spherex_epochs,
     coadd_spherex_epoch,
     coadd_spherex_epochs,
 )
-from app.services.spherex_ingest import (
-    FLAG_BAD_REFERENCE,
-    SpherexCutout,
-)
+from app.services.spherex_fits import SpherexCutout
+from app.services.spherex_flags import FLAG_BAD_REFERENCE
 
 
 def make_cutout(
@@ -88,8 +86,8 @@ class TestAdaptiveEpochClustering(unittest.TestCase):
 class TestCanonicalTanWcs(unittest.TestCase):
     def test_builds_shared_256_tan_grid(self) -> None:
         header = build_target_wcs_header(120.0, -20.0, 0.256)
-        self.assertEqual(header["NAXIS1"], GRID_SIZE)
-        self.assertEqual(header["NAXIS2"], GRID_SIZE)
+        self.assertEqual(header["NAXIS1"], GRID_WIDTH)
+        self.assertEqual(header["NAXIS2"], GRID_WIDTH)
         self.assertEqual(header["CTYPE1"], "RA---TAN")
         self.assertEqual(header["CTYPE2"], "DEC--TAN")
         self.assertAlmostEqual(abs(header["CDELT1"]), 0.001)

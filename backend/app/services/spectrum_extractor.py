@@ -18,11 +18,13 @@ import numpy as np
 from app.models.contracts import (
     DEFAULT_MOLECULAR_FEATURES,
     DETECTOR_BANDS_UM,
+    NUM_DETECTORS,
     validate_spectrum_payload,
 )
+from app.utils.astronomy import sky_to_pixel
 
 if TYPE_CHECKING:
-    from app.services.spherex_ingest import SpherexCutout
+    from app.services.spherex_fits import SpherexCutout
 
 APERTURE_RADIUS_PX = 2.5
 BACKGROUND_INNER_RADIUS_PX = 5.0
@@ -65,6 +67,7 @@ def _optional_wavelength_um(header: dict[str, Any]) -> float | None:
 
 
 def _detector_number(cutout: SpherexCutout) -> int:
+    """Resolve the 1-based SPHEREx detector number (1..6) for a cutout."""
     name = str(cutout.bandpass).strip().upper()
     try:
         detector = int(name.rsplit("D", 1)[1])
@@ -74,8 +77,10 @@ def _detector_number(cutout: SpherexCutout) -> int:
             detector = int(detector)
         except (TypeError, ValueError) as inner:
             raise SpectrumExtractionError(f"Cannot resolve detector for {name!r}.") from inner
-    if not 1 <= detector <= 6:
-        raise SpectrumExtractionError(f"Detector index must be in [1, 6], got {detector}.")
+    if not 1 <= detector <= NUM_DETECTORS:
+        raise SpectrumExtractionError(
+            f"Detector index must be in [1, {NUM_DETECTORS}], got {detector}."
+        )
     return detector
 
 
@@ -84,23 +89,22 @@ def _fallback_pixel_coordinates(
     ra: float,
     dec: float,
 ) -> tuple[float, float]:
+    """Project sky coordinates to 0-based FITS pixel coordinates without Astropy."""
     required = ("CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2", "CDELT1", "CDELT2")
     if any(key not in header for key in required):
         raise SpectrumExtractionError(
             "Cutout is missing the celestial WCS header keywords."
         ) from None
-    ra0, dec0 = float(header["CRVAL1"]), float(header["CRVAL2"])
-    dx = ((ra - ra0 + 180.0) % 360.0) - 180.0
-    x = (
-        float(header["CRPIX1"])
-        - 1.0
-        + (dx * math.cos(math.radians(dec0))) / float(header["CDELT1"])
-    )
-    y = float(header["CRPIX2"]) - 1.0 + (dec - dec0) / float(header["CDELT2"])
-    return x, y
+    wcs_dict = {
+        "crval": [float(header["CRVAL1"]), float(header["CRVAL2"])],
+        "crpix": [float(header["CRPIX1"]) - 1.0, float(header["CRPIX2"]) - 1.0],
+        "cdelt": [float(header["CDELT1"]), float(header["CDELT2"])],
+    }
+    return sky_to_pixel(ra, dec, wcs_dict, ndigits=None)
 
 
 def _pixel_coordinates(cutout: SpherexCutout, ra: float, dec: float) -> tuple[float, float]:
+    """Project ICRS ``(ra, dec)`` to 0-based cutout pixel coordinates."""
     try:
         from astropy.wcs import WCS
     except ImportError:
@@ -128,6 +132,7 @@ def _aperture_measurement(
     ra: float,
     dec: float,
 ) -> tuple[float, float, bool]:
+    """Measure background-subtracted circular-aperture flux, variance, and flag state."""
     image = np.asarray(cutout.clean_image, dtype=np.float64)
     variance = np.asarray(cutout.variance, dtype=np.float64)
     flags = np.asarray(cutout.flags_mask, dtype=np.uint8)
@@ -168,16 +173,19 @@ def _aperture_measurement(
 
 
 def _wavelength_grid() -> list[float]:
+    """Return the 102-channel SPHEREx wavelength grid from 0.75 to 5.0 um."""
     step = (MAX_WAVELENGTH_UM - MIN_WAVELENGTH_UM) / (EXPECTED_CHANNELS - 1)
     return [MIN_WAVELENGTH_UM + step * index for index in range(EXPECTED_CHANNELS)]
 
 
 def _band_center_um(detector: int) -> float:
+    """Return the midpoint wavelength in microns for 1-based detector ``detector``."""
     low, high = DETECTOR_BANDS_UM[detector]
     return (low + high) / 2.0
 
 
 def _detector_for_wavelength(wavelength_um: float) -> int:
+    """Map a wavelength in microns to its 1-based SPHEREx detector (1..6)."""
     detectors = sorted(DETECTOR_BANDS_UM)
     for detector in detectors:
         low, high = DETECTOR_BANDS_UM[detector]
@@ -191,6 +199,7 @@ def _detector_for_wavelength(wavelength_um: float) -> int:
 def _combine_measurements(
     measurements: Sequence[tuple[float, float, bool]],
 ) -> tuple[float, float, bool]:
+    """Inverse-variance combine repeated flux measurements for a single detector."""
     fluxes = np.asarray([item[0] for item in measurements], dtype=np.float64)
     variances = np.asarray([item[1] for item in measurements], dtype=np.float64)
     weights = np.zeros_like(variances)
@@ -210,6 +219,7 @@ def _combine_measurements(
 def _collapse_to_detector_samples(
     measured: Sequence[tuple[float | None, int, float, float, bool]],
 ) -> list[tuple[float, int, float, float, bool]]:
+    """Group cutout aperture measurements by detector and compute band-center samples."""
     grouped: dict[int, list[tuple[float, float, bool]]] = {}
     for _, detector, flux, variance, flagged in measured:
         grouped.setdefault(detector, []).append((flux, variance, flagged))
@@ -225,6 +235,7 @@ def _collapse_to_detector_samples(
 def _direct_channels(
     measured: Sequence[tuple[float | None, int, float, float, bool]],
 ) -> list[dict[str, Any]] | None:
+    """Return direct 102-channel spectra when all 102 unique wavelength planes exist."""
     if len(measured) != EXPECTED_CHANNELS:
         return None
     wavelengths = [item[0] for item in measured]
@@ -259,6 +270,7 @@ def _direct_channels(
 def _interpolated_channels(
     samples: Sequence[tuple[float, int, float, float, bool]],
 ) -> list[dict[str, Any]]:
+    """Interpolate detector-band flux samples onto the 102-channel wavelength grid."""
     if not samples:
         raise SpectrumExtractionError("No SPHEREx detector-band measurements are available.")
 
@@ -294,7 +306,21 @@ def extract_forced_spectrum(
     cutouts: Sequence[SpherexCutout],
     source_label: str = "Selected sky position",
 ) -> dict[str, Any]:
-    """Measure a circular-aperture spectrum from SPHEREx wavelength planes or bands."""
+    """Measure a circular-aperture spectrum from SPHEREx wavelength planes or bands.
+
+    Args:
+        ra: Target Right Ascension in degrees (``0 <= ra < 360``).
+        dec: Target Declination in degrees (``-90 <= dec <= 90``).
+        cutouts: Non-empty sequence of cleaned :class:`SpherexCutout` objects.
+        source_label: Human-readable target label stored on the payload.
+
+    Returns:
+        Schema-validated 102-channel ``SpectrumPayload`` dictionary.
+
+    Raises:
+        SpectrumExtractionError: If coordinates are invalid, ``cutouts`` is empty,
+            or aperture photometry fails on all inputs.
+    """
     if not (math.isfinite(ra) and 0.0 <= ra < 360.0):
         raise SpectrumExtractionError("Right Ascension must be finite and in [0, 360).")
     if not (math.isfinite(dec) and -90.0 <= dec <= 90.0):

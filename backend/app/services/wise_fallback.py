@@ -22,6 +22,13 @@ from urllib.parse import urlencode
 import numpy as np
 import requests
 
+from app.models.contracts import (
+    BINARY_DETECTOR_FLOAT32_BYTES,
+    BINARY_FLAGS_UINT8_BYTES,
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    NUM_DETECTORS,
+)
 from app.services.logging_config import get_logger
 
 _logger = get_logger("wise_fallback")
@@ -35,7 +42,6 @@ IRSA_INVENTORIES = (
     ("https://irsa.ipac.caltech.edu/ibe/search/wise/neowiser/p1bm_frm", "neowiser", "p1bm_frm"),
 )
 IRSA_TIMEOUT = 12.0
-GRID_SIZE = 256
 WISE_ZERO_POINT_JY = {1: 309.540, 2: 171.787}
 
 
@@ -45,6 +51,8 @@ class WiseFallbackError(RuntimeError):
 
 @dataclass(frozen=True)
 class WiseExposure:
+    """Metadata for a single WISE All-Sky or NEOWISE-R L1b cutout exposure."""
+
     band: int
     mjd: float
     intensity_url: str
@@ -53,6 +61,8 @@ class WiseExposure:
 
 @dataclass(frozen=True)
 class WiseFallbackResult:
+    """Packed W1/W2 detector cube, hygiene mask, and baseline metadata."""
+
     detector_data: np.ndarray
     detector_buffer: bytes
     flags_mask: np.ndarray
@@ -66,9 +76,19 @@ class WiseFallbackResult:
 
     @property
     def baseline_days(self) -> float:
+        """Return total temporal baseline in days across discovered WISE exposures."""
         return max(0.0, self.mjd_end - self.mjd_start)
 
     def data_source_summary(self, spherex_mjds: Iterable[float] = ()) -> dict[str, Any]:
+        """Build a manifest-compatible data source summary including SPHEREx dates.
+
+        Args:
+            spherex_mjds: Optional iterable of SPHEREx epoch MJDs for cross-mission
+                baseline calculation.
+
+        Returns:
+            Dictionary describing the WISE/NEOWISE fallback provenance.
+        """
         dates = [float(value) for value in spherex_mjds if math.isfinite(float(value))]
         wise_dates = [self.mjd_start, self.mjd_end]
         combined = dates + wise_dates
@@ -83,6 +103,7 @@ class WiseFallbackResult:
 
 
 def _validate_target(ra: float, dec: float, fov_arcmin: float) -> None:
+    """Validate finite ICRS coordinates and positive FOV in arcminutes."""
     if not all(math.isfinite(float(v)) for v in (ra, dec, fov_arcmin)):
         raise WiseFallbackError("RA, Dec and field of view must be finite.")
     if not 0.0 <= ra < 360.0 or not -90.0 <= dec <= 90.0 or fov_arcmin <= 0:
@@ -95,7 +116,20 @@ def query_wise_exposures(
     fov_arcmin: float,
     session: Any = requests,
 ) -> list[WiseExposure]:
-    """Discover quality-screened WISE All-Sky and NEOWISE-R L1b exposures."""
+    """Discover quality-screened WISE All-Sky and NEOWISE-R L1b exposures.
+
+    Args:
+        ra: Field center Right Ascension in degrees (``0 <= ra < 360``).
+        dec: Field center Declination in degrees (``-90 <= dec <= 90``).
+        fov_arcmin: Field of view in arcminutes.
+        session: HTTP session/module exposing ``.get(...)``.
+
+    Returns:
+        Sorted list of unique :class:`WiseExposure` records ordered by MJD.
+
+    Raises:
+        WiseFallbackError: If coordinates are invalid or no exposures match.
+    """
     _validate_target(ra, dec, fov_arcmin)
     params = {
         "POS": f"{ra:.8f},{dec:.8f}",
@@ -226,6 +260,7 @@ def _to_mjy_sr(
 
 
 def _download_fits(url: str, session: Any = requests) -> tuple[np.ndarray, Any]:
+    """Download and extract the first 2D FITS image plane from a WISE cutout URL."""
     try:
         response = session.get(url, timeout=IRSA_TIMEOUT)
         response.raise_for_status()
@@ -252,6 +287,7 @@ def _reproject_to_target(
     source_header: Any,
     target_wcs_header: dict[str, Any],
 ) -> np.ndarray:
+    """Bilinearly reproject a 2D WISE image onto the canonical 256x256 TAN grid."""
     try:
         from astropy.wcs import WCS
         from reproject import reproject_interp
@@ -259,7 +295,7 @@ def _reproject_to_target(
         projected, footprint = reproject_interp(
             (np.asarray(image, dtype=np.float64), WCS(source_header).celestial),
             WCS(target_wcs_header).celestial,
-            shape_out=(GRID_SIZE, GRID_SIZE),
+            shape_out=(GRID_HEIGHT, GRID_WIDTH),
             order="bilinear",
         )
     except Exception as exc:
@@ -275,10 +311,24 @@ def assemble_wise_detector_planes(
     w1_variance: np.ndarray | None = None,
     w2_variance: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, bytes, bytes]:
-    """Map W1 to plane 3 and W2 to planes 4/5 in the six-plane wire format."""
+    """Map W1 to plane 3 and W2 to planes 4/5 in the six-plane wire format.
+
+    Args:
+        w1_mjy_sr: Reprojected 256x256 WISE W1 array in MJy/sr.
+        w2_mjy_sr: Reprojected 256x256 WISE W2 array in MJy/sr.
+        w1_variance: Optional W1 variance array (unused, reserved for API symmetry).
+        w2_variance: Optional W2 variance array (unused, reserved for API symmetry).
+
+    Returns:
+        Tuple of ``(detector_data, flags_mask, detector_bytes, flags_bytes)``.
+
+    Raises:
+        WiseFallbackError: If input shapes are invalid, flux is empty, or output
+            buffers violate the canonical binary contract sizes.
+    """
     w1 = np.asarray(w1_mjy_sr, dtype=np.float64)
     w2 = np.asarray(w2_mjy_sr, dtype=np.float64)
-    expected = (GRID_SIZE, GRID_SIZE)
+    expected = (GRID_HEIGHT, GRID_WIDTH)
     if w1.shape != expected or w2.shape != expected:
         raise WiseFallbackError(f"WISE reprojections must both have shape {expected}.")
     if not np.any(np.isfinite(w1) & (w1 != 0)) or not np.any(np.isfinite(w2) & (w2 != 0)):
@@ -286,7 +336,7 @@ def assemble_wise_detector_planes(
             "WISE W1 and W2 cutouts must contain finite non-zero calibrated flux."
         )
 
-    data = np.zeros((6, GRID_SIZE, GRID_SIZE), dtype="<f4")
+    data = np.zeros((NUM_DETECTORS, GRID_HEIGHT, GRID_WIDTH), dtype="<f4")
     flags = np.zeros(expected, dtype=np.uint8)
     # Detector 4 receives W1; detectors 5 and 6 receive W2 as requested by ISS-12.
     data[3] = np.nan_to_num(w1, nan=0.0, posinf=0.0, neginf=0.0).astype("<f4")
@@ -298,7 +348,10 @@ def assemble_wise_detector_planes(
     flags = np.ascontiguousarray(flags, dtype=np.uint8)
     detector_bytes = data.tobytes(order="C")
     flags_bytes = flags.tobytes(order="C")
-    if len(detector_bytes) != 1_572_864 or len(flags_bytes) != 65_536:
+    if (
+        len(detector_bytes) != BINARY_DETECTOR_FLOAT32_BYTES
+        or len(flags_bytes) != BINARY_FLAGS_UINT8_BYTES
+    ):
         raise WiseFallbackError("WISE fallback buffers do not match the canonical binary contract.")
     return data, flags, detector_bytes, flags_bytes
 
@@ -311,7 +364,23 @@ def fetch_wise_fallback(
     session: Any = requests,
     exposure_query: Callable[..., list[WiseExposure]] = query_wise_exposures,
 ) -> WiseFallbackResult:
-    """Fetch, calibrate and reproject the latest WISE W1/W2 images onto the ISS-08 grid."""
+    """Fetch, calibrate, and reproject the latest WISE W1/W2 images onto the 256x256 grid.
+
+    Args:
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        target_wcs_header: Target FITS TAN WCS header dictionary.
+        session: HTTP session/module exposing ``.get(...)``.
+        exposure_query: Callable returning matching :class:`WiseExposure` rows.
+
+    Returns:
+        :class:`WiseFallbackResult` containing calibrated W1/W2 planes and mask.
+
+    Raises:
+        WiseFallbackError: If W1 or W2 exposures are missing, fail download, or
+            cannot be calibrated and reprojected.
+    """
     exposures = [
         item for item in exposure_query(ra, dec, fov_arcmin, session=session) if item.band in (1, 2)
     ]

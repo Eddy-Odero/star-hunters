@@ -13,13 +13,20 @@ import { observatoryLogger } from '../utils/observatoryLogger';
 import { ChevronIcon, CompassZenithIcon, DragGripIcon, SearchIcon } from './icons/ObservatoryIcons';
 import { ZenithConverterDrawer } from './hud/ZenithConverterDrawer';
 
+/**
+ * Top-left draggable Search & Earth-to-Sky Zenith HUD panel providing coordinate/text
+ * fuzzy sky search (merged with live `/api/v1/catalogs/search` results) and the
+ * collapsible {@link ZenithConverterDrawer}.
+ *
+ * @returns Rendered floating search and zenith HUD menu.
+ */
 export const FloatingSearchZenithMenu: React.FC = () => {
   const {
     globalKnownObjects = [],
     requestGlobeFocus,
     navigateToCoordinates,
     selectPreset,
-    skyFrustum,
+    getSkyFrustum,
   } = useSkyExplorer();
   const notifications = useOptionalNotifications();
 
@@ -116,7 +123,7 @@ export const FloatingSearchZenithMenu: React.FC = () => {
       );
       if (nearbyPreset) {
         selectPreset(nearbyPreset.slug);
-      } else if ((skyFrustum?.fovDeg ?? 70) <= 15) {
+      } else if ((getSkyFrustum?.().fovDeg ?? 70) <= 15) {
         navigateToCoordinates(parsed.ra, parsed.dec, 5.0);
       }
       setSearchFocused(false);

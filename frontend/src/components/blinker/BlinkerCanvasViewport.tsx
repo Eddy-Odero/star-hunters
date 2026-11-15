@@ -1,9 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  clampViewportPanZoom,
   GRID_HEIGHT,
   GRID_WIDTH,
-  screenToImageCoordinates,
   type KnownCelestialObject,
   type TracedObjectSummary,
   type ViewportRenderSettings,
@@ -16,6 +14,7 @@ import {
   renderEpochBuffersToRgba,
   type LocalPixelReadout,
 } from '../../utils/pixelEngine';
+import { clampViewportPanZoom, screenToImageCoordinates } from '../../utils/wcsViewport';
 import { isImagePointInBounds, type CalloutRef, type CanvasFrameRect } from './calloutBuilder';
 
 /** Local hover tooltip payload for pixels with non-zero hygiene flags. */

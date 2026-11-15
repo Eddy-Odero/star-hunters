@@ -1,0 +1,80 @@
+@media (min-width: 1380px) {
+  .modal-backdrop {
+    padding-right: 324px;
+  }
+}
+
+@media (max-width: 1379px) {
+  .modal-backdrop {
+    z-index: 43;
+  }
+}
+
+@media (max-width: 767px) {
+  .globe-telemetry-chip {
+    display: inline-flex;
+    left: 12px;
+    bottom: 16px;
+    max-width: calc(100vw - 76px);
+    padding: 6px 10px;
+    gap: 8px;
+    font-size: 11px;
+  }
+
+  .globe-telemetry-lod {
+    display: none;
+  }
+
+  .search-hud-panel {
+    max-width: calc(100vw - 24px);
+  }
+
+  .search-input-wrap {
+    width: 136px;
+  }
+
+  .known-objects-panel {
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 168px);
+  }
+
+  .blinker-modal {
+    height: auto;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+
+  .blinker-header {
+    height: auto;
+    padding: 8px 10px;
+    gap: 6px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .blinker-stage {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .blinker-sidebar {
+    width: 100% !important;
+    min-width: 100%;
+    max-width: 100%;
+    max-height: 240px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .blinker-sidebar-resizer {
+    display: none;
+  }
+
+  .blinker-canvas-stage {
+    padding: 8px 8px 56px;
+    min-height: 300px;
+  }
+
+  .callout-card {
+    width: calc(100vw - 48px);
+  }
+}

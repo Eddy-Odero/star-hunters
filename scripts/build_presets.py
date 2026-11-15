@@ -30,13 +30,6 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from generate_synthetic_presets import generate_all_presets  # noqa: E402
 
-from app.main import (  # noqa: E402
-    _merge_pipeline_overlays,
-    build_catalog_overlays_for_patch,
-    build_sky_patch_manifest_payload,
-    build_spectrum_payload,
-    mjd_to_iso,
-)
 from app.models.contracts import (  # noqa: E402
     SHOWCASE_TARGETS,
     validate_detector_binary_buffer,
@@ -45,16 +38,27 @@ from app.models.contracts import (  # noqa: E402
     validate_spectrum_payload,
 )
 from app.models.global_sky_reference_catalog import extend_global_known_objects_index  # noqa: E402
-from app.services.celestial_catalog_pipeline import (  # noqa: E402
+from app.services.archival_resolver import merge_pipeline_overlays  # noqa: E402
+from app.services.catalog_clients import (  # noqa: E402
     HORIZONS_FEATURED_BODIES,
-    AutomatedCelestialPipeline,
     fetch_gaia_dr3_objects,
     fetch_horizons_ephemeris,
     fetch_most_spherex_matches,
     fetch_simbad_objects,
-    sky_to_pixel_tan,
 )
+from app.services.celestial_catalog_pipeline import AutomatedCelestialPipeline  # noqa: E402
 from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
+from app.services.synthetic_patch import (  # noqa: E402
+    build_catalog_overlays_for_patch,
+    build_sky_patch_manifest_payload,
+    build_spectrum_payload,
+    generate_synthetic_epoch_frames,
+)
+from app.utils.astronomy import (  # noqa: E402
+    mjd_to_iso,
+    offline_requested,
+    sky_to_pixel,
+)
 
 DEFAULT_FOV_ARCMIN = 5.0
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("PRESET_BUILD_TIMEOUT", "20"))
@@ -82,17 +86,9 @@ def _log(message: str) -> None:
     print(f"[build_presets] {message}", flush=True)
 
 
-def _offline_requested() -> bool:
-    value = os.environ.get(
-        "SPHEREX_OFFLINE",
-        os.environ.get("IRSA_OFFLINE", ""),
-    )
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _probe_irsa(timeout: float) -> bool:
     """Return True when the IRSA archive responds within a short timeout."""
-    if _offline_requested():
+    if offline_requested():
         return False
     try:
         import httpx
@@ -293,7 +289,7 @@ async def _fetch_live_catalog_overlays(
     ra = float(meta["ra"])
     dec = float(meta["dec"])
     fov_arcmin = float(manifest["query"]["fov_arcmin"])
-    radius_deg = AutomatedCelestialPipeline._fov_to_radius_deg(fov_arcmin)
+    radius_deg = AutomatedCelestialPipeline.fov_to_radius_deg(fov_arcmin)
     epochs_meta = manifest["epochs"]
     wcs = manifest["wcs"]
     pipeline = AutomatedCelestialPipeline(cache=cache)
@@ -351,7 +347,7 @@ async def _fetch_live_catalog_overlays(
             except Exception as exc:  # noqa: BLE001
                 _log(f"{slug}: JPL Horizons fetch failed ({type(exc).__name__}: {exc})")
 
-        result = pipeline._assemble_patch_objects(
+        result = pipeline.assemble_patch_objects(
             ra_deg=ra,
             dec_deg=dec,
             radius_deg=radius_deg,
@@ -385,7 +381,7 @@ async def _fetch_live_catalog_overlays(
                 match_dec = float(match["dec"])
             except (KeyError, TypeError, ValueError):
                 continue
-            x, y = sky_to_pixel_tan(match_ra, match_dec, wcs)
+            x, y = sky_to_pixel(match_ra, match_dec, wcs)
             mjd_start = match.get("mjd_start")
             epoch_suffix = (
                 f"{int(round(float(mjd_start)))}"  # noqa: RUF046
@@ -423,8 +419,6 @@ def _build_synthetic_bundle(slug: str, meta: dict[str, Any]) -> PresetBundle:
         source_label=meta["name"],
         slug=slug,
     )
-    from app.main import generate_synthetic_epoch_frames
-
     frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
     return PresetBundle(
         slug=slug,
@@ -479,7 +473,7 @@ def _build_live_bundle(
             _log(f"{slug}: live catalog ingestion failed ({type(exc).__name__}: {exc})")
             live_overlays = None
         if live_overlays is not None:
-            manifest = _merge_pipeline_overlays(
+            manifest = merge_pipeline_overlays(
                 manifest,
                 live_overlays,
                 prefer_pipeline_when_uncached=False,
@@ -670,36 +664,39 @@ def build_presets(
     built: list[str] = []
     with tempfile.TemporaryDirectory(prefix="star_hunters_presets_") as temp_dir:
         cache = SpatialSqliteCache(db_path=str(Path(temp_dir) / "preset_cache.db"))
-        for slug in slugs:
-            meta = SHOWCASE_TARGETS[slug]
-            _log(f"{slug}: ingesting live SPHEREx/WISE frames")
-            live_frames = _resolve_live_frames(
-                slug=slug,
-                meta=meta,
-                fov_arcmin=DEFAULT_FOV_ARCMIN,
-                timeout=timeout,
-            )
-            if live_frames is None:
-                bundle = _build_synthetic_bundle(slug, meta)
-            else:
-                frames, epochs, summary, live_spectrum = live_frames
-                bundle = _build_live_bundle(
+        try:
+            for slug in slugs:
+                meta = SHOWCASE_TARGETS[slug]
+                _log(f"{slug}: ingesting live SPHEREx/WISE frames")
+                live_frames = _resolve_live_frames(
                     slug=slug,
                     meta=meta,
-                    frames=frames,
-                    epochs=epochs,
-                    summary=summary,
-                    cache=cache,
+                    fov_arcmin=DEFAULT_FOV_ARCMIN,
                     timeout=timeout,
-                    live_catalogs=live_catalogs,
-                    live_spectrum=live_spectrum,
                 )
-            _validate_bundle(bundle)
-            _write_bundle(bundle, output_dir)
-            _validate_written_presets(output_dir, [slug])
-            manifests[slug] = bundle.manifest
-            built.append(slug)
-            _log(f"{slug}: wrote validated {bundle.source} preset")
+                if live_frames is None:
+                    bundle = _build_synthetic_bundle(slug, meta)
+                else:
+                    frames, epochs, summary, live_spectrum = live_frames
+                    bundle = _build_live_bundle(
+                        slug=slug,
+                        meta=meta,
+                        frames=frames,
+                        epochs=epochs,
+                        summary=summary,
+                        cache=cache,
+                        timeout=timeout,
+                        live_catalogs=live_catalogs,
+                        live_spectrum=live_spectrum,
+                    )
+                _validate_bundle(bundle)
+                _write_bundle(bundle, output_dir)
+                _validate_written_presets(output_dir, [slug])
+                manifests[slug] = bundle.manifest
+                built.append(slug)
+                _log(f"{slug}: wrote validated {bundle.source} preset")
+        finally:
+            cache.close()
 
     _write_global_known_objects_index(output_dir, manifests)
     _log(f"Built and validated {len(built)} preset bundle(s)")

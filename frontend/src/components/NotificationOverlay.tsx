@@ -8,6 +8,13 @@ import {
   SpinnerIcon,
 } from './icons/ObservatoryIcons';
 
+/**
+ * Global HUD notification overlay rendering the top-center warning/error banner,
+ * bottom-right async operation toast stack, tour prompt toast, and persistent
+ * guided-tour launcher button.
+ *
+ * @returns Rendered notification banners, async toasts, and help FAB.
+ */
 export const NotificationOverlay: React.FC = () => {
   const {
     alerts,
@@ -34,32 +41,19 @@ export const NotificationOverlay: React.FC = () => {
           data-testid="warning-notification-banner"
         >
           <div className={`warning-banner-card ${latestAlert.level === 'error' ? 'is-error' : ''}`}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-              <span
-                style={{
-                  color:
-                    latestAlert.level === 'error'
-                      ? 'var(--accent-danger)'
-                      : 'var(--accent-amber-bright)',
-                  marginTop: 2,
-                  flexShrink: 0,
-                }}
-              >
+            <div className="warning-banner-row">
+              <span className="warning-banner-icon">
                 <AlertTriangleIcon size={16} />
               </span>
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-                  {latestAlert.title}
-                </div>
+              <div className="warning-banner-body">
+                <div className="warning-banner-title">{latestAlert.title}</div>
                 {latestAlert.detail && (
-                  <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-                    {latestAlert.detail}
-                  </div>
+                  <div className="warning-banner-detail">{latestAlert.detail}</div>
                 )}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <div className="warning-banner-actions">
                 {alerts.length > 1 && (
                   <button
                     type="button"
@@ -85,31 +79,11 @@ export const NotificationOverlay: React.FC = () => {
             </div>
 
             {historyExpanded && alerts.length > 1 && (
-              <div
-                style={{
-                  maxHeight: 150,
-                  overflowY: 'auto',
-                  borderTop: '1px solid var(--border-hairline)',
-                  paddingTop: 6,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                }}
-              >
+              <div className="warning-history-list">
                 {alerts.slice(1).map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                      fontSize: 12,
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
+                  <div key={item.id} className="warning-history-item">
                     <span>
-                      <strong style={{ color: 'var(--text-primary)' }}>{item.title}</strong>
+                      <strong className="warning-history-title">{item.title}</strong>
                       {item.detail ? `: ${item.detail}` : ''}
                     </span>
                     <button
@@ -141,37 +115,18 @@ export const NotificationOverlay: React.FC = () => {
           {asyncTasks.map((task) => {
             const isSuccess = task.status === 'success';
             return (
-              <div
-                key={task.id}
-                className="async-toast-card"
-                style={
-                  isSuccess
-                    ? { borderColor: 'rgba(16, 185, 129, 0.5)', color: '#d1fae5' }
-                    : undefined
-                }
-              >
+              <div key={task.id} className={`async-toast-card ${isSuccess ? 'is-success' : ''}`}>
                 {isSuccess ? (
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: '50%',
-                      background: '#10b981',
-                      boxShadow: '0 0 8px rgba(16, 185, 129, 0.7)',
-                      flexShrink: 0,
-                    }}
-                  />
+                  <span aria-hidden="true" className="async-toast-success-dot" />
                 ) : (
-                  <span style={{ color: 'var(--accent-cyan)', display: 'inline-flex' }}>
+                  <span className="async-toast-spinner">
                     <SpinnerIcon size={14} />
                   </span>
                 )}
                 <span>{task.label}</span>
                 <button
                   type="button"
-                  className="hud-icon-btn"
-                  style={{ width: 22, height: 22 }}
+                  className="hud-icon-btn async-toast-close-btn"
                   aria-label={`Close ${task.label} notification`}
                   onClick={() => finishAsyncTask(task.id)}
                 >
@@ -182,24 +137,18 @@ export const NotificationOverlay: React.FC = () => {
           })}
 
           {tourPromptVisible && (
-            <div
-              className="async-toast-card"
-              style={{ borderColor: 'rgba(245, 158, 11, 0.45)' }}
-              data-testid="tour-prompt-toast"
-            >
+            <div className="async-toast-card is-tour-prompt" data-testid="tour-prompt-toast">
               <span>New to Star Hunters? Take the 60s guided observatory tour.</span>
               <button
                 type="button"
-                className="hud-btn-primary"
-                style={{ height: 26, padding: '0 9px', fontSize: 11 }}
+                className="hud-btn-primary async-toast-tour-btn"
                 onClick={() => startTour(0)}
               >
                 Start Tour
               </button>
               <button
                 type="button"
-                className="hud-icon-btn"
-                style={{ width: 22, height: 22 }}
+                className="hud-icon-btn async-toast-close-btn"
                 aria-label="Dismiss tour prompt"
                 onClick={dismissTourPrompt}
               >
