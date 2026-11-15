@@ -349,8 +349,29 @@ def build_catalog_overlays_for_patch(
     known_objects: list[dict[str, Any]] = []
 
     p1_x, p1_y = float(prim["p1_x"]), float(prim["p1_y"])
-    p2_x, p2_y = float(prim["p2_x"]), float(prim["p2_y"])
     p1_ra, p1_dec = pixel_to_sky(p1_x, p1_y, wcs)
+
+    if prim["catalog"] == "most" or len(epochs_meta) <= 1:
+        p2_x, p2_y = float(prim["p2_x"]), float(prim["p2_y"])
+    else:
+        baseline_years = (float(epochs_meta[-1]["mjd"]) - float(epochs_meta[0]["mjd"])) / 365.25
+        scale_arcsec_per_px = abs(float(wcs["cdelt"][1])) * 3600.0
+
+        if "pmra" in prim and "pmdec" in prim and (prim["pmra"] or prim["pmdec"]):
+            pm_ra_arcsec_yr = float(prim["pmra"]) / 1000.0
+            pm_dec_arcsec_yr = float(prim["pmdec"]) / 1000.0
+        else:
+            dx_stub = float(prim["p2_x"]) - p1_x
+            dy_stub = float(prim["p2_y"]) - p1_y
+            angle = math.atan2(dy_stub, dx_stub) if (dx_stub or dy_stub) else 0.0
+            pm_tot_arcsec_yr = float(prim.get("proper_motion_arcsec_yr", 0.0))
+            pm_ra_arcsec_yr = -pm_tot_arcsec_yr * math.cos(angle)
+            pm_dec_arcsec_yr = pm_tot_arcsec_yr * math.sin(angle)
+
+        dx_px = -(pm_ra_arcsec_yr * baseline_years) / scale_arcsec_per_px
+        dy_px = (pm_dec_arcsec_yr * baseline_years) / scale_arcsec_per_px
+        p2_x = round(p1_x + dx_px, 2)
+        p2_y = round(p1_y + dy_px, 2)
 
     target_epoch_positions: list[dict[str, Any]] = []
     for idx, ep in enumerate(epochs_meta):
