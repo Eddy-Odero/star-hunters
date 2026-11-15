@@ -61,6 +61,40 @@ function readArrayBuffer(filePath) {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function makeSeededNoiseEpochPlanes(sources = [], bgLevel = 0.02, noiseSigma = 0.02, seed = 12345) {
+  const planes = [];
+  let state = seed >>> 0;
+  const nextRandom = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+  for (let d = 0; d < 6; d += 1) {
+    const plane = new Float32Array(256 * 256);
+    for (let i = 0; i < plane.length; i += 1) {
+      const u1 = Math.max(1e-9, nextRandom());
+      const u2 = nextRandom();
+      const gaussian = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      plane[i] = bgLevel + noiseSigma * gaussian;
+    }
+    for (const src of sources) {
+      const { x: cx, y: cy, peak = 8.0, sigma = 1.6 } = src;
+      const twoSigmaSq = 2.0 * sigma * sigma;
+      const yMin = Math.max(0, Math.floor(cy - 6));
+      const yMax = Math.min(255, Math.ceil(cy + 6));
+      const xMin = Math.max(0, Math.floor(cx - 6));
+      const xMax = Math.min(255, Math.ceil(cx + 6));
+      for (let py = yMin; py <= yMax; py += 1) {
+        for (let px = xMin; px <= xMax; px += 1) {
+          const r2 = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+          plane[py * 256 + px] += peak * Math.exp(-r2 / twoSigmaSq);
+        }
+      }
+    }
+    planes.push(plane);
+  }
+  return planes;
+}
+
 function makeGaussianEpochPlanes(sources, bgLevel = 0.02) {
   const planes = [];
   for (let d = 0; d < 6; d += 1) {
@@ -468,6 +502,29 @@ test('Edge cases: clicking empty sky returns no_body_found, and fading or exitin
   assert.equal(emptyRes.status, 'no_body_found');
   assert.equal(emptyRes.tracks.length, 0);
 
+  // Pure random sky noise must also be rejected rather than snapping to a noise spike.
+  const noisyEmptyBuffers = [
+    makeSeededNoiseEpochPlanes([], 0.02, 0.02, 12345),
+    makeSeededNoiseEpochPlanes([], 0.02, 0.02, 67890),
+  ];
+  for (const [clickX, clickY] of [
+    [25, 25],
+    [50, 50],
+    [120, 180],
+    [200, 200],
+  ]) {
+    const noisyRes = detectAndTrackBodiesAtClick({
+      clickX,
+      clickY,
+      originEpochIndex: 0,
+      epochBuffers: noisyEmptyBuffers,
+      manifest: baseManifest,
+      wavelengthRangeUm: [0.75, 5.0],
+    });
+    assert.equal(noisyRes.status, 'no_body_found');
+    assert.equal(noisyRes.tracks.length, 0);
+  }
+
   const emptySingle = detectAndTrackBrightBodyAcrossEpochs({
     clickX: 25,
     clickY: 25,
@@ -501,6 +558,27 @@ test('Edge cases: clicking empty sky returns no_body_found, and fading or exitin
   assert.ok(['lost', 'low_snr'].includes(fadingTrack.waypoints[2].status));
   assert.equal(fadingTrack.waypoints[2].visible, false);
   assert.deepEqual(fadingTrack.lostEpochIds, ['pass_3']);
+
+  // Edge Case B2: A body that dims below the tracking flux threshold but is still
+  // present above the background is reported as 'low_snr'.
+  const dimmingBuffers = [
+    makeGaussianEpochPlanes([{ x: 70, y: 70, peak: 9.0 }]),
+    makeGaussianEpochPlanes([{ x: 76, y: 73, peak: 9.0 }]),
+    makeGaussianEpochPlanes([{ x: 82, y: 76, peak: 0.1 }]),
+  ];
+  const dimmingRes = detectAndTrackBodiesAtClick({
+    clickX: 70,
+    clickY: 70,
+    originEpochIndex: 0,
+    epochBuffers: dimmingBuffers,
+    manifest: manifest3,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.equal(dimmingRes.status, 'partially_lost');
+  assert.equal(dimmingRes.tracks[0].waypoints[2].status, 'low_snr');
+  assert.equal(dimmingRes.tracks[0].waypoints[2].visible, false);
+  assert.deepEqual(dimmingRes.tracks[0].lostEpochIds, ['pass_3']);
+  assert.equal(dimmingRes.tracks[0].status, 'partially_lost');
 
   // Edge Case C: Fast mover near border exits 256x256 FOV in Pass 3 -> out_of_bounds
   const borderBuffers = [

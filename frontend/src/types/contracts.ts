@@ -802,19 +802,28 @@ export function detectAndTrackBodiesAtClick(params: {
     let sumFlux = 0;
     let sumX = 0;
     let sumY = 0;
+    let aperturePixelCount = 0;
     for (let py = Math.max(0, peakY - 2); py <= Math.min(GRID_HEIGHT - 1, peakY + 2); py += 1) {
       for (let px = Math.max(0, peakX - 2); px <= Math.min(GRID_WIDTH - 1, peakX + 2); px += 1) {
         const net = Math.max(0, comp[py * GRID_WIDTH + px] - bgMean);
         sumFlux += net;
         sumX += px * net;
         sumY += py * net;
+        aperturePixelCount += 1;
       }
     }
 
     const centroidX = sumFlux > 1e-5 ? sumX / sumFlux : peakX;
     const centroidY = sumFlux > 1e-5 ? sumY / sumFlux : peakY;
     const netFlux = Math.max(0, peakVal - bgMean);
-    const snr = Math.max(0, netFlux / bgStd);
+
+    // Aperture significance: a single-pixel noise spike must not clear the SNR gate.
+    // Subtract the rectification bias of max(0, noise) over the 5x5 aperture, then
+    // divide by the noise integrated over the aperture (bgStd * sqrt(N_pix)).
+    const rectifiedNoiseBias = 0.3989422804014327 * bgStd * aperturePixelCount;
+    const apertureSignal = Math.max(0, sumFlux - rectifiedNoiseBias);
+    const apertureNoise = bgStd * Math.sqrt(Math.max(1, aperturePixelCount));
+    const snr = Math.max(0, apertureSignal / apertureNoise);
     return {
       x: Number(centroidX.toFixed(2)),
       y: Number(centroidY.toFixed(2)),
