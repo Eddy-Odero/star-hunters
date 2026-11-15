@@ -52,7 +52,11 @@ export const SourceInspectorCard: React.FC = () => {
                   key={track.trackId}
                   className={isSelected ? 'tracked-chip active' : 'tracked-chip'}
                 >
-                  <span className="track-swatch" style={{ backgroundColor: track.color }} />
+                  <span
+                    className="track-swatch"
+                    style={{ backgroundColor: track.color }}
+                    aria-hidden="true"
+                  />
                   <span className="track-chip-label">
                     {track.matchedLabel ?? `Mover #${track.trackId.slice(0, 6)}`}
                   </span>
@@ -71,7 +75,7 @@ export const SourceInspectorCard: React.FC = () => {
                       e.stopPropagation();
                       removeTrackedTarget(track.trackId);
                     }}
-                    aria-label={`Remove track ${track.trackId}`}
+                    aria-label={`Remove ${track.matchedLabel ?? `track ${track.trackId.slice(0, 6)}`}`}
                   >
                     ×
                   </button>
@@ -113,6 +117,7 @@ export const SourceInspectorCard: React.FC = () => {
                   <th>Epoch ID</th>
                   <th>MJD</th>
                   <th>Pixel (X, Y)</th>
+                  <th>Sky (RA, Dec)</th>
                   <th>SNR</th>
                   <th>Status</th>
                 </tr>
@@ -124,6 +129,9 @@ export const SourceInspectorCard: React.FC = () => {
                     <td>{wp.mjd.toFixed(1)}</td>
                     <td>
                       ({wp.x.toFixed(1)}, {wp.y.toFixed(1)})
+                    </td>
+                    <td>
+                      ({wp.ra.toFixed(4)}&deg;, {wp.dec.toFixed(4)}&deg;)
                     </td>
                     <td>{wp.snr.toFixed(1)}</td>
                     <td>

@@ -85,7 +85,12 @@ export const SpectrumDrawer: React.FC = () => {
 
       {chartData && (
         <div className="spectrum-chart-container">
-          <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="spectrum-svg">
+          <svg
+            viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+            className="spectrum-svg"
+            role="img"
+            aria-label="102-band SPHEREx near-infrared spectrum from 0.75 to 5.0 micrometers"
+          >
             {MOLECULAR_BANDS.map((band) => {
               const x1 = scaleX(band.min);
               const x2 = scaleX(band.max);
@@ -183,9 +188,50 @@ export const SpectrumDrawer: React.FC = () => {
               />
             ))}
 
+            {[0.75, 1.5, 2.5, 3.5, 5.0].map((tick) => {
+              const tx = scaleX(tick);
+              return (
+                <g key={tick}>
+                  <line
+                    x1={tx}
+                    y1={padTop + plotHeight}
+                    x2={tx}
+                    y2={padTop + plotHeight + 4}
+                    stroke="#475569"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={tx}
+                    y={padTop + plotHeight + 15}
+                    fill="#94a3b8"
+                    fontSize={9}
+                    textAnchor="middle"
+                  >
+                    {tick.toFixed(2)}
+                  </text>
+                </g>
+              );
+            })}
+            {[
+              chartData.minFlux,
+              (chartData.minFlux + chartData.maxFlux) / 2,
+              chartData.maxFlux,
+            ].map((val, idx) => (
+              <text
+                key={idx}
+                x={padLeft - 6}
+                y={scaleY(val) + 3}
+                fill="#94a3b8"
+                fontSize={9}
+                textAnchor="end"
+              >
+                {val.toExponential(1)}
+              </text>
+            ))}
+
             <text
               x={padLeft + plotWidth / 2}
-              y={svgHeight - 8}
+              y={svgHeight - 6}
               fill="#94a3b8"
               fontSize={10}
               textAnchor="middle"
@@ -203,6 +249,25 @@ export const SpectrumDrawer: React.FC = () => {
               Flux (MJy/sr)
             </text>
           </svg>
+          <div className="spectrum-legend">
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ backgroundColor: '#38bdf8' }}
+                aria-hidden="true"
+              />
+              Flux &plusmn; 1&sigma; ({chartData.sorted.length} bands)
+            </span>
+            <span className="legend-item">
+              <span
+                className="legend-dot"
+                style={{ backgroundColor: '#f87171' }}
+                aria-hidden="true"
+              />
+              Flagged channel
+            </span>
+            <span className="legend-item">Bands: H2O, CH4, CO2, CO</span>
+          </div>
         </div>
       )}
     </aside>

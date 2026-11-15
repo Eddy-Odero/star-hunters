@@ -455,6 +455,212 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
+.source-inspector-card,
+.spectrum-drawer {
+  margin-top: 1rem;
+  background: #0b1222;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+}
+
+.inspector-header,
+.drawer-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.inspector-header h3,
+.drawer-header h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  color: #f8fafc;
+}
+
+.inspector-empty,
+.drawer-subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.diagnostic-banner.warning {
+  border-color: #f59e0b;
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.tracked-targets-summary h4,
+.selected-title-row h4 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #e2e8f0;
+}
+
+.tracked-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+}
+
+.tracked-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: #131c31;
+  border: 1px solid #26334d;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+  color: #e2e8f0;
+}
+
+.tracked-chip.active {
+  border-color: #38bdf8;
+  background: #172542;
+}
+
+.track-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.branch-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.05rem 0.35rem;
+  border-radius: 4px;
+  background: rgba(251, 191, 36, 0.16);
+  color: #fde68a;
+}
+
+.remove-chip-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  padding: 0 0.2rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.remove-chip-btn:hover {
+  color: #f8fafc;
+}
+
+.selected-object-details {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #1e293b;
+}
+
+.selected-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.selected-metrics {
+  margin: 0.45rem 0 0.7rem;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+}
+
+.waypoints-table-container {
+  overflow-x: auto;
+}
+
+.waypoints-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.waypoints-table th,
+.waypoints-table td {
+  text-align: left;
+  padding: 0.4rem 0.55rem;
+  border-bottom: 1px solid #1e293b;
+  white-space: nowrap;
+}
+
+.waypoints-table th {
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.status-pill.tracked {
+  background: rgba(52, 211, 153, 0.16);
+  color: #6ee7b7;
+}
+
+.status-pill.low_snr {
+  background: rgba(251, 191, 36, 0.16);
+  color: #fde68a;
+}
+
+.status-pill.lost,
+.status-pill.out_of_bounds {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+}
+
+.loading-indicator {
+  font-size: 0.82rem;
+  color: #94a3b8;
+  padding: 0.75rem 0;
+}
+
+.spectrum-chart-container {
+  width: 100%;
+}
+
+.spectrum-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.spectrum-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
 @media (max-width: 900px) {
   .workspace-grid {
     grid-template-columns: 1fr;
