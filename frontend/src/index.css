@@ -78,4 +78,141 @@ button.active {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.viewport-controls-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  background: #0b1222;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.85rem;
+}
+
+.controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.control-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.control-label {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin-right: 0.15rem;
+}
+
+.inline-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+
+.inline-select select {
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  padding: 0.25rem 0.45rem;
+  font-size: 0.8rem;
+}
+
+.epoch-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  background: #131c31;
+  border: 1px solid #26334d;
+  border-radius: 5px;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+}
+
+.wavelength-row {
+  border-top: 1px solid #1e293b;
+  padding-top: 0.55rem;
+}
+
+.wavelength-slider-group {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.dual-range {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.dual-range input[type='range'] {
+  width: 105px;
+  accent-color: #38bdf8;
+}
+
+.known-filter-container {
+  margin-top: 0.6rem;
+}
+
+.known-filter-input {
+  width: 100%;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  box-sizing: border-box;
+}
+
+.known-object-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  cursor: pointer;
+  background: #131c31;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+
+.known-object-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.obj-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #f8fafc;
+}
+
+.obj-meta {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.no-objects-item {
+  color: #64748b;
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1rem 0;
 }

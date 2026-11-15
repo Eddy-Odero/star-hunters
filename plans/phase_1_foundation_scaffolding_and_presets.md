@@ -4,7 +4,7 @@
 Unblock all 5 developers within the first two hours so Frontend (Devs 4 & 5) and Backend (Devs 1, 2 & 3) can build in parallel without waiting on live NASA archive queries or one another's components.
 
 By the end of Phase 1:
-1. The repository has a working `/backend` (Python 3.11+ + FastAPI) and `/frontend` (React + TypeScript + Vite) setup with validated Pydantic and TypeScript schemas matching [Phase 0](file:///home/line/hackathons/star-hunters/plans/phase_0_master_architecture_shared_contracts.md), including `KnownCelestialObject` (with multi-epoch `epoch_positions` and `default_checked`), `TracedObjectSummary` (with `originEpochIndex` and backward/forward `waypoints`), and Two-Tier 3G cache metadata.
+1. The repository has a working `/backend` (Python 3.11+ + FastAPI) and `/frontend` (React + TypeScript + Vite) setup with validated Pydantic and TypeScript schemas matching [Phase 0](phase_0_master_architecture_shared_contracts.md), including `KnownCelestialObject` (with multi-epoch `epoch_positions` and `default_checked`), `TracedObjectSummary` (with `originEpochIndex` and backward/forward `waypoints`), and Two-Tier 3G cache metadata.
 2. Deterministic synthetic preset bundles exist in `frontend/public/presets/` within the first 45 minutes so Devs 4 & 5 can immediately build and test the canvas viewport, pass subtraction, wavelength filtering, known-object checkbox filtering, backward/forward bright-body tracking, and 102-band spectral plot.
 3. The pre-computation batch pipeline generates static bundles for the **6 Showcase Targets** (*WISE 0855, Barnard's Star, Epsilon Indi B, RW Aurigae, R Draconis, Comet 3I/ATLAS*) so demo presets load in $0\text{ ms}$.
 
@@ -23,16 +23,12 @@ By the end of Phase 1:
 
 ---
 
-## 3. Phase 1 Topological Issues (See `/issues/` for Full Specs)
+## 3. Phase 1 Deliverables
 
-### Issue `ISS-01` (`[01]`): Monorepo Scaffolding & Shared Contract Definitions — ✅ COMPLETED (`@carsonak`)
-- **Status:** `completed`
-- **Assignee:** `@carsonak` (Fullstack / QA Lead)
-- **Blocked By:** None (`[]`)
-- **Blocking:** None (Completed in Phase 1 — all downstream issues unblocked)
+### `ISS-01`: Monorepo Scaffolding & Shared Contract Definitions
 - **Goal:** Establish the repository structure, build tooling, and shared data contract types for both Backend and Frontend so all 5 developers can branch and work without merge conflicts.
 - **What the End Result Looks Like:**
-  - `/backend` initialized with Python 3.11+, FastAPI, Uvicorn, Pydantic v2 / JSON Schema models mirroring Section 3 of [Phase 0](file:///home/line/hackathons/star-hunters/plans/phase_0_master_architecture_shared_contracts.md) (including `KnownCelestialObject`, `KnownObjectEpochPosition`, `TracedWaypoint`, `TracedObjectSummary`, `SkyPatchManifest`, `CatalogsResponse`, `SpectrumPayload`, `EarthToSkyResponse` with `WORLD_CAPITAL_CITIES` fallback), and a `/health` endpoint.
+  - `/backend` initialized with Python 3.11+, FastAPI, Uvicorn, Pydantic v2 / JSON Schema models mirroring Section 3 of [Phase 0](phase_0_master_architecture_shared_contracts.md) (including `KnownCelestialObject`, `KnownObjectEpochPosition`, `TracedWaypoint`, `TracedObjectSummary`, `SkyPatchManifest`, `CatalogsResponse`, `SpectrumPayload`, `EarthToSkyResponse` with `WORLD_CAPITAL_CITIES` fallback), and a `/health` endpoint.
   - `/frontend` initialized with React, TypeScript, and Vite, containing `src/types/contracts.ts` and `src/context/SkyExplorerContext.tsx` (with known-object checkbox state helpers, pan/zoom controls, multi-spot & overlapped bright-body tracking with colored tracking squares, and non-looping playback controls).
 - **Acceptance Criteria:**
   - Backend starts cleanly and `GET /health` returns `200 OK` with `{"status": "ok"}`.
@@ -41,11 +37,7 @@ By the end of Phase 1:
 
 ---
 
-### Issue `ISS-02` (`[02]`): Instant Synthetic Preset Generator (Unblock Frontend in <45 Minutes) — ✅ COMPLETED (`@carsonak`)
-- **Status:** `completed`
-- **Assignee:** `@carsonak` (Fullstack / QA Lead)
-- **Blocked By:** None (`[]`)
-- **Blocking:** None (Completed in Phase 1 — all downstream issues unblocked)
+### `ISS-02`: Instant Synthetic Preset Generator (Unblock Frontend in <45 Minutes)
 - **Goal:** Generate realistic, contract-compliant static preset files in `frontend/public/presets/` immediately so Frontend Devs 4 & 5 have multi-epoch binary buffers, `known_objects` checkbox tracks, and 102-band spectra to develop against before live IRSA downloads complete.
 - **What the End Result Looks Like:**
   - A standalone script (`scripts/generate_synthetic_presets.py`) that outputs `manifest.json`, `pass_1.bin`, `pass_2.bin`, `pass_1_flags.bin`, `pass_2_flags.bin`, and `spectrum.json` into `frontend/public/presets/{slug}/` for all 6 benchmark targets in Section 2.
@@ -58,10 +50,7 @@ By the end of Phase 1:
 
 ---
 
-### Issue `ISS-20` (`[20]`): Golden Target Pre-Computation Batch Script (Real Archive Data + Fallback) (`@paowuor`)
-- **Assignee:** `@paowuor` (Backend)
-- **Blocked By:** `ISS-07`, `ISS-08`, `ISS-09`, `ISS-12`
-- **Blocking:** `ISS-21`, `ISS-22`
+### `ISS-20`: Golden Target Pre-Computation Batch Script (Real Archive Data + Fallback)
 - **Goal:** Upgrade the preset bundles in `frontend/public/presets/` with real pre-computed astronomical data from IRSA (SPHEREx + WISE/NEOWISE), Gaia DR3, and NASA MOST for the 6 showcase targets (while retaining `--fallback-synthetic` resilience) so judges experience instant $0\text{ ms}$ loading of real space telescope data.
 - **Acceptance Criteria:**
   - All 6 preset directories in `frontend/public/presets/` contain complete, non-NaN binary buffers, real Gaia/WISE/MOST `known_objects` tracks, and 102-band spectra.

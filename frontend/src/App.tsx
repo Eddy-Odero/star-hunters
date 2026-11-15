@@ -5,6 +5,8 @@ import {
   screenToImageCoordinates,
   type EarthToSkyResponse,
 } from './types/contracts';
+import { ViewportControlsBar } from './components/ViewportControlsBar';
+import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
 
 const PRESET_SLUGS = [
   { slug: 'wise_0855', label: 'WISE 0855 (Brown Dwarf)' },
@@ -21,14 +23,7 @@ const StarHuntersWorkspace: React.FC = () => {
     manifest,
     loadingState,
     renderSettings,
-    updateRenderSettings,
-    setViewportZoomPan,
-    resetViewportZoomPan,
     knownObjects,
-    toggleKnownObject,
-    checkAllKnownObjects,
-    uncheckAllKnownObjects,
-    resetDefaultKnownObjects,
     selectedObject,
     trackedTargets,
     lastClickDiagnostic,
@@ -77,7 +72,6 @@ const StarHuntersWorkspace: React.FC = () => {
 
   const handleWhatsAboveMe = async () => {
     try {
-      // Request Zenith coordinates (omitting lat/lon triggers the backend's random capital city fallback + SQLite cache)
       const res = await fetch('/api/v1/earth-to-sky');
       if (!res.ok) return;
       const data = (await res.json()) as EarthToSkyResponse;
@@ -89,7 +83,7 @@ const StarHuntersWorkspace: React.FC = () => {
       );
       navigateToCoordinates(data.zenith_icrs.ra, data.zenith_icrs.dec, 5.0);
     } catch {
-      // No-op when running offline without backend server
+      // Offline fallback
     }
   };
 
@@ -152,72 +146,10 @@ const StarHuntersWorkspace: React.FC = () => {
             </span>
           </div>
 
-          <div className="mode-controls">
-            {(['blink', 'subtract', 'coadd'] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                className={renderSettings.mode === m ? 'mode-btn active' : 'mode-btn'}
-                onClick={() => updateRenderSettings({ mode: m })}
-              >
-                Mode: {m.toUpperCase()}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="mode-btn"
-              onClick={() =>
-                setViewportZoomPan(
-                  Math.min(8.0, renderSettings.zoom * 1.5),
-                  renderSettings.panX,
-                  renderSettings.panY,
-                )
-              }
-            >
-              Zoom In (+)
-            </button>
-            <button
-              type="button"
-              className="mode-btn"
-              onClick={() =>
-                setViewportZoomPan(
-                  Math.max(1.0, renderSettings.zoom / 1.5),
-                  renderSettings.panX,
-                  renderSettings.panY,
-                )
-              }
-            >
-              Zoom Out (-)
-            </button>
-            <button
-              type="button"
-              className="mode-btn"
-              onClick={() =>
-                setViewportZoomPan(
-                  renderSettings.zoom,
-                  renderSettings.panX - 16,
-                  renderSettings.panY,
-                )
-              }
-            >
-              Pan &larr;
-            </button>
-            <button
-              type="button"
-              className="mode-btn"
-              onClick={() =>
-                setViewportZoomPan(
-                  renderSettings.zoom,
-                  renderSettings.panX + 16,
-                  renderSettings.panY,
-                )
-              }
-            >
-              Pan &rarr;
-            </button>
-            <button type="button" className="mode-btn" onClick={resetViewportZoomPan}>
-              Reset Pan/Zoom (1&times;)
-            </button>
+          {/* Viewport Controls Bar Component */}
+          <ViewportControlsBar />
+
+          <div className="secondary-action-bar">
             <button
               type="button"
               className="mode-btn"
@@ -385,42 +317,8 @@ const StarHuntersWorkspace: React.FC = () => {
           )}
         </section>
 
-        <aside className="known-objects-panel">
-          <div className="panel-header">
-            <h2>Known Celestial Objects ({knownObjects.length})</h2>
-            <div className="checkbox-actions">
-              <button type="button" onClick={checkAllKnownObjects}>
-                Check All
-              </button>
-              <button type="button" onClick={uncheckAllKnownObjects}>
-                Uncheck All
-              </button>
-              <button type="button" onClick={resetDefaultKnownObjects}>
-                Notable Only
-              </button>
-            </div>
-          </div>
-          <ul className="known-object-list">
-            {knownObjects.map((obj) => {
-              const checked = renderSettings.checkedObjectIds.includes(obj.object_id);
-              return (
-                <li key={obj.object_id} className="known-object-row">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleKnownObject(obj.object_id)}
-                    />
-                    <span className="obj-label">{obj.label}</span>
-                    <span className="obj-meta">
-                      [{obj.catalog}] ({obj.x}, {obj.y})
-                    </span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        </aside>
+        {/* Known Celestial Objects Checkbox Menu Component */}
+        <KnownObjectsCheckboxMenu />
       </main>
     </div>
   );
