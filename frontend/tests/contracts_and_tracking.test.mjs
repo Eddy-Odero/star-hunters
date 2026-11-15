@@ -39,6 +39,7 @@ import {
   WAVELENGTH_PRESETS,
   catalogBadgeLabel,
   clearCheckedObjectIds,
+  extractAvailableMissions,
   formatMagnitude,
   formatProperMotion,
   fuzzyScoreText,
@@ -47,7 +48,9 @@ import {
   isMovingSolarSystemObject,
   isWavelengthPresetActive,
   objectClassBadgeLabel,
+  pickNearestAllowedEpoch,
   renderEpochBuffersToRgba,
+  resolveFilteredEpochIndices,
   selectAllObjectIds,
   toggleObjectId,
 } from '../src/utils/knownObjectSelection.ts';
@@ -79,9 +82,16 @@ import {
   HOVER_DETAILS_DELAY_MS,
 } from '../src/utils/calloutPlacement.ts';
 import {
+  CDS_MIRROR_SPHEREX_COLOR_HIPS_URL,
+  CDS_SPHEREX_COLOR_HIPS_URL,
+  IRSA_2MASS_HIPS_URL,
+  IRSA_SPHEREX_CUBE_HIPS_URL,
+  SUPPORTED_GLOBE_PROJECTIONS,
   buildVisibleSkyPanels,
   clampGlobeFov,
+  resolveBestDeepSkyHiPS,
   resolveGlobeClickAction,
+  resolveGlobeLodTier,
   stepPanCoordinates,
   targetFovForClickAction,
 } from '../src/utils/globeNavigation.ts';
@@ -2203,4 +2213,49 @@ test('ObservatoryLogger enforces configurable levels and FIFO bufferSize, and re
   );
   assert.ok(firstUrl.includes('target=wise0855'));
   assert.equal(calls, 1);
+});
+
+test('Resilient HiPS hierarchy, LoD tiers, projections, and mission epoch filters', async () => {
+  assert.equal(resolveGlobeLodTier(45), 'allwise');
+  assert.equal(resolveGlobeLodTier(8), '2mass');
+  assert.equal(resolveGlobeLodTier(2.5), 'spherex_deep');
+  assert.ok(SUPPORTED_GLOBE_PROJECTIONS.some((p) => p.id === 'SIN'));
+  assert.ok(SUPPORTED_GLOBE_PROJECTIONS.some((p) => p.id === 'AIT'));
+
+  const primaryCds = await resolveBestDeepSkyHiPS(async (url) =>
+    url.startsWith(CDS_SPHEREX_COLOR_HIPS_URL),
+  );
+  assert.equal(primaryCds.source, 'cds_qr2');
+  assert.equal(primaryCds.label, 'SPHEREx QR2 Color (CDS)');
+
+  const mirrorCds = await resolveBestDeepSkyHiPS(async (url) =>
+    url.startsWith(CDS_MIRROR_SPHEREX_COLOR_HIPS_URL),
+  );
+  assert.equal(mirrorCds.source, 'cds_qr2_mirror');
+  assert.equal(mirrorCds.label, 'SPHEREx QR2 Color (Mirror)');
+
+  const irsaCube = await resolveBestDeepSkyHiPS(async (url) =>
+    url.startsWith(IRSA_SPHEREX_CUBE_HIPS_URL),
+  );
+  assert.equal(irsaCube.source, 'irsa_spherex_cube');
+
+  const safeFallback = await resolveBestDeepSkyHiPS(async () => false);
+  assert.equal(safeFallback.source, 'irsa_2mass_fallback');
+  assert.equal(safeFallback.url, IRSA_2MASS_HIPS_URL);
+
+  const epochs = [
+    { mission: 'SPHEREx' },
+    { mission: 'WISE' },
+    { mission: 'SPHEREx' },
+    { mission: 'SkyView' },
+  ];
+  assert.deepEqual(extractAvailableMissions(epochs), [
+    { mission: 'SPHEREx', count: 2 },
+    { mission: 'WISE', count: 1 },
+    { mission: 'SkyView', count: 1 },
+  ]);
+  const onlyWise = resolveFilteredEpochIndices(epochs, ['WISE']);
+  assert.deepEqual(onlyWise, [1]);
+  assert.equal(pickNearestAllowedEpoch(2, [0, 3]), 3);
+  assert.equal(pickNearestAllowedEpoch(3, [0, 3]), 3);
 });

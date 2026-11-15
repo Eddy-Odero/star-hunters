@@ -33,6 +33,9 @@ import {
 } from '../services/progressivePatchLoader';
 import {
   clearCheckedObjectIds,
+  extractAvailableMissions,
+  pickNearestAllowedEpoch,
+  resolveFilteredEpochIndices,
   selectAllObjectIds,
   toggleObjectId,
 } from '../utils/knownObjectSelection';
@@ -281,20 +284,53 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     renderSettings.passBIndex,
   ]);
 
-  const toggleMissionFilter = useCallback((mission: MissionName) => {
-    setActiveMissions((prev) => {
-      const exists = prev.includes(mission);
-      if (exists && prev.length <= 1) {
+  const toggleMissionFilter = useCallback(
+    (mission: MissionName) => {
+      const exists = activeMissions.includes(mission);
+      const next = exists
+        ? activeMissions.filter((m) => m !== mission)
+        : [...activeMissions, mission];
+
+      if (manifest && manifest.epochs.length > 0) {
+        const presentMissions = extractAvailableMissions(manifest.epochs).map((m) => m.mission);
+        const remainingPresent = presentMissions.filter((m) => next.includes(m));
+        if (remainingPresent.length === 0) {
+          notificationsRef.current?.pushWarning({
+            id: 'mission-filter-empty',
+            title: 'At least one mission source in this patch must stay enabled',
+            level: 'warning',
+          });
+          return;
+        }
+        const allowed = resolveFilteredEpochIndices(manifest.epochs, next);
+        setActiveMissions(next);
+        setRenderSettings((prev) => ({
+          ...prev,
+          activeEpochIndex: pickNearestAllowedEpoch(prev.activeEpochIndex, allowed),
+          passAIndex: allowed[0] ?? 0,
+          passBIndex: allowed[allowed.length - 1] ?? 0,
+          coaddIndices: allowed,
+        }));
+        observatoryLogger.info('blinker', 'Mission source filter updated', {
+          mission,
+          enabled: !exists,
+          visibleEpochs: allowed.length,
+        });
+        return;
+      }
+
+      if (exists && next.length === 0) {
         notificationsRef.current?.pushWarning({
           id: 'mission-filter-empty',
           title: 'At least one mission source must stay enabled',
           level: 'warning',
         });
-        return prev;
+        return;
       }
-      return exists ? prev.filter((m) => m !== mission) : [...prev, mission];
-    });
-  }, []);
+      setActiveMissions(next);
+    },
+    [activeMissions, manifest],
+  );
 
   const setViewportZoomPan = useCallback((zoom: number, panX: number, panY: number) => {
     const clamped = clampViewportPanZoom(zoom, panX, panY);
@@ -372,13 +408,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // Mission-aware non-looping playback timer
   const filteredEpochIndices = useMemo(() => {
     if (!manifest) return [];
-    const indices: number[] = [];
-    manifest.epochs.forEach((ep, idx) => {
-      if (activeMissions.includes(ep.mission)) {
-        indices.push(idx);
-      }
-    });
-    return indices.length > 0 ? indices : manifest.epochs.map((_, idx) => idx);
+    return resolveFilteredEpochIndices(manifest.epochs, activeMissions);
   }, [manifest, activeMissions]);
 
   useEffect(() => {
@@ -462,11 +492,13 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           fovArcmin: result.manifest.query.fov_arcmin,
         });
       }
+      setActiveMissions(ALL_MISSIONS);
       setRenderSettings((prev) => ({
         ...prev,
         activeEpochIndex: 0,
         passAIndex: 0,
         passBIndex: Math.max(0, result.manifest.epochs.length - 1),
+        coaddIndices: result.manifest.epochs.map((_, idx) => idx),
         zoom: 1.0,
         panX: 0.0,
         panY: 0.0,
@@ -889,6 +921,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       navigateToCoordinates,
       inspectPixelOrCoord,
       activeMissions,
+      filteredEpochIndices,
       toggleMissionFilter,
       skyFrustum,
       setSkyFrustum,
@@ -940,6 +973,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       navigateToCoordinates,
       inspectPixelOrCoord,
       activeMissions,
+      filteredEpochIndices,
       toggleMissionFilter,
       skyFrustum,
       isBlinkerModalOpen,

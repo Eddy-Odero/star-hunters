@@ -182,10 +182,7 @@ export async function loadLiveCoordinatesFlow(
       onCatalogsReady?.(catData);
       return catData;
     })
-    .catch((err) => {
-      if ((err as Error)?.name === 'AbortError') throw err;
-      return null;
-    });
+    .catch(() => null);
 
   const patchPromise = fetchImpl(`/api/v1/sky-patch?${qs}`, { signal });
   const patchRes = await patchPromise;

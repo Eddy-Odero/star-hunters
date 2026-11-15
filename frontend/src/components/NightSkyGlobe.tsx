@@ -3,13 +3,19 @@ import { IAU_CONSTELLATIONS } from '../data/constellations';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { TRACKING_SQUARE_COLORS } from '../types/contracts';
 import {
-  buildVisibleSkyPanels,
   clampGlobeFov,
+  IRSA_2MASS_HIPS_URL,
+  IRSA_WISE_HIPS_URL,
   PANEL_GRID_FOV_DEG,
   PANEL_GRID_STEP_DEG,
+  resolveBestDeepSkyHiPS,
   resolveGlobeClickAction,
+  resolveGlobeLodTier,
   stepPanCoordinates,
+  SUPPORTED_GLOBE_PROJECTIONS,
   targetFovForClickAction,
+  type DeepHiPSResolution,
+  type GlobeProjection,
 } from '../utils/globeNavigation';
 import { observatoryLogger } from '../utils/observatoryLogger';
 import {
@@ -17,24 +23,20 @@ import {
   BENCHMARK_TARGET_OPTIONS,
   computeSpherExReticleCorners,
   formatRaDecCompact,
+  getMarkerShapeKind,
   quantizeGridCenter,
   wrapRaDeg,
 } from '../utils/observatoryMath';
-import { TargetReticleIcon } from './icons/ObservatoryIcons';
 
 const ALADIN_MODULE_URL = 'https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js';
-const IRSA_SPHEREX_HIPS_URL = 'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube';
-const IRSA_WISE_HIPS_URL = 'https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1';
-const IRSA_2MASS_HIPS_URL = 'https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color';
 const ALADIN_LOAD_TIMEOUT_MS = 12000;
 const SPHEREX_PATCH_ARCMIN = 5.0;
-const HIGH_RES_LOD_FOV_DEG = 12.0;
-
-type GlobeSurveyMode = 'lod' | 'spherex';
+const CURSOR_TOOLTIP_DELAY_MS = 450;
 
 interface AladinInstance {
   gotoRaDec(ra: number, dec: number): void;
   setFoV?(fovDeg: number): void;
+  setProjection?(projection: string): void;
   getRaDec?(): [number, number];
   getFoV?(): [number, number] | number;
   setImageSurvey?(surveyId: string): void;
@@ -211,7 +213,10 @@ export const NightSkyGlobe: React.FC = () => {
     coordinates,
     skyFrustum,
     setSkyFrustum,
+    knownObjects = [],
     globalKnownObjects = [],
+    renderSettings,
+    objectHighlighterColors = {},
     isBlinkerModalOpen = false,
     openBlinkerModal,
     globeFocusRequest,
@@ -224,15 +229,22 @@ export const NightSkyGlobe: React.FC = () => {
 
   const [aladinReady, setAladinReady] = useState(false);
   const [aladinFailed, setAladinFailed] = useState(false);
-  const [surveyMode, setSurveyMode] = useState<GlobeSurveyMode>('lod');
-  const surveyModeRef = useRef<GlobeSurveyMode>('lod');
-  useEffect(() => {
-    surveyModeRef.current = surveyMode;
-  }, [surveyMode]);
-  const [activeSurveyLabel, setActiveSurveyLabel] = useState<'allWISE' | '2MASS' | 'SPHEREx'>(
-    'allWISE',
-  );
+  const [projection, setProjection] = useState<GlobeProjection>('SIN');
+  const [activeSurveyLabel, setActiveSurveyLabel] = useState<string>('AllWISE Wide (IRSA)');
+  const currentSurveyUrlRef = useRef<string>(IRSA_WISE_HIPS_URL);
+  const deepHiPSCacheRef = useRef<DeepHiPSResolution | null>(null);
+  const deepHiPSPromiseRef = useRef<Promise<DeepHiPSResolution> | null>(null);
   const [showConstellations, setShowConstellations] = useState<boolean>(true);
+  const [coordEditing, setCoordEditing] = useState<boolean>(false);
+  const [raDraft, setRaDraft] = useState<string>('');
+  const [decDraft, setDecDraft] = useState<string>('');
+  const [cursorTooltip, setCursorTooltip] = useState<{
+    x: number;
+    y: number;
+    ra: number;
+    dec: number;
+  } | null>(null);
+  const cursorHoverTimerRef = useRef<number | null>(null);
   const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>(() => ({
     width: typeof window === 'undefined' ? 1280 : window.innerWidth,
     height: typeof window === 'undefined' ? 800 : window.innerHeight,
@@ -306,28 +318,54 @@ export const NightSkyGlobe: React.FC = () => {
     [openBlinkerModal],
   );
 
-  // Progressive LoD survey tier switching based on FoV or explicit SPHEREx HiPS mode
-  const updateLodForFov = useCallback((fovDeg: number, explicitMode?: GlobeSurveyMode) => {
-    const mode = explicitMode ?? surveyModeRef.current;
-    const targetSurvey =
-      mode === 'spherex'
-        ? IRSA_SPHEREX_HIPS_URL
-        : fovDeg <= HIGH_RES_LOD_FOV_DEG
-          ? IRSA_2MASS_HIPS_URL
-          : IRSA_WISE_HIPS_URL;
-    const nextLabel: 'allWISE' | '2MASS' | 'SPHEREx' =
-      mode === 'spherex' ? 'SPHEREx' : fovDeg <= HIGH_RES_LOD_FOV_DEG ? '2MASS' : 'allWISE';
-    setActiveSurveyLabel((prev) => {
-      if (prev !== nextLabel) {
-        aladinInstanceRef.current?.setImageSurvey?.(targetSurvey);
-        observatoryLogger.info('globe', 'Globe background sky survey switched', {
-          survey: nextLabel,
-          fovDeg: Number(fovDeg.toFixed(2)),
+  const switchSurveyLayer = useCallback((url: string, label: string) => {
+    setActiveSurveyLabel(label);
+    if (currentSurveyUrlRef.current !== url) {
+      currentSurveyUrlRef.current = url;
+      aladinInstanceRef.current?.setImageSurvey?.(url);
+      observatoryLogger.info('globe', 'Globe background sky survey switched', {
+        survey: label,
+        fovDeg: Number(viewStateRef.current.fovDeg.toFixed(2)),
+      });
+    }
+  }, []);
+
+  // Resilient progressive LoD survey tier switching based on FoV
+  const updateLodForFov = useCallback(
+    (fovDeg: number) => {
+      const tier = resolveGlobeLodTier(fovDeg);
+      if (tier === 'allwise') {
+        switchSurveyLayer(IRSA_WISE_HIPS_URL, 'AllWISE Wide (IRSA)');
+        return;
+      }
+      if (tier === '2mass') {
+        switchSurveyLayer(IRSA_2MASS_HIPS_URL, '2MASS High-Res (IRSA)');
+        return;
+      }
+      if (deepHiPSCacheRef.current) {
+        switchSurveyLayer(deepHiPSCacheRef.current.url, deepHiPSCacheRef.current.label);
+        return;
+      }
+      if (!deepHiPSPromiseRef.current) {
+        deepHiPSPromiseRef.current = resolveBestDeepSkyHiPS().then((resolved) => {
+          deepHiPSCacheRef.current = resolved;
+          return resolved;
         });
       }
-      return nextLabel;
-    });
-  }, []);
+      deepHiPSPromiseRef.current
+        .then((resolved) => {
+          if (resolveGlobeLodTier(viewStateRef.current.fovDeg) === 'spherex_deep') {
+            switchSurveyLayer(resolved.url, resolved.label);
+          }
+        })
+        .catch(() => {
+          if (resolveGlobeLodTier(viewStateRef.current.fovDeg) === 'spherex_deep') {
+            switchSurveyLayer(IRSA_2MASS_HIPS_URL, '2MASS High-Res (IRSA)');
+          }
+        });
+    },
+    [switchSurveyLayer],
+  );
 
   const applyCameraState = useCallback(
     (nextRa: number, nextDec: number, nextFovDeg: number, driveAladin = true) => {
@@ -353,13 +391,16 @@ export const NightSkyGlobe: React.FC = () => {
 
   // Respond to focus requests from Search, Zenith, Known Objects, or Benchmark dropdown
   useEffect(() => {
-    if (!globeFocusRequest) return;
-    applyCameraState(globeFocusRequest.ra, globeFocusRequest.dec, globeFocusRequest.fovDeg, true);
-    observatoryLogger.info('globe', 'Focused sky camera', {
-      ra: Number(globeFocusRequest.ra.toFixed(4)),
-      dec: Number(globeFocusRequest.dec.toFixed(4)),
-      fovDeg: globeFocusRequest.fovDeg,
+    if (!globeFocusRequest) return undefined;
+    const raf = window.requestAnimationFrame(() => {
+      applyCameraState(globeFocusRequest.ra, globeFocusRequest.dec, globeFocusRequest.fovDeg, true);
+      observatoryLogger.info('globe', 'Focused sky camera', {
+        ra: Number(globeFocusRequest.ra.toFixed(4)),
+        dec: Number(globeFocusRequest.dec.toFixed(4)),
+        fovDeg: globeFocusRequest.fovDeg,
+      });
     });
+    return () => window.cancelAnimationFrame(raf);
   }, [applyCameraState, globeFocusRequest]);
 
   // Attempt lazy WebGL Aladin Lite v3 initialization using CORS-enabled IRSA HiPS imagery
@@ -371,7 +412,7 @@ export const NightSkyGlobe: React.FC = () => {
         if (cancelled || !aladinHostRef.current) return;
         const initState = viewStateRef.current;
         const instance = api.aladin(aladinHostRef.current, {
-          survey: surveyModeRef.current === 'spherex' ? IRSA_SPHEREX_HIPS_URL : IRSA_WISE_HIPS_URL,
+          survey: IRSA_WISE_HIPS_URL,
           projection: 'SIN',
           cooFrame: 'ICRSd',
           target: `${initState.ra} ${initState.dec}`,
@@ -383,13 +424,34 @@ export const NightSkyGlobe: React.FC = () => {
           showGotoControl: false,
           showReticle: false,
           showFrame: false,
+          showZoomControl: false,
+          showFov: false,
+          showProjectionControl: false,
+          showCooLocation: false,
+          showShareControl: false,
+          showSettingsControl: false,
+          showSimbadPointerControl: false,
+          showStatusBar: false,
+          showContextMenu: false,
+          log: false,
           backgroundColor: '#000000',
         });
         aladinInstanceRef.current = instance;
+        const innerContainer = aladinHostRef.current.firstElementChild as HTMLElement | null;
+        if (innerContainer) {
+          innerContainer.style.width = '100%';
+          innerContainer.style.height = '100%';
+        }
+        window.dispatchEvent(new Event('resize'));
+        window.setTimeout(() => {
+          if (!cancelled) {
+            window.dispatchEvent(new Event('resize'));
+          }
+        }, 120);
         setAladinReady(true);
         observatoryLogger.info('globe', 'Aladin Lite v3 initialized cleanly', {
           projection: 'SIN',
-          survey: surveyModeRef.current,
+          survey: 'allWISE',
         });
 
         const syncFromAladin = () => {
@@ -585,9 +647,21 @@ export const NightSkyGlobe: React.FC = () => {
     [projectWorldPoint],
   );
 
-  const computeHoverOutline = (clientX: number, clientY: number) => {
+  const clearCursorTooltipTimer = useCallback(() => {
+    if (cursorHoverTimerRef.current !== null) {
+      window.clearTimeout(cursorHoverTimerRef.current);
+      cursorHoverTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => clearCursorTooltipTimer(), [clearCursorTooltipTimer]);
+
+  const computeHoverOutline = (
+    clientX: number,
+    clientY: number,
+  ): { ra: number; dec: number } | null => {
     const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
     const x = clientX - rect.left;
     const y = clientY - rect.top;
 
@@ -611,7 +685,7 @@ export const NightSkyGlobe: React.FC = () => {
 
     if (!world) {
       setHoverPatchPolygon(null);
-      return;
+      return null;
     }
 
     const { raQ, decQ } = quantizeGridCenter(world.ra, world.dec, PANEL_GRID_STEP_DEG);
@@ -621,10 +695,23 @@ export const NightSkyGlobe: React.FC = () => {
     } else {
       setHoverPatchPolygon(null);
     }
+    return world;
+  };
+
+  const isInteractiveOverlayTarget = (target: EventTarget | null): boolean => {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    return Boolean(
+      el.closest(
+        '.aladin-logo, .aladin-attribution, .aladin-box, .hud-panel, .globe-controls-dock, .globe-telemetry-chip, button, input, select, a',
+      ),
+    );
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || isBlinkerModalOpen) return;
+    if (e.button !== 0 || isBlinkerModalOpen || isInteractiveOverlayTarget(e.target)) return;
+    clearCursorTooltipTimer();
+    setCursorTooltip(null);
     dragRef.current = {
       active: true,
       moved: false,
@@ -637,6 +724,14 @@ export const NightSkyGlobe: React.FC = () => {
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isBlinkerModalOpen) return;
+    clearCursorTooltipTimer();
+    setCursorTooltip(null);
+
+    if (isInteractiveOverlayTarget(e.target)) {
+      setHoverPatchPolygon(null);
+      return;
+    }
+
     const drag = dragRef.current;
 
     if (drag.active && (!aladinReady || aladinFailed)) {
@@ -658,14 +753,21 @@ export const NightSkyGlobe: React.FC = () => {
       }
     }
 
-    computeHoverOutline(e.clientX, e.clientY);
+    const hoveredWorld = computeHoverOutline(e.clientX, e.clientY);
+    if (hoveredWorld && !drag.active) {
+      const cx = e.clientX;
+      const cy = e.clientY;
+      cursorHoverTimerRef.current = window.setTimeout(() => {
+        setCursorTooltip({ x: cx, y: cy, ra: hoveredWorld.ra, dec: hoveredWorld.dec });
+      }, CURSOR_TOOLTIP_DELAY_MS);
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragRef.current.active) return;
     const wasMoved = dragRef.current.moved;
     dragRef.current.active = false;
-    if (wasMoved || isBlinkerModalOpen) return;
+    if (wasMoved || isBlinkerModalOpen || isInteractiveOverlayTarget(e.target)) return;
 
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -724,40 +826,38 @@ export const NightSkyGlobe: React.FC = () => {
     fovDeg: 70,
   };
 
+  interface GlobeKnownMarker {
+    id: string;
+    label: string;
+    px: number;
+    py: number;
+    shape: 'triangle' | 'diamond';
+    color: string;
+  }
+
   const [overlayGeometry, setOverlayGeometry] = useState<{
-    visiblePanels: Array<{ key: string; pointsStr: string; raQ: number; decQ: number }>;
     constellationLines: Array<{ key: string; x1: number; y1: number; x2: number; y2: number }>;
     constellationLabels: Array<{ abbr: string; name: string; px: number; py: number }>;
+    knownMarkers: GlobeKnownMarker[];
   }>({
-    visiblePanels: [],
     constellationLines: [],
     constellationLabels: [],
+    knownMarkers: [],
   });
 
   useEffect(() => {
     const raf = window.requestAnimationFrame(() => {
       if (isBlinkerModalOpen) {
         setOverlayGeometry({
-          visiblePanels: [],
           constellationLines: [],
           constellationLabels: [],
+          knownMarkers: [],
         });
         return;
       }
 
       const w = viewportSize.width;
       const h = viewportSize.height;
-      const nextPanels: Array<{ key: string; pointsStr: string; raQ: number; decQ: number }> = [];
-      if (liveFrustum.fovDeg <= PANEL_GRID_FOV_DEG) {
-        const cells = buildVisibleSkyPanels(liveFrustum.ra, liveFrustum.dec, liveFrustum.fovDeg);
-        for (const cell of cells) {
-          const pointsStr = projectPolygonPoints(cell.raQ, cell.decQ, w, h);
-          if (pointsStr) {
-            nextPanels.push({ key: cell.key, pointsStr, raQ: cell.raQ, decQ: cell.decQ });
-          }
-        }
-      }
-
       const nextLines: Array<{ key: string; x1: number; y1: number; x2: number; y2: number }> = [];
       const nextLabels: Array<{ abbr: string; name: string; px: number; py: number }> = [];
       if (showConstellations) {
@@ -804,10 +904,36 @@ export const NightSkyGlobe: React.FC = () => {
         }
       }
 
+      // Highlight checked Known Objects directly on top of WebGL Aladin & canvas fallback
+      const checkedSet = new Set(renderSettings.checkedObjectIds);
+      const nextKnownMarkers: GlobeKnownMarker[] = [];
+      if (checkedSet.size > 0) {
+        const seenIds = new Set<string>();
+        const combined = [...knownObjects, ...globalKnownObjects];
+        for (const obj of combined) {
+          if (!checkedSet.has(obj.object_id) || seenIds.has(obj.object_id)) continue;
+          seenIds.add(obj.object_id);
+          const pt = projectWorldPoint(obj.ra, obj.dec, w, h);
+          if (!pt || pt.px < 8 || pt.px > w - 8 || pt.py < 8 || pt.py > h - 8) continue;
+          const shapeKind = getMarkerShapeKind(obj, false);
+          nextKnownMarkers.push({
+            id: obj.object_id,
+            label: obj.label,
+            px: pt.px,
+            py: pt.py,
+            shape: shapeKind === 'diamond' ? 'diamond' : 'triangle',
+            color:
+              objectHighlighterColors[obj.object_id] ??
+              (obj.object_type === 'solar_system' ? '#fbbf24' : '#38bdf8'),
+          });
+          if (nextKnownMarkers.length >= 120) break;
+        }
+      }
+
       setOverlayGeometry({
-        visiblePanels: nextPanels,
         constellationLines: nextLines,
         constellationLabels: nextLabels,
+        knownMarkers: nextKnownMarkers,
       });
     });
 
@@ -815,18 +941,21 @@ export const NightSkyGlobe: React.FC = () => {
   }, [
     aladinFailed,
     aladinReady,
+    globalKnownObjects,
     isBlinkerModalOpen,
+    knownObjects,
     liveFrustum.dec,
     liveFrustum.fovDeg,
     liveFrustum.ra,
-    projectPolygonPoints,
+    objectHighlighterColors,
     projectWorldPoint,
+    projection,
+    renderSettings.checkedObjectIds,
     showConstellations,
     viewportSize.height,
     viewportSize.width,
   ]);
 
-  const visiblePanels = overlayGeometry.visiblePanels;
   const constellationOverlay = {
     lines: overlayGeometry.constellationLines,
     labels: overlayGeometry.constellationLabels,
@@ -849,11 +978,35 @@ export const NightSkyGlobe: React.FC = () => {
     });
   };
 
-  const handleToggleSurveyMode = () => {
-    const next: GlobeSurveyMode = surveyMode === 'lod' ? 'spherex' : 'lod';
-    setSurveyMode(next);
-    surveyModeRef.current = next;
-    updateLodForFov(viewStateRef.current.fovDeg, next);
+  const handleProjectionChange = (nextProj: GlobeProjection) => {
+    setProjection(nextProj);
+    aladinInstanceRef.current?.setProjection?.(nextProj);
+    observatoryLogger.info('globe', 'Projection changed', { projection: nextProj });
+  };
+
+  const commitTelemetryCoordinates = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const rawRa = coordEditing ? raDraft : liveFrustum.ra.toFixed(4);
+    const rawDec = coordEditing ? decDraft : liveFrustum.dec.toFixed(4);
+    const parsedRa = Number.parseFloat(rawRa);
+    const parsedDec = Number.parseFloat(rawDec);
+    if (
+      !Number.isFinite(parsedRa) ||
+      !Number.isFinite(parsedDec) ||
+      parsedDec < -90 ||
+      parsedDec > 90
+    ) {
+      setCoordEditing(false);
+      return;
+    }
+    const nextRa = wrapRaDeg(parsedRa);
+    const nextDec = Math.max(-89.9, Math.min(89.9, parsedDec));
+    setCoordEditing(false);
+    applyCameraState(nextRa, nextDec, viewStateRef.current.fovDeg, true);
+    observatoryLogger.info('globe', 'Navigated from inline telemetry coordinates', {
+      ra: nextRa,
+      dec: nextDec,
+    });
   };
 
   const isPanelGridVisible = liveFrustum.fovDeg <= PANEL_GRID_FOV_DEG;
@@ -869,6 +1022,8 @@ export const NightSkyGlobe: React.FC = () => {
         onPointerUp={handlePointerUp}
         onPointerLeave={() => {
           dragRef.current.active = false;
+          clearCursorTooltipTimer();
+          setCursorTooltip(null);
           setHoverPatchPolygon(null);
         }}
         onWheel={handleWheel}
@@ -889,7 +1044,7 @@ export const NightSkyGlobe: React.FC = () => {
           />
         )}
 
-        {/* Constellations + visible clickable sky panel grid + hover highlight outline */}
+        {/* Constellations + checked Known Objects + yellow panel hover highlight outline */}
         <svg className="globe-reticle-overlay" aria-hidden="true">
           {constellationOverlay.lines.map((line) => (
             <line
@@ -917,39 +1072,75 @@ export const NightSkyGlobe: React.FC = () => {
             </text>
           ))}
 
-          {visiblePanels.map((panel) => {
-            const isHovered =
-              hoverPatchPolygon &&
-              Math.abs(hoverPatchPolygon.raQ - panel.raQ) < 0.01 &&
-              Math.abs(hoverPatchPolygon.decQ - panel.decQ) < 0.01;
-            return (
-              <polygon
-                key={panel.key}
-                points={panel.pointsStr}
-                fill={isHovered ? 'rgba(245, 158, 11, 0.10)' : 'rgba(56, 189, 248, 0.025)'}
-                stroke={isHovered ? 'rgba(251, 191, 36, 0.90)' : 'rgba(56, 189, 248, 0.28)'}
-                strokeWidth={isHovered ? 1.3 : 0.8}
-              />
-            );
-          })}
+          {overlayGeometry.knownMarkers.map((m) => (
+            <g key={m.id} data-globe-marker={m.id}>
+              {m.shape === 'diamond' ? (
+                <polygon
+                  points={`${m.px},${m.py - 8} ${m.px + 8},${m.py} ${m.px},${m.py + 8} ${
+                    m.px - 8
+                  },${m.py}`}
+                  fill="none"
+                  stroke={m.color}
+                  strokeWidth={1.6}
+                />
+              ) : (
+                <polygon
+                  points={`${m.px},${m.py - 8} ${m.px + 8},${m.py + 7} ${m.px - 8},${m.py + 7}`}
+                  fill="none"
+                  stroke={m.color}
+                  strokeWidth={1.6}
+                />
+              )}
+              <text
+                x={m.px + 11}
+                y={m.py + 3}
+                fill={m.color}
+                fontSize={10}
+                fontWeight={600}
+                stroke="rgba(5, 8, 15, 0.9)"
+                strokeWidth={2.8}
+                paintOrder="stroke"
+                style={{ fontFamily: 'Inter, system-ui, sans-serif' }}
+              >
+                {m.label}
+              </text>
+            </g>
+          ))}
 
-          {!isPanelGridVisible && hoverPatchPolygon && (
+          {isPanelGridVisible && hoverPatchPolygon && (
             <polygon
+              data-testid="globe-hover-panel"
               points={hoverPatchPolygon.pointsStr}
-              fill="rgba(255, 255, 255, 0.03)"
-              stroke="rgba(248, 250, 252, 0.38)"
-              strokeWidth={1}
+              fill="rgba(245, 158, 11, 0.08)"
+              stroke="rgba(251, 191, 36, 0.92)"
+              strokeWidth={1.5}
             />
           )}
         </svg>
+
+        {cursorTooltip && !isBlinkerModalOpen && (
+          <div
+            className="globe-cursor-tooltip mono"
+            data-testid="globe-cursor-tooltip"
+            style={{
+              left: Math.min(viewportSize.width - 280, Math.max(12, cursorTooltip.x + 14)),
+              top: Math.min(viewportSize.height - 44, Math.max(12, cursorTooltip.y + 14)),
+            }}
+          >
+            {formatRaDecCompact(cursorTooltip.ra, cursorTooltip.dec)}
+          </div>
+        )}
       </div>
 
-      {/* Accessible Pan, Zoom & Constellation Controls */}
+      {/* Accessible Pan, Zoom, Projection & Constellation Controls */}
       <div
         className="globe-controls-dock"
         data-testid="globe-nav-controls"
         role="group"
         aria-label="Sky Globe Pan, Zoom and Overlay Controls"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="globe-pan-cross" aria-label="Pan Sky Coordinates">
           <span />
@@ -1050,35 +1241,108 @@ export const NightSkyGlobe: React.FC = () => {
           Constellations
         </button>
 
-        <button
-          type="button"
-          className={`globe-nav-btn ${surveyMode === 'spherex' ? 'is-active' : ''}`}
-          aria-pressed={surveyMode === 'spherex'}
-          aria-label="Switch Background Sky Survey Layer"
-          title="Switch between SPHEREx All-Sky HiPS and WISE / 2MASS LoD"
-          data-testid="globe-survey-toggle"
-          onClick={handleToggleSurveyMode}
+        <select
+          aria-label="Sky Globe Projection"
+          data-testid="globe-projection-select"
+          className="globe-nav-btn"
+          style={{ paddingRight: 6 }}
+          value={projection}
+          onChange={(e) => handleProjectionChange(e.target.value as GlobeProjection)}
         >
-          {surveyMode === 'spherex' ? 'SPHEREx Sky' : 'IR LoD Sky'}
-        </button>
+          {SUPPORTED_GLOBE_PROJECTIONS.map((opt) => (
+            <option key={opt.id} value={opt.id}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {/* Bottom-left compact live astrometry & progressive LoD status pill */}
-      <div className="globe-telemetry-chip">
-        <span className="mono">{formatRaDecCompact(liveFrustum.ra, liveFrustum.dec)}</span>
+      {/* Bottom-left compact live astrometry, inline coordinate input & active LoD status pill */}
+      <form
+        className="globe-telemetry-chip"
+        data-testid="globe-telemetry-chip"
+        onSubmit={commitTelemetryCoordinates}
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <label className="telemetry-coord-label">
+          <span>Right Ascension</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            className="telemetry-coord-input mono"
+            aria-label="Right Ascension in degrees"
+            data-testid="telemetry-ra-input"
+            value={coordEditing ? raDraft : liveFrustum.ra.toFixed(4)}
+            onFocus={() => {
+              setRaDraft(liveFrustum.ra.toFixed(4));
+              setDecDraft(liveFrustum.dec.toFixed(4));
+              setCoordEditing(true);
+            }}
+            onChange={(e) => {
+              if (!coordEditing) {
+                setDecDraft(liveFrustum.dec.toFixed(4));
+                setCoordEditing(true);
+              }
+              setRaDraft(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setCoordEditing(false);
+            }}
+          />
+          <span>°</span>
+        </label>
+
+        <label className="telemetry-coord-label">
+          <span>Declination</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            className="telemetry-coord-input mono"
+            aria-label="Declination in degrees"
+            data-testid="telemetry-dec-input"
+            value={
+              coordEditing
+                ? decDraft
+                : `${liveFrustum.dec >= 0 ? '+' : ''}${liveFrustum.dec.toFixed(4)}`
+            }
+            onFocus={() => {
+              setRaDraft(liveFrustum.ra.toFixed(4));
+              setDecDraft(liveFrustum.dec.toFixed(4));
+              setCoordEditing(true);
+            }}
+            onChange={(e) => {
+              if (!coordEditing) {
+                setRaDraft(liveFrustum.ra.toFixed(4));
+                setCoordEditing(true);
+              }
+              setDecDraft(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setCoordEditing(false);
+            }}
+          />
+          <span>°</span>
+        </label>
+
+        {coordEditing && (
+          <button
+            type="submit"
+            className="hud-btn-primary"
+            style={{ height: 22, padding: '0 8px', fontSize: 10 }}
+            data-testid="telemetry-coord-go"
+          >
+            Go
+          </button>
+        )}
+
         <span className="globe-telemetry-divider" />
         <span className="mono">FoV {liveFrustum.fovDeg.toFixed(1)}°</span>
         <span className="globe-telemetry-lod">
           <span className="globe-telemetry-divider" />
           <span>
-            Sky Map:{' '}
-            <strong>
-              {activeSurveyLabel === 'SPHEREx'
-                ? 'SPHEREx HiPS'
-                : activeSurveyLabel === '2MASS'
-                  ? '2MASS High-Res (IRSA)'
-                  : 'AllWISE Wide (IRSA)'}
-            </strong>
+            Sky Map: <strong>{activeSurveyLabel}</strong>
           </span>
         </span>
         {isPanelGridVisible && (
@@ -1089,17 +1353,7 @@ export const NightSkyGlobe: React.FC = () => {
             Click any panel to inspect
           </span>
         )}
-        <button
-          type="button"
-          className="hud-btn-secondary"
-          style={{ height: 24, padding: '0 8px', pointerEvents: 'auto', fontSize: 11 }}
-          onClick={() => triggerTargetOrLivePatch(liveFrustum.ra, liveFrustum.dec)}
-          data-testid="inspect-center-patch-btn"
-        >
-          <TargetReticleIcon size={12} />
-          <span>Inspect Panel</span>
-        </button>
-      </div>
+      </form>
     </section>
   );
 };

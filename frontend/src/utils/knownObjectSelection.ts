@@ -10,6 +10,7 @@ import type {
   CelestialObjectClass,
   GlobalKnownObjectEntry,
   KnownCelestialObject,
+  MissionName,
 } from '../types/contracts.ts';
 
 export interface WavelengthPreset {
@@ -140,6 +141,53 @@ export function toggleObjectId(checkedIds: readonly string[], objectId: string):
   return checkedIds.includes(objectId)
     ? checkedIds.filter((id) => id !== objectId)
     : [...checkedIds, objectId];
+}
+
+export interface MissionSourceCount {
+  mission: MissionName;
+  count: number;
+}
+
+export function extractAvailableMissions(
+  epochs: ReadonlyArray<{ mission: MissionName }>,
+): MissionSourceCount[] {
+  const counts = new Map<MissionName, number>();
+  for (const ep of epochs) {
+    counts.set(ep.mission, (counts.get(ep.mission) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([mission, count]) => ({ mission, count }));
+}
+
+export function resolveFilteredEpochIndices(
+  epochs: ReadonlyArray<{ mission: MissionName }>,
+  activeMissions: ReadonlyArray<MissionName>,
+): number[] {
+  if (!epochs || epochs.length === 0) return [];
+  const indices: number[] = [];
+  epochs.forEach((ep, idx) => {
+    if (activeMissions.includes(ep.mission)) {
+      indices.push(idx);
+    }
+  });
+  return indices.length > 0 ? indices : epochs.map((_, idx) => idx);
+}
+
+export function pickNearestAllowedEpoch(
+  currentIndex: number,
+  allowedIndices: readonly number[],
+): number {
+  if (allowedIndices.length === 0) return 0;
+  if (allowedIndices.includes(currentIndex)) return currentIndex;
+  let best = allowedIndices[0];
+  let bestDist = Math.abs(best - currentIndex);
+  for (const idx of allowedIndices) {
+    const dist = Math.abs(idx - currentIndex);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = idx;
+    }
+  }
+  return best;
 }
 
 /**

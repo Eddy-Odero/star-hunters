@@ -6,6 +6,104 @@ export const TWO_STAGE_CLICK_FOV_DEG = 15.0;
 export const PANEL_GRID_FOV_DEG = 2.5;
 export const PANEL_GRID_STEP_DEG = 0.05;
 
+export type GlobeProjection = 'SIN' | 'AIT' | 'MOL' | 'STG' | 'ZEA';
+
+export const SUPPORTED_GLOBE_PROJECTIONS: ReadonlyArray<{
+  id: GlobeProjection;
+  label: string;
+}> = [
+  { id: 'SIN', label: 'SIN (Orthographic)' },
+  { id: 'AIT', label: 'AIT (Aitoff)' },
+  { id: 'MOL', label: 'MOL (Mollweide)' },
+  { id: 'STG', label: 'STG (Stereographic)' },
+  { id: 'ZEA', label: 'ZEA (Equal-Area)' },
+];
+
+export type GlobeLodTier = 'allwise' | '2mass' | 'spherex_deep';
+
+export const IRSA_WISE_HIPS_URL =
+  'https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1';
+export const IRSA_2MASS_HIPS_URL = 'https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color';
+export const CDS_SPHEREX_COLOR_HIPS_URL = 'https://alasky.cds.unistra.fr/SPHEREx/color';
+export const CDS_MIRROR_SPHEREX_COLOR_HIPS_URL = 'https://alaskybis.cds.unistra.fr/SPHEREx/color';
+export const IRSA_SPHEREX_CUBE_HIPS_URL =
+  'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube';
+
+export function resolveGlobeLodTier(fovDeg: number): GlobeLodTier {
+  if (fovDeg > 12.0) return 'allwise';
+  if (fovDeg > 5.0) return '2mass';
+  return 'spherex_deep';
+}
+
+export interface DeepHiPSResolution {
+  url: string;
+  label: string;
+  source: 'cds_qr2' | 'cds_qr2_mirror' | 'irsa_spherex_cube' | 'irsa_2mass_fallback';
+}
+
+/**
+ * Probe SPHEREx HiPS endpoints along the canonical resilience hierarchy
+ * (CDS QR2 primary -> CDS QR2 mirror -> IRSA SPHEREx DR1 cube) and fall back
+ * gracefully to 2MASS High-Res so deep zoom never turns black during outages.
+ */
+export async function resolveBestDeepSkyHiPS(
+  probeFn?: (url: string) => Promise<boolean>,
+): Promise<DeepHiPSResolution> {
+  const defaultProbe = async (url: string): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), 3500);
+      const res = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(tid);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+  const check = probeFn ?? defaultProbe;
+
+  if (
+    (await check(`${CDS_SPHEREX_COLOR_HIPS_URL}/properties`)) &&
+    (await check(`${CDS_SPHEREX_COLOR_HIPS_URL}/Norder3/Allsky.png`))
+  ) {
+    return {
+      url: CDS_SPHEREX_COLOR_HIPS_URL,
+      label: 'SPHEREx QR2 Color (CDS)',
+      source: 'cds_qr2',
+    };
+  }
+
+  if (
+    (await check(`${CDS_MIRROR_SPHEREX_COLOR_HIPS_URL}/properties`)) &&
+    (await check(`${CDS_MIRROR_SPHEREX_COLOR_HIPS_URL}/Norder3/Allsky.png`))
+  ) {
+    return {
+      url: CDS_MIRROR_SPHEREX_COLOR_HIPS_URL,
+      label: 'SPHEREx QR2 Color (Mirror)',
+      source: 'cds_qr2_mirror',
+    };
+  }
+
+  // Note: IRSA spherex_allsky_cube serves Norder3+ PNGs without Allsky.png; verify a real
+  // Norder3 cube tile exists and is renderable, else keep 2MASS High-Res as clean visual base.
+  if (await check(`${IRSA_SPHEREX_CUBE_HIPS_URL}/Norder3/Dir0/Npix100/Npix100_1.png`)) {
+    // Only use cube directly if overview Allsky exists so Aladin HiPS never stays blank.
+    if (await check(`${IRSA_SPHEREX_CUBE_HIPS_URL}/Norder0/Allsky.png`)) {
+      return {
+        url: IRSA_SPHEREX_CUBE_HIPS_URL,
+        label: 'SPHEREx All-Sky (IRSA)',
+        source: 'irsa_spherex_cube',
+      };
+    }
+  }
+
+  return {
+    url: IRSA_2MASS_HIPS_URL,
+    label: '2MASS High-Res (IRSA)',
+    source: 'irsa_2mass_fallback',
+  };
+}
+
 export type GlobeClickStageAction = 'zoom_medium' | 'zoom_panels' | 'open_panel';
 
 /**

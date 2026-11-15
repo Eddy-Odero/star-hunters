@@ -135,6 +135,8 @@ export const NotificationOverlay: React.FC = () => {
           role="status"
           aria-live="polite"
           data-testid="async-toast-stack"
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
         >
           {asyncTasks.map((task) => {
             const isSuccess = task.status === 'success';
@@ -215,6 +217,8 @@ export const NotificationOverlay: React.FC = () => {
         aria-label="Open Guided Observatory Tour"
         title="Launch Guided Tour"
         data-testid="guided-tour-help-btn"
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
         onClick={() => startTour(0)}
       >
         <HelpQuestionIcon size={19} />

@@ -243,6 +243,8 @@ export const FloatingSearchZenithMenu: React.FC = () => {
         isFolded ? 'is-folded' : ''
       }`}
       style={{ left: x, top: y }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
     >
       <div className="hud-drag-handle" {...dragHandleProps} style={{ padding: '7px 10px' }}>
         <div className="hud-title-group" style={{ gap: 6 }}>
@@ -329,8 +331,8 @@ export const FloatingSearchZenithMenu: React.FC = () => {
               aria-selected={false}
               onMouseDown={(e) => {
                 e.preventDefault();
-                handleSelectSuggestion(item);
               }}
+              onClick={() => handleSelectSuggestion(item)}
               style={{
                 display: 'flex',
                 alignItems: 'center',

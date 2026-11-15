@@ -42,12 +42,11 @@ export const CompassZenithIcon: React.FC<IconProps> = ({ size = 16, className })
   </svg>
 );
 
-export const ChevronIcon: React.FC<IconProps & { direction?: 'down' | 'up' | 'right' }> = ({
-  size = 16,
-  direction = 'down',
-  className,
-}) => {
-  const rotation = direction === 'up' ? 180 : direction === 'right' ? -90 : 0;
+export const ChevronIcon: React.FC<
+  IconProps & { direction?: 'down' | 'up' | 'right' | 'left' }
+> = ({ size = 16, direction = 'down', className }) => {
+  const rotation =
+    direction === 'up' ? 180 : direction === 'right' ? -90 : direction === 'left' ? 90 : 0;
   return (
     <svg
       width={size}
