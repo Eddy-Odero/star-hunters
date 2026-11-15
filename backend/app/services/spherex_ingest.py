@@ -821,6 +821,37 @@ def _build_cutout(
     )
 
 
+WCS_WAVE_HEADER_KEYS = (
+    "WAVELEN",
+    "WAVELENGTH",
+    "WAVE",
+    "WAVEMEAN",
+    "LAMBDA",
+    "CRVAL3",
+    "CDELT3",
+    "CRPIX3",
+    "CTYPE3",
+    "CUNIT3",
+)
+
+
+def _wcs_wave_header(hdulist: fits.HDUList) -> dict[str, Any]:
+    """Copy spectral wavelength metadata from an optional WCS-WAVE extension."""
+    try:
+        hdu = _find_hdu(hdulist, "WCS-WAVE")
+    except SpherexProcessingError:
+        return {}
+
+    header: dict[str, Any] = {}
+    for key in WCS_WAVE_HEADER_KEYS:
+        try:
+            if key in hdu.header:
+                header[key] = hdu.header[key]
+        except Exception:
+            continue
+    return header
+
+
 def process_spherex_fits(
     source: FITS_SOURCE,
     bandpass: str | None = None,
@@ -863,6 +894,7 @@ def process_spherex_fits(
         mjd_obs = _extract_mjd_obs(hdulist)
         resolved_bandpass = _extract_bandpass(hdulist, bandpass)
         header = dict(getattr(image_hdu, "header", {}))
+        header.update(_wcs_wave_header(hdulist))
 
     return _build_cutout(
         image=image,
@@ -972,16 +1004,33 @@ def build_synthetic_spherex_hdul(
         seed=seed,
     )
 
+    height, width = shape
+    pixel_scale = fov_arcmin / 60.0 / max(height, width)
+    wcs_header = {
+        "CTYPE1": "RA---TAN",
+        "CTYPE2": "DEC--TAN",
+        "CUNIT1": "deg",
+        "CUNIT2": "deg",
+        "CRVAL1": float(ra),
+        "CRVAL2": float(dec),
+        "CRPIX1": (width + 1) / 2.0,
+        "CRPIX2": (height + 1) / 2.0,
+        "CDELT1": -pixel_scale,
+        "CDELT2": pixel_scale,
+    }
+
     primary = fits.PrimaryHDU()
     primary.header["MJD-OBS"] = float(mjd_obs)
     primary.header["BANDPASS"] = str(bandpass)
     primary.header["RA"] = float(ra)
     primary.header["DEC"] = float(dec)
+    primary.header.update(wcs_header)
 
     image_hdu = fits.ImageHDU(image, name="IMAGE")
     image_hdu.header["MJD-OBS"] = float(mjd_obs)
     image_hdu.header["BANDPASS"] = str(bandpass)
     image_hdu.header["BUNIT"] = "MJy/sr"
+    image_hdu.header.update(wcs_header)
 
     flags_hdu = fits.ImageHDU(flags.astype(np.int32), name="FLAGS")
 

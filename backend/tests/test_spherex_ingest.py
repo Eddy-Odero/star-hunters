@@ -193,6 +193,23 @@ class TestFitsProcessing(unittest.TestCase):
         self.assertTrue(np.isfinite(cutout.clean_image).all())
         self.assertGreater(len(np.unique(cutout.flags_mask)), 1)
 
+    def test_wcs_wave_extension_supplies_wavelength_metadata(self) -> None:
+        hdul = build_test_hdul()
+        wave_hdu = fits.ImageHDU(
+            np.linspace(0.75, 1.10, 8, dtype=np.float32),
+            name="WCS-WAVE",
+        )
+        wave_hdu.header["CRVAL3"] = 1.23
+        wave_hdu.header["CTYPE3"] = "WAVE"
+        hdul.append(wave_hdu)
+        try:
+            cutout = ingest.process_spherex_fits(hdul)
+        finally:
+            hdul.close()
+
+        self.assertAlmostEqual(cutout.header["CRVAL3"], 1.23)
+        self.assertEqual(cutout.header["CTYPE3"], "WAVE")
+
     def test_bandpass_and_mjd_header_fallbacks(self) -> None:
         hdul = build_test_hdul(mjd_obs=60200.25)
         hdul[0].header.remove("MJD-OBS")
