@@ -41,10 +41,12 @@ const StarHuntersWorkspace: React.FC = () => {
 
     // A shared link restores the preset and/or exact coordinates, comparison
     // mode, and wavelength filter before the default tour target loads.
+    // Preset links carry both ?target and ?ra/dec (written by the sync effect),
+    // so the preset owns the load; explicit coordinates are the fallback for
+    // live sky views that have no preset.
     if (initialUrlState.target) {
       selectPreset(initialUrlState.target);
-    }
-    if (initialUrlState.ra !== null && initialUrlState.dec !== null) {
+    } else if (initialUrlState.ra !== null && initialUrlState.dec !== null) {
       navigateToCoordinates(initialUrlState.ra, initialUrlState.dec, initialUrlState.fov);
     }
     if (
