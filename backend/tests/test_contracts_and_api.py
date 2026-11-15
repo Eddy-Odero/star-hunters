@@ -159,14 +159,34 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertGreater(nonzero, 0)
 
     def test_sqlite_spatial_cache_hit_and_lru_pruning(self) -> None:
+        import time
+        import warnings
+        from contextlib import closing
+
+        # Verify WAL mode is active on SQLite connections
+        with closing(self.cache._connect()) as conn:
+            journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+            fk_enabled = conn.execute("PRAGMA foreign_keys;").fetchone()[0]
+            self.assertEqual(str(journal_mode).lower(), "wal")
+            self.assertEqual(int(fk_enabled), 1)
+
         # First call: cache miss (cached=False)
         m1 = self.service.get_sky_patch(133.7951, -7.2451, 5.0)
         self.assertFalse(m1["query"]["cached"])
 
-        # Second call within 0.02 deg: cache hit (cached=True)
-        m2 = self.service.get_sky_patch(133.8010, -7.2490, 5.0)
+        # Second call within 0.02 deg: cache hit (cached=True) and SQLite lookup in <20 ms
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            t0 = time.perf_counter()
+            direct_cached = self.cache.get_manifest(m1["query"]["grid_key"])
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            m2 = self.service.get_sky_patch(133.8010, -7.2490, 5.0)
+        self.assertIsNotNone(direct_cached)
+        self.assertTrue(direct_cached["query"]["cached"])
         self.assertTrue(m2["query"]["cached"])
         self.assertEqual(m1["query"]["grid_key"], m2["query"]["grid_key"])
+        self.assertLess(elapsed_ms, 20.0)
+        self.assertEqual([w for w in caught if issubclass(w.category, ResourceWarning)], [])
 
         # Frame streaming in float32 and float16 with immutable Cache-Control
         grid_key = m1["query"]["grid_key"]
@@ -184,19 +204,29 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertEqual(headers16["X-Binary-Dtype"], "float16")
 
     def test_sqlite_lru_eviction_under_small_cap(self) -> None:
+        from contextlib import closing
+
         # Measure compressed size of one patch, then cap cache at 1.4x one patch
         tiny_db = str(Path(self.temp_dir.name) / "tiny.db")
         tiny_cache = SpatialSqliteCache(db_path=tiny_db, max_cache_bytes=10_000_000)
         svc = StarHuntersBackendService(cache=tiny_cache)
 
         m_a = svc.get_sky_patch(10.0, 10.0, 5.0)
-        one_patch_bytes = tiny_cache.get_patch_byte_size(m_a["query"]["grid_key"])
+        grid_a = m_a["query"]["grid_key"]
+        one_patch_bytes = tiny_cache.get_patch_byte_size(grid_a)
         self.assertGreater(one_patch_bytes, 0)
         tiny_cache.max_cache_bytes = int(one_patch_bytes * 1.4)
 
         m_b = svc.get_sky_patch(50.0, 20.0, 5.0)
-        # First patch should have been evicted by LRU pruning
-        self.assertIsNone(tiny_cache.get_manifest(m_a["query"]["grid_key"]))
+        # First patch should have been evicted by LRU pruning and cascade-deleted from binary_frames
+        self.assertIsNone(tiny_cache.get_manifest(grid_a))
+        self.assertIsNone(tiny_cache.get_frame(grid_a, "pass_1.bin"))
+        with closing(tiny_cache._connect()) as conn:
+            remaining_frames = conn.execute(
+                "SELECT COUNT(*) FROM binary_frames WHERE grid_key = ?",
+                (grid_a,),
+            ).fetchone()[0]
+        self.assertEqual(int(remaining_frames), 0)
         self.assertIsNotNone(tiny_cache.get_manifest(m_b["query"]["grid_key"]))
 
     def test_forced_spectrum_extracts_102_wavelength_planes(self) -> None:
