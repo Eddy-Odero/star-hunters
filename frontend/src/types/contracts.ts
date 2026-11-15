@@ -701,7 +701,7 @@ export function detectAndTrackBodiesAtClick(params: {
     manifest,
     wavelengthRangeUm,
     localRadiusPx = 6,
-    crossEpochSearchRadiusPx = 14,
+    crossEpochSearchRadiusPx = 18,
     minSnrThreshold = 3.0,
     colorIndexOffset = 0,
   } = params;
@@ -802,19 +802,28 @@ export function detectAndTrackBodiesAtClick(params: {
     let sumFlux = 0;
     let sumX = 0;
     let sumY = 0;
+    let aperturePixelCount = 0;
     for (let py = Math.max(0, peakY - 2); py <= Math.min(GRID_HEIGHT - 1, peakY + 2); py += 1) {
       for (let px = Math.max(0, peakX - 2); px <= Math.min(GRID_WIDTH - 1, peakX + 2); px += 1) {
         const net = Math.max(0, comp[py * GRID_WIDTH + px] - bgMean);
         sumFlux += net;
         sumX += px * net;
         sumY += py * net;
+        aperturePixelCount += 1;
       }
     }
 
     const centroidX = sumFlux > 1e-5 ? sumX / sumFlux : peakX;
     const centroidY = sumFlux > 1e-5 ? sumY / sumFlux : peakY;
     const netFlux = Math.max(0, peakVal - bgMean);
-    const snr = Math.max(0, netFlux / bgStd);
+
+    // Aperture significance: a single-pixel noise spike must not clear the SNR gate.
+    // Subtract the rectification bias of max(0, noise) over the 5x5 aperture, then
+    // divide by the noise integrated over the aperture (bgStd * sqrt(N_pix)).
+    const rectifiedNoiseBias = 0.3989422804014327 * bgStd * aperturePixelCount;
+    const apertureSignal = Math.max(0, sumFlux - rectifiedNoiseBias);
+    const apertureNoise = bgStd * Math.sqrt(Math.max(1, aperturePixelCount));
+    const snr = Math.max(0, apertureSignal / apertureNoise);
     return {
       x: Number(centroidX.toFixed(2)),
       y: Number(centroidY.toFixed(2)),
@@ -1082,6 +1091,7 @@ export function detectAndTrackBodiesAtClick(params: {
     ): boolean => {
       const mjdTarget = manifest.epochs[epIdx].mjd;
       const mjdOrigin = manifest.epochs[clampedOrigin].mjd;
+      const predictions: Array<{ x: number; y: number }> = [];
       for (const existing of branchSeeds) {
         if (existing.kind !== 'moving') continue;
         if (existing.seedEpochIdx === epIdx) {
@@ -1105,6 +1115,31 @@ export function detectAndTrackBodiesAtClick(params: {
             existing.originPeak.y +
             ((existing.seedDetection.y - existing.originPeak.y) / dtSeed) * dtTarget;
           if (Math.hypot(predX - candPeak.x, predY - candPeak.y) < 4.5) {
+            return true;
+          }
+          predictions.push({ x: predX, y: predY });
+        }
+      }
+
+      // A single widened detection can be the blended centroid of two already-known
+      // branches (e.g. two overlapping movers that separate in the clicked epoch but
+      // merge again in this one). If the candidate sits on the segment between two
+      // predicted branch positions, treat it as the same bodies rather than a new one.
+      for (let i = 0; i < predictions.length; i += 1) {
+        for (let j = i + 1; j < predictions.length; j += 1) {
+          const a = predictions[i];
+          const b = predictions[j];
+          const segX = b.x - a.x;
+          const segY = b.y - a.y;
+          const segLenSq = segX * segX + segY * segY;
+          if (segLenSq < 20.0) continue;
+          const t = Math.max(
+            0,
+            Math.min(1, ((candPeak.x - a.x) * segX + (candPeak.y - a.y) * segY) / segLenSq),
+          );
+          const closestX = a.x + t * segX;
+          const closestY = a.y + t * segY;
+          if (Math.hypot(candPeak.x - closestX, candPeak.y - closestY) <= 2.2) {
             return true;
           }
         }
@@ -1567,6 +1602,63 @@ export function detectAndTrackBodiesAtClick(params: {
     isOverlapped,
     tracks,
   };
+}
+
+/**
+ * Merge a fresh click-tracking result into the accumulated multi-spot target list
+ * (`trackedTargets`). Every retained/new target keeps a distinct color from
+ * `TRACKING_SQUARE_COLORS`; re-clicking the same group or catalog object replaces
+ * its previous branches instead of duplicating them.
+ */
+export function mergeTrackedTargets(
+  existing: TracedObjectSummary[],
+  incoming: TracedObjectSummary[],
+  options: {
+    checkedObjectIds?: Iterable<string>;
+    objectHighlighterColors?: Record<string, string>;
+    rng?: () => number;
+  } = {},
+): TracedObjectSummary[] {
+  if (incoming.length === 0) return existing;
+
+  const { checkedObjectIds = [], objectHighlighterColors = {}, rng = Math.random } = options;
+
+  const incomingGroupId = incoming[0].groupId;
+  const incomingMatchedIds = new Set(
+    incoming.map((t) => t.matchedObjectId).filter((id): id is string => Boolean(id)),
+  );
+  const retained = existing.filter(
+    (t) =>
+      t.groupId !== incomingGroupId &&
+      (!t.matchedObjectId || !incomingMatchedIds.has(t.matchedObjectId)),
+  );
+
+  // Colors already taken by retained tracking squares.
+  const usedTargetColors = new Set(retained.map((t) => t.color));
+  // Colors reserved by checked known objects (avoid random collisions in the viewport).
+  const reservedObjectColors = new Set<string>();
+  for (const id of checkedObjectIds) {
+    const color = objectHighlighterColors[id];
+    if (color) reservedObjectColors.add(color);
+  }
+
+  const colored = incoming.map((track) => {
+    const preferred = track.matchedObjectId
+      ? objectHighlighterColors[track.matchedObjectId]
+      : undefined;
+    const color =
+      preferred && !usedTargetColors.has(preferred)
+        ? preferred
+        : pickDistinctHighlighterColors(
+            1,
+            new Set([...usedTargetColors, ...reservedObjectColors]),
+            rng,
+          )[0];
+    usedTargetColors.add(color);
+    return { ...track, color };
+  });
+
+  return [...retained, ...colored];
 }
 
 /**

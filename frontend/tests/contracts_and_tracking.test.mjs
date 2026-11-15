@@ -20,6 +20,7 @@ import {
   detectAndTrackBodiesAtClick,
   detectAndTrackBrightBodyAcrossEpochs,
   getDefaultCheckedObjectIds,
+  mergeTrackedTargets,
   pickDistinctHighlighterColors,
   screenToImageCoordinates,
 } from '../src/types/contracts.ts';
@@ -59,6 +60,40 @@ const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
 function readArrayBuffer(filePath) {
   const buf = fs.readFileSync(filePath);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+function makeSeededNoiseEpochPlanes(sources = [], bgLevel = 0.02, noiseSigma = 0.02, seed = 12345) {
+  const planes = [];
+  let state = seed >>> 0;
+  const nextRandom = () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+  for (let d = 0; d < 6; d += 1) {
+    const plane = new Float32Array(256 * 256);
+    for (let i = 0; i < plane.length; i += 1) {
+      const u1 = Math.max(1e-9, nextRandom());
+      const u2 = nextRandom();
+      const gaussian = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      plane[i] = bgLevel + noiseSigma * gaussian;
+    }
+    for (const src of sources) {
+      const { x: cx, y: cy, peak = 8.0, sigma = 1.6 } = src;
+      const twoSigmaSq = 2.0 * sigma * sigma;
+      const yMin = Math.max(0, Math.floor(cy - 6));
+      const yMax = Math.min(255, Math.ceil(cy + 6));
+      const xMin = Math.max(0, Math.floor(cx - 6));
+      const xMax = Math.min(255, Math.ceil(cx + 6));
+      for (let py = yMin; py <= yMax; py += 1) {
+        for (let px = xMin; px <= xMax; px += 1) {
+          const r2 = (px - cx) * (px - cx) + (py - cy) * (py - cy);
+          plane[py * 256 + px] += peak * Math.exp(-r2 / twoSigmaSq);
+        }
+      }
+    }
+    planes.push(plane);
+  }
+  return planes;
 }
 
 function makeGaussianEpochPlanes(sources, bgLevel = 0.02) {
@@ -665,6 +700,29 @@ test('Edge cases: clicking empty sky returns no_body_found, and fading or exitin
   assert.equal(emptyRes.status, 'no_body_found');
   assert.equal(emptyRes.tracks.length, 0);
 
+  // Pure random sky noise must also be rejected rather than snapping to a noise spike.
+  const noisyEmptyBuffers = [
+    makeSeededNoiseEpochPlanes([], 0.02, 0.02, 12345),
+    makeSeededNoiseEpochPlanes([], 0.02, 0.02, 67890),
+  ];
+  for (const [clickX, clickY] of [
+    [25, 25],
+    [50, 50],
+    [120, 180],
+    [200, 200],
+  ]) {
+    const noisyRes = detectAndTrackBodiesAtClick({
+      clickX,
+      clickY,
+      originEpochIndex: 0,
+      epochBuffers: noisyEmptyBuffers,
+      manifest: baseManifest,
+      wavelengthRangeUm: [0.75, 5.0],
+    });
+    assert.equal(noisyRes.status, 'no_body_found');
+    assert.equal(noisyRes.tracks.length, 0);
+  }
+
   const emptySingle = detectAndTrackBrightBodyAcrossEpochs({
     clickX: 25,
     clickY: 25,
@@ -699,6 +757,27 @@ test('Edge cases: clicking empty sky returns no_body_found, and fading or exitin
   assert.equal(fadingTrack.waypoints[2].visible, false);
   assert.deepEqual(fadingTrack.lostEpochIds, ['pass_3']);
 
+  // Edge Case B2: A body that dims below the tracking flux threshold but is still
+  // present above the background is reported as 'low_snr'.
+  const dimmingBuffers = [
+    makeGaussianEpochPlanes([{ x: 70, y: 70, peak: 9.0 }]),
+    makeGaussianEpochPlanes([{ x: 76, y: 73, peak: 9.0 }]),
+    makeGaussianEpochPlanes([{ x: 82, y: 76, peak: 0.1 }]),
+  ];
+  const dimmingRes = detectAndTrackBodiesAtClick({
+    clickX: 70,
+    clickY: 70,
+    originEpochIndex: 0,
+    epochBuffers: dimmingBuffers,
+    manifest: manifest3,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.equal(dimmingRes.status, 'partially_lost');
+  assert.equal(dimmingRes.tracks[0].waypoints[2].status, 'low_snr');
+  assert.equal(dimmingRes.tracks[0].waypoints[2].visible, false);
+  assert.deepEqual(dimmingRes.tracks[0].lostEpochIds, ['pass_3']);
+  assert.equal(dimmingRes.tracks[0].status, 'partially_lost');
+
   // Edge Case C: Fast mover near border exits 256x256 FOV in Pass 3 -> out_of_bounds
   const borderBuffers = [
     makeGaussianEpochPlanes([{ x: 244, y: 120, peak: 9.0 }]),
@@ -716,6 +795,267 @@ test('Edge cases: clicking empty sky returns no_body_found, and fading or exitin
   assert.equal(borderRes.status, 'partially_lost');
   assert.equal(borderRes.tracks[0].waypoints[2].status, 'out_of_bounds');
   assert.equal(borderRes.tracks[0].waypoints[2].visible, false);
+});
+
+test('ISS-18: clicking multiple spots accumulates every target with a distinct tracking-square color', () => {
+  const baseManifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const manifest2 = {
+    ...baseManifest,
+    catalog_overlays: { ...baseManifest.catalog_overlays, known_objects: [] },
+    epochs: baseManifest.epochs.slice(0, 2),
+  };
+  // Two independent bodies that move between the two passes.
+  const twoBodyBuffers = [
+    makeGaussianEpochPlanes([
+      { x: 60, y: 60 },
+      { x: 160, y: 160 },
+    ]),
+    makeGaussianEpochPlanes([
+      { x: 64, y: 62 },
+      { x: 164, y: 162 },
+    ]),
+  ];
+
+  const clickResults = [];
+  let trackedTargets = [];
+  for (const [clickX, clickY] of [
+    [60, 60],
+    [160, 160],
+  ]) {
+    const res = detectAndTrackBodiesAtClick({
+      clickX,
+      clickY,
+      originEpochIndex: 0,
+      epochBuffers: twoBodyBuffers,
+      manifest: manifest2,
+      wavelengthRangeUm: [0.75, 5.0],
+      colorIndexOffset: trackedTargets.length,
+    });
+    assert.equal(res.status, 'tracked');
+    assert.equal(res.tracks.length, 1);
+    clickResults.push(res);
+    // This is the exact accumulation helper used by SkyExplorerContext.
+    trackedTargets = mergeTrackedTargets(trackedTargets, res.tracks);
+  }
+
+  assert.equal(trackedTargets.length, 2);
+  assert.equal(new Set(trackedTargets.map((t) => t.color)).size, 2);
+  for (const target of trackedTargets) {
+    assert.ok(TRACKING_SQUARE_COLORS.includes(target.color));
+  }
+
+  // Re-clicking an existing spot replaces that target instead of duplicating it.
+  trackedTargets = mergeTrackedTargets(trackedTargets, clickResults[0].tracks);
+  assert.equal(trackedTargets.length, 2);
+  assert.equal(new Set(trackedTargets.map((t) => t.color)).size, 2);
+
+  // A matched known object whose preferred highlighter color collides with an
+  // already-tracked target must be reassigned a distinct palette color.
+  const existingColor = trackedTargets[0].color;
+  const matchedTrack = {
+    ...clickResults[1].tracks[0],
+    trackId: 'matched-known-object',
+    groupId: 'matched-known-object-group',
+    matchedObjectId: 'known-1',
+  };
+  const withKnownObject = mergeTrackedTargets(trackedTargets, [matchedTrack], {
+    objectHighlighterColors: { 'known-1': existingColor },
+  });
+  assert.equal(withKnownObject.length, 3);
+  assert.equal(new Set(withKnownObject.map((t) => t.color)).size, 3);
+  assert.ok(withKnownObject.every((t) => TRACKING_SQUARE_COLORS.includes(t.color)));
+
+  // A checked object's own preferred color is still allowed for its matched track.
+  const ownKnownColor = mergeTrackedTargets([], [matchedTrack], {
+    checkedObjectIds: ['known-1'],
+    objectHighlighterColors: { 'known-1': TRACKING_SQUARE_COLORS[5] },
+  });
+  assert.equal(ownKnownColor[0].color, TRACKING_SQUARE_COLORS[5]);
+
+  // Unmatched targets never steal a color reserved by a checked known object.
+  const reservedAware = mergeTrackedTargets(
+    [],
+    [{ ...clickResults[0].tracks[0], matchedObjectId: null }],
+    {
+      checkedObjectIds: ['known-2'],
+      objectHighlighterColors: { 'known-2': TRACKING_SQUARE_COLORS[0] },
+      rng: () => 0,
+    },
+  );
+  assert.notEqual(reservedAware[0].color, TRACKING_SQUARE_COLORS[0]);
+
+  // Palette offsets wrap back to the first color instead of running off the end.
+  const wrapped = detectAndTrackBodiesAtClick({
+    clickX: 60,
+    clickY: 60,
+    originEpochIndex: 0,
+    epochBuffers: twoBodyBuffers,
+    manifest: manifest2,
+    wavelengthRangeUm: [0.75, 5.0],
+    colorIndexOffset: TRACKING_SQUARE_COLORS.length,
+  });
+  assert.equal(wrapped.tracks[0].color, TRACKING_SQUARE_COLORS[0]);
+});
+
+test('ISS-18: 3+ overlapped bodies separate into one colored branch per body while tracking backward and forward', () => {
+  const baseManifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const manifest3 = {
+    ...baseManifest,
+    catalog_overlays: { ...baseManifest.catalog_overlays, known_objects: [] },
+    epochs: [
+      { ...baseManifest.epochs[0], epoch_id: 'pass_1', mjd: 60600.0 },
+      { ...baseManifest.epochs[1], epoch_id: 'pass_2', mjd: 60800.0 },
+      { ...baseManifest.epochs[1], epoch_id: 'pass_3', mjd: 61000.0 },
+    ],
+  };
+
+  // Three bodies blended at (100, 100) on Pass 2. Each moves linearly through the
+  // clicked position:  A (88,92) -> (100,100) -> (112,108)
+  //                      B (112,92) -> (100,100) -> (88,108)
+  //                      C (100,88) -> (100,100) -> (100,112)
+  const threeBodyBuffers = [
+    makeGaussianEpochPlanes([
+      { x: 88, y: 92 },
+      { x: 112, y: 92 },
+      { x: 100, y: 88 },
+    ]),
+    makeGaussianEpochPlanes([{ x: 100, y: 100, peak: 20.0 }]),
+    makeGaussianEpochPlanes([
+      { x: 112, y: 108 },
+      { x: 88, y: 108 },
+      { x: 100, y: 112 },
+    ]),
+  ];
+
+  const res = detectAndTrackBodiesAtClick({
+    clickX: 100,
+    clickY: 100,
+    originEpochIndex: 1,
+    epochBuffers: threeBodyBuffers,
+    manifest: manifest3,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+
+  assert.equal(res.status, 'tracked');
+  assert.equal(res.isOverlapped, true);
+  assert.equal(res.tracks.length, 3);
+  assert.equal(new Set(res.tracks.map((t) => t.color)).size, 3);
+  for (const track of res.tracks) {
+    assert.equal(track.isOverlappedAtOrigin, true);
+    assert.equal(track.waypoints.length, 3);
+    assert.ok(track.waypoints.every((wp) => wp.status === 'tracked' && wp.visible));
+  }
+
+  const expectedLines = [
+    [
+      [88, 92],
+      [100, 100],
+      [112, 108],
+    ],
+    [
+      [112, 92],
+      [100, 100],
+      [88, 108],
+    ],
+    [
+      [100, 88],
+      [100, 100],
+      [100, 112],
+    ],
+  ];
+  for (const line of expectedLines) {
+    const track = res.tracks.find(
+      (t) => Math.hypot(t.waypoints[0].x - line[0][0], t.waypoints[0].y - line[0][1]) < 0.8,
+    );
+    assert.ok(track, `missing branch starting at (${line[0][0]}, ${line[0][1]})`);
+    for (let epIdx = 0; epIdx < line.length; epIdx += 1) {
+      assert.ok(
+        Math.hypot(
+          track.waypoints[epIdx].x - line[epIdx][0],
+          track.waypoints[epIdx].y - line[epIdx][1],
+        ) < 0.8,
+        `branch from (${line[0][0]}, ${line[0][1]}) waypoint ${epIdx} drifted`,
+      );
+    }
+  }
+});
+
+test('ISS-18: two overlapped bodies that merge again in another epoch do not create a phantom third track', () => {
+  const baseManifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const manifest3 = {
+    ...baseManifest,
+    catalog_overlays: { ...baseManifest.catalog_overlays, known_objects: [] },
+    epochs: [
+      { ...baseManifest.epochs[0], epoch_id: 'pass_1', mjd: 60600.0 },
+      { ...baseManifest.epochs[1], epoch_id: 'pass_2', mjd: 60800.0 },
+      { ...baseManifest.epochs[1], epoch_id: 'pass_3', mjd: 61000.0 },
+    ],
+  };
+
+  // Two bodies are separated on Pass 1, blended on Pass 2, and blended again on Pass 3.
+  const mergeBuffers = [
+    makeGaussianEpochPlanes([
+      { x: 90, y: 94 },
+      { x: 90, y: 106 },
+    ]),
+    makeGaussianEpochPlanes([{ x: 100, y: 100, peak: 14.0 }]),
+    makeGaussianEpochPlanes([{ x: 110, y: 100, peak: 14.0 }]),
+  ];
+
+  const res = detectAndTrackBodiesAtClick({
+    clickX: 100,
+    clickY: 100,
+    originEpochIndex: 1,
+    epochBuffers: mergeBuffers,
+    manifest: manifest3,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+
+  assert.equal(res.isOverlapped, true);
+  assert.equal(res.tracks.length, 2);
+  assert.equal(new Set(res.tracks.map((t) => t.color)).size, 2);
+  assert.equal(res.status, 'partially_lost');
+  for (const track of res.tracks) {
+    assert.equal(track.waypoints[0].status, 'tracked');
+    assert.equal(track.waypoints[1].status, 'tracked');
+    assert.ok(['lost', 'low_snr', 'out_of_bounds'].includes(track.waypoints[2].status));
+    assert.equal(track.waypoints[2].visible, false);
+    assert.deepEqual(track.lostEpochIds, ['pass_3']);
+    assert.equal(track.status, 'partially_lost');
+  }
+});
+
+test('ISS-18: out-of-bounds clicks return no_body_found without adding a bogus track', () => {
+  const baseManifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const buffers = makeGaussianEpochPlanes([{ x: 100, y: 100 }]);
+
+  for (const [clickX, clickY] of [
+    [-1, 50],
+    [50, -0.5],
+    [256, 50],
+    [50, 256],
+    [Number.NaN, 50],
+  ]) {
+    const res = detectAndTrackBodiesAtClick({
+      clickX,
+      clickY,
+      originEpochIndex: 0,
+      epochBuffers: [buffers],
+      manifest: baseManifest,
+      wavelengthRangeUm: [0.75, 5.0],
+    });
+    assert.equal(res.status, 'no_body_found');
+    assert.equal(res.tracks.length, 0);
+    assert.ok(res.message.length > 0);
+  }
 });
 
 test('Interactive viewport panning and zooming clamps bounds and inverse-maps clicks to 256x256 image coordinates', () => {
