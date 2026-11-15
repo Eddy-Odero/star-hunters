@@ -1,28 +1,19 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
-import { computeViewportViewBox, screenToImageCoordinates } from './types/contracts';
 import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
 import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
 import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 import { SourceInspectorCard } from './components/SourceInspectorCard';
 import { SpectrumDrawer } from './components/SpectrumDrawer';
-import {
-  inferObjectClass,
-  isMovingSolarSystemObject,
-  renderEpochBuffersToRgba,
-} from './utils/knownObjectSelection';
+import { SkyPatchViewport } from './components/SkyPatchViewport';
 
 const StarHuntersWorkspace: React.FC = () => {
   const {
     activePresetSlug,
     manifest,
-    epochBuffers,
-    flagsBuffers,
     loadingState,
     renderSettings,
-    knownObjects,
-    objectHighlighterColors,
     trackedTargets,
     lastClickDiagnostic,
     clearTrackedTargets,
@@ -30,8 +21,6 @@ const StarHuntersWorkspace: React.FC = () => {
     inspectPixelOrCoord,
   } = useSkyExplorer();
 
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [showLabels, setShowLabels] = useState<boolean>(true);
 
   useEffect(() => {
@@ -39,57 +28,6 @@ const StarHuntersWorkspace: React.FC = () => {
       selectPreset(activePresetSlug);
     }
   }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const rgba = renderEpochBuffersToRgba({
-      epochBuffers,
-      flagsBuffers,
-      activeEpochIndex: renderSettings.activeEpochIndex,
-      comparisonMode: renderSettings.mode,
-      contrastStretch: renderSettings.contrastStretch,
-      wavelengthRangeUm: renderSettings.wavelengthRangeUm,
-    });
-    const imageData = new ImageData(new Uint8ClampedArray(rgba), 256, 256);
-    ctx.putImageData(imageData, 0, 0);
-  }, [
-    epochBuffers,
-    flagsBuffers,
-    renderSettings.activeEpochIndex,
-    renderSettings.mode,
-    renderSettings.contrastStretch,
-    renderSettings.wavelengthRangeUm,
-  ]);
-
-  const viewBox = useMemo(
-    () => computeViewportViewBox(renderSettings.zoom, renderSettings.panX, renderSettings.panY),
-    [renderSettings.zoom, renderSettings.panX, renderSettings.panY],
-  );
-
-  const handleViewportClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const mapped = screenToImageCoordinates(
-      e.clientX,
-      e.clientY,
-      rect,
-      renderSettings.zoom,
-      renderSettings.panX,
-      renderSettings.panY,
-    );
-    if (mapped.inBounds) {
-      inspectPixelOrCoord(mapped.x, mapped.y, renderSettings.activeEpochIndex);
-    }
-  };
-
-  const checkedKnownObjects = useMemo(
-    () => knownObjects.filter((obj) => renderSettings.checkedObjectIds.includes(obj.object_id)),
-    [knownObjects, renderSettings.checkedObjectIds],
-  );
 
   return (
     <div className="app-shell">
@@ -162,154 +100,7 @@ const StarHuntersWorkspace: React.FC = () => {
             )}
           </div>
 
-          <div
-            ref={viewportRef}
-            className="sky-viewport-stage"
-            onClick={handleViewportClick}
-            style={{
-              position: 'relative',
-              width: 256,
-              height: 256,
-              overflow: 'hidden',
-              border: '1px solid #334155',
-              cursor: 'crosshair',
-              marginBottom: 12,
-            }}
-          >
-            <canvas
-              ref={canvasRef}
-              width={256}
-              height={256}
-              style={{
-                width: '100%',
-                height: '100%',
-                display: 'block',
-                transformOrigin: 'center center',
-                transform: `scale(${renderSettings.zoom}) translate(${-renderSettings.panX}px, ${-renderSettings.panY}px)`,
-              }}
-            />
-            <svg
-              viewBox={viewBox.svgViewBox}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                width: '100%',
-                height: '100%',
-                pointerEvents: 'none',
-              }}
-            >
-              {checkedKnownObjects.map((obj) => {
-                const epPos = obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
-                const highlighterColor = objectHighlighterColors?.[obj.object_id] ?? '#00F5D4';
-                const objClass = inferObjectClass(obj);
-                const isMover = isMovingSolarSystemObject(obj);
-                const trailPoints =
-                  isMover && obj.epoch_positions.length >= 2
-                    ? obj.epoch_positions.map((p) => `${p.x},${p.y}`).join(' ')
-                    : '';
-                return (
-                  <g key={obj.object_id}>
-                    {trailPoints && (
-                      <polyline
-                        points={trailPoints}
-                        fill="none"
-                        stroke={highlighterColor}
-                        strokeWidth={1.1}
-                        strokeDasharray="3 2"
-                        opacity={0.85}
-                      />
-                    )}
-                    {objClass === 'brown_dwarf' ? (
-                      <polygon
-                        points={`${epPos.x},${epPos.y - 5.5} ${epPos.x + 5.5},${epPos.y} ${epPos.x},${epPos.y + 5.5} ${epPos.x - 5.5},${epPos.y}`}
-                        fill="none"
-                        stroke={highlighterColor}
-                        strokeWidth={1.3}
-                      />
-                    ) : objClass === 'galaxy' || objClass === 'nebula' ? (
-                      <ellipse
-                        cx={epPos.x}
-                        cy={epPos.y}
-                        rx={6}
-                        ry={3.5}
-                        fill="none"
-                        stroke={highlighterColor}
-                        strokeWidth={1.3}
-                      />
-                    ) : isMover ? (
-                      <>
-                        <circle
-                          cx={epPos.x}
-                          cy={epPos.y}
-                          r={6}
-                          fill="none"
-                          stroke={highlighterColor}
-                          strokeWidth={1.3}
-                          strokeDasharray="2 1.5"
-                        />
-                        <circle
-                          cx={epPos.x}
-                          cy={epPos.y}
-                          r={2.5}
-                          fill="none"
-                          stroke={highlighterColor}
-                          strokeWidth={1.2}
-                        />
-                      </>
-                    ) : (
-                      <circle
-                        cx={epPos.x}
-                        cy={epPos.y}
-                        r={4.5}
-                        fill="none"
-                        stroke={highlighterColor}
-                        strokeWidth={1.3}
-                      />
-                    )}
-                    {showLabels && (
-                      <text x={epPos.x + 6} y={epPos.y - 4} fill={highlighterColor} fontSize={7}>
-                        {obj.label}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-
-              {trackedTargets.map((track) => {
-                const activeWp =
-                  track.waypoints[renderSettings.activeEpochIndex] ??
-                  track.waypoints[track.originEpochIndex];
-                if (!activeWp) return null;
-                const pointsAttr = track.waypoints
-                  .filter((w) => w.visible)
-                  .map((w) => `${w.x},${w.y}`)
-                  .join(' ');
-                return (
-                  <g key={track.trackId}>
-                    {pointsAttr && (
-                      <polyline
-                        points={pointsAttr}
-                        fill="none"
-                        stroke={track.color}
-                        strokeWidth={1.2}
-                        strokeDasharray="2 2"
-                      />
-                    )}
-                    <rect
-                      x={activeWp.x - 5}
-                      y={activeWp.y - 5}
-                      width={10}
-                      height={10}
-                      fill="none"
-                      stroke={track.color}
-                      strokeWidth={1.6}
-                      strokeDasharray={activeWp.status === 'tracked' ? undefined : '2 2'}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-          </div>
+          <SkyPatchViewport showLabels={showLabels} />
 
           {lastClickDiagnostic && lastClickDiagnostic.status === 'no_body_found' && (
             <div className="diagnostic-banner" role="status">
