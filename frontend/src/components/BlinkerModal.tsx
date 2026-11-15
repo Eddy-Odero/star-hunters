@@ -51,6 +51,7 @@ export const BlinkerModal: React.FC = () => {
     activeMissions = ['SPHEREx', 'WISE', 'NEOSSat'],
     filteredEpochIndices = [],
     loadingState,
+    retryActivePatch,
     toggleMissionFilter,
     isBlinkerModalOpen = false,
     closeBlinkerModal,
@@ -137,11 +138,13 @@ export const BlinkerModal: React.FC = () => {
     stageH: 618,
   });
 
+  const isCutoutError = loadingState?.stage === 'error';
   const isCutoutLoading =
-    loadingState?.stage === 'loading_catalogs' ||
-    loadingState?.stage === 'loading_cutouts' ||
-    !epochBuffers ||
-    epochBuffers.length === 0;
+    !isCutoutError &&
+    (loadingState?.stage === 'loading_catalogs' ||
+      loadingState?.stage === 'loading_cutouts' ||
+      !epochBuffers ||
+      epochBuffers.length === 0);
 
   useEffect(() => {
     if (!isCutoutLoading) loadingClickCountRef.current = 0;
@@ -354,8 +357,13 @@ export const BlinkerModal: React.FC = () => {
               objectHighlighterColors={objectHighlighterColors}
               lockedCallout={lockedCallout}
               isCutoutLoading={isCutoutLoading}
+              isCutoutError={isCutoutError}
               loadingMessage={loadingState?.message}
+              errorMessage={isCutoutError ? loadingState?.message : undefined}
               onSetViewportZoomPan={setViewportZoomPan}
+              onResetViewportZoomPan={resetViewportZoomPan}
+              onRetryLoad={retryActivePatch}
+              onCloseModal={closeBlinkerModal}
               onSetLockedCallout={setLockedCallout}
               onSetHoverCallout={setHoverCallout}
               onClickLoadingCanvas={() => {

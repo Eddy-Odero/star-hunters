@@ -53,7 +53,17 @@ export interface LiveFlowOptions {
   onStageChange?: (state: ProgressiveLoadingStage) => void;
   onCatalogsReady?: (catalogs: CatalogsResponse) => void;
   onReady: (result: LoadedPatchResult) => void;
+  timeouts?: {
+    catalogsMs?: number;
+    patchMs?: number;
+    frameMs?: number;
+  };
 }
+
+export const CATALOGS_FETCH_TIMEOUT_MS = 15_000;
+export const SKY_PATCH_FETCH_TIMEOUT_MS = 28_000;
+export const FRAME_FETCH_TIMEOUT_MS = 15_000;
+export const PRESET_FETCH_TIMEOUT_MS = 15_000;
 
 /** Options for {@link fetchAndCachePatchBundle}. */
 interface FetchPatchBundleOptions {
@@ -64,7 +74,70 @@ interface FetchPatchBundleOptions {
   signal?: AbortSignal;
   preferFloat16: boolean;
   defaultDtype: BinaryDtype;
+  prefetchSpectrum: boolean;
+  frameTimeoutMs?: number;
   onReady: (result: LoadedPatchResult) => void;
+}
+
+async function fetchWithTimeout(
+  fetchImpl: FetchLike,
+  input: string,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  label: string,
+): Promise<Response> {
+  if (signal?.aborted) {
+    const abortErr = new Error('Aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort();
+  signal?.addEventListener('abort', onExternalAbort, { once: true });
+  const timerId = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    const res = await fetchImpl(input, { signal: controller.signal });
+    if (signal?.aborted) {
+      const abortErr = new Error('Aborted');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+    return res;
+  } catch (err) {
+    if (timedOut && !signal?.aborted) {
+      throw new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`, { cause: err });
+    }
+    throw err;
+  } finally {
+    globalThis.clearTimeout(timerId);
+    signal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+async function readErrorDetail(res: Response, fallbackPrefix: string): Promise<string> {
+  try {
+    const contentType = res.headers?.get?.('content-type') || '';
+    if (contentType.includes('application/json')) {
+      const body = (await res.json()) as { detail?: unknown; message?: unknown };
+      const msg =
+        typeof body?.detail === 'string'
+          ? body.detail
+          : typeof body?.message === 'string'
+            ? body.message
+            : '';
+      if (msg.trim()) {
+        return `${fallbackPrefix} (${res.status}): ${msg.trim()}`;
+      }
+    }
+  } catch {
+    // Fall back to HTTP status string
+  }
+  return `${fallbackPrefix} (${res.status})`;
 }
 
 /**
@@ -111,17 +184,24 @@ async function fetchDecodedEpoch(
     signal?: AbortSignal;
     preferFloat16: boolean;
     defaultDtype: BinaryDtype;
+    frameTimeoutMs?: number;
   },
 ): Promise<{ detectors: Float32Array[]; flags: Uint8Array }> {
-  const { fetchImpl, signal, preferFloat16, defaultDtype } = options;
+  const {
+    fetchImpl,
+    signal,
+    preferFloat16,
+    defaultDtype,
+    frameTimeoutMs = FRAME_FETCH_TIMEOUT_MS,
+  } = options;
   const detUrl =
     preferFloat16 && !epoch.detectors_data_url.includes('?')
       ? `${epoch.detectors_data_url}?precision=float16`
       : epoch.detectors_data_url;
 
   const [detRes, flagRes] = await Promise.all([
-    fetchImpl(detUrl, { signal }),
-    fetchImpl(epoch.flags_mask_url, { signal }),
+    fetchWithTimeout(fetchImpl, detUrl, signal, frameTimeoutMs, 'Detector frame'),
+    fetchWithTimeout(fetchImpl, epoch.flags_mask_url, signal, frameTimeoutMs, 'Flags frame'),
   ]);
   if (signal?.aborted) {
     const abortErr = new Error('Aborted');
@@ -129,10 +209,10 @@ async function fetchDecodedEpoch(
     throw abortErr;
   }
   if (!detRes.ok) {
-    throw new Error(`Failed to load detector frame (${detRes.status})`);
+    throw new Error(await readErrorDetail(detRes, 'Failed to load detector frame'));
   }
   if (!flagRes.ok) {
-    throw new Error(`Failed to load flags frame (${flagRes.status})`);
+    throw new Error(await readErrorDetail(flagRes, 'Failed to load flags frame'));
   }
 
   const [detBuf, flagBuf] = await Promise.all([detRes.arrayBuffer(), flagRes.arrayBuffer()]);
@@ -160,17 +240,34 @@ async function fetchDecodedEpoch(
  * @returns Flow completion status (`aborted: true` if cancelled before completion).
  */
 async function fetchAndCachePatchBundle(options: FetchPatchBundleOptions): Promise<FlowOutcome> {
-  const { cache, cacheKey, manifest, fetchImpl, signal, preferFloat16, defaultDtype, onReady } =
-    options;
+  const {
+    cache,
+    cacheKey,
+    manifest,
+    fetchImpl,
+    signal,
+    preferFloat16,
+    defaultDtype,
+    prefetchSpectrum,
+    frameTimeoutMs,
+    onReady,
+  } = options;
 
   const epochPromises = manifest.epochs.map((epoch) =>
-    fetchDecodedEpoch(epoch, { fetchImpl, signal, preferFloat16, defaultDtype }),
+    fetchDecodedEpoch(epoch, { fetchImpl, signal, preferFloat16, defaultDtype, frameTimeoutMs }),
   );
-  const spectrumPromise = manifest.default_spectrum_url
-    ? fetchImpl(manifest.default_spectrum_url, { signal }).then(async (res) =>
-        res.ok ? ((await res.json()) as SpectrumPayload) : null,
-      )
-    : Promise.resolve(null);
+  const spectrumPromise =
+    prefetchSpectrum && manifest.default_spectrum_url
+      ? fetchWithTimeout(
+          fetchImpl,
+          manifest.default_spectrum_url,
+          signal,
+          PRESET_FETCH_TIMEOUT_MS,
+          'Preset spectrum',
+        )
+          .then(async (res) => (res.ok ? ((await res.json()) as SpectrumPayload) : null))
+          .catch(() => null)
+      : Promise.resolve(null);
 
   const [decodedEpochs, loadedSpectrum] = await Promise.all([
     Promise.all(epochPromises),
@@ -224,10 +321,16 @@ export async function loadPresetPatchFlow(
   if (cacheOutcome) return cacheOutcome;
 
   onStageChange?.({ stage: 'loading_cutouts', message: `Loading preset ${slug}...` });
-  const manifestRes = await fetchImpl(`/presets/${slug}/manifest.json`, { signal });
+  const manifestRes = await fetchWithTimeout(
+    fetchImpl,
+    `/presets/${slug}/manifest.json`,
+    signal,
+    PRESET_FETCH_TIMEOUT_MS,
+    'Preset manifest',
+  );
   if (signal?.aborted) return { aborted: true };
   if (!manifestRes.ok) {
-    throw new Error(`Failed to load preset manifest (${manifestRes.status})`);
+    throw new Error(await readErrorDetail(manifestRes, 'Failed to load preset manifest'));
   }
   const loadedManifest = (await manifestRes.json()) as SkyPatchManifest;
   if (signal?.aborted) return { aborted: true };
@@ -240,6 +343,7 @@ export async function loadPresetPatchFlow(
     signal,
     preferFloat16: false,
     defaultDtype: 'float32',
+    prefetchSpectrum: true,
     onReady,
   });
 }
@@ -262,7 +366,18 @@ export async function loadLiveCoordinatesFlow(
   fovArcmin: number,
   options: LiveFlowOptions,
 ): Promise<FlowOutcome> {
-  const { cache, fetchImpl = fetch, signal, onStageChange, onCatalogsReady, onReady } = options;
+  const {
+    cache,
+    fetchImpl = fetch,
+    signal,
+    onStageChange,
+    onCatalogsReady,
+    onReady,
+    timeouts,
+  } = options;
+  const catalogsTimeoutMs = timeouts?.catalogsMs ?? CATALOGS_FETCH_TIMEOUT_MS;
+  const patchTimeoutMs = timeouts?.patchMs ?? SKY_PATCH_FETCH_TIMEOUT_MS;
+  const frameTimeoutMs = timeouts?.frameMs ?? FRAME_FETCH_TIMEOUT_MS;
   const gridKey = computeGridKey(ra, dec, fovArcmin);
 
   const cacheOutcome = await tryServeCachedPatch(cache, gridKey, signal, onReady);
@@ -286,7 +401,13 @@ export async function loadLiveCoordinatesFlow(
   const qs = `ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}&fov=${encodeURIComponent(fovArcmin)}`;
 
   // Stage A (fast async catalogs) and Stage B (cutout manifest) run concurrently
-  const catalogsPromise = fetchImpl(`/api/v1/catalogs?${qs}`, { signal })
+  const catalogsPromise = fetchWithTimeout(
+    fetchImpl,
+    `/api/v1/catalogs?${qs}`,
+    signal,
+    catalogsTimeoutMs,
+    'Catalogs lookup',
+  )
     .then(async (res) => {
       if (signal?.aborted || !res.ok) return null;
       const catData = (await res.json()) as CatalogsResponse;
@@ -298,10 +419,16 @@ export async function loadLiveCoordinatesFlow(
     })
     .catch(() => null);
 
-  const patchRes = await fetchImpl(`/api/v1/sky-patch?${qs}`, { signal });
+  const patchRes = await fetchWithTimeout(
+    fetchImpl,
+    `/api/v1/sky-patch?${qs}`,
+    signal,
+    patchTimeoutMs,
+    'Sky patch request',
+  );
   if (signal?.aborted) return { aborted: true };
   if (!patchRes.ok) {
-    throw new Error(`Failed to load sky patch (${patchRes.status})`);
+    throw new Error(await readErrorDetail(patchRes, 'Failed to load sky patch'));
   }
   const loadedManifest = (await patchRes.json()) as SkyPatchManifest;
   if (signal?.aborted) return { aborted: true };
@@ -317,6 +444,8 @@ export async function loadLiveCoordinatesFlow(
     signal,
     preferFloat16: true,
     defaultDtype: 'float16',
+    prefetchSpectrum: false,
+    frameTimeoutMs,
     onReady,
   });
 }

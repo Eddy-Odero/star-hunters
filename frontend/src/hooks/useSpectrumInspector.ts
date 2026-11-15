@@ -4,6 +4,8 @@ import type { NotificationContextValue } from '../context/NotificationContext';
 import type { SpectrumPayload, TracedObjectSummary } from '../types/contracts';
 import { observatoryLogger } from '../utils/observatoryLogger';
 
+const SPECTRUM_FETCH_TIMEOUT_MS = 20_000;
+
 /** Options accepted by {@link useSpectrumInspector}. */
 export interface UseSpectrumInspectorOptions {
   /** Active sky-patch center coordinates used as fallback target when no coords are supplied. */
@@ -31,9 +33,11 @@ export function useSpectrumInspector({
   const [isSpectraModalOpen, setIsSpectraModalOpen] = useState<boolean>(false);
 
   const latestRef = useRef({ activeSpectrum, coordinates, selectedObject });
+  const abortControllerRef = useRef<AbortController | null>(null);
   useEffect(() => {
     latestRef.current = { activeSpectrum, coordinates, selectedObject };
   }, [activeSpectrum, coordinates, selectedObject]);
+  useEffect(() => () => abortControllerRef.current?.abort(), []);
 
   const openSelectedSpectrum = useCallback(
     async (coords?: { ra: number; dec: number; label?: string }) => {
@@ -55,6 +59,15 @@ export function useSpectrumInspector({
         return;
       }
 
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      let timedOut = false;
+      const timeoutId = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, SPECTRUM_FETCH_TIMEOUT_MS);
+
       setIsSpectrumLoading(true);
       notificationsRef.current?.startAsyncTask(
         'spectrum-fetch',
@@ -74,7 +87,9 @@ export function useSpectrumInspector({
         if (label) {
           params.set('label', label);
         }
-        const res = await fetch(`/api/v1/spectrum?${params.toString()}`);
+        const res = await fetch(`/api/v1/spectrum?${params.toString()}`, {
+          signal: controller.signal,
+        });
         if (res.ok) {
           const payload = (await res.json()) as SpectrumPayload;
           if (payload && Array.isArray(payload.channels) && payload.channels.length > 0) {
@@ -86,33 +101,53 @@ export function useSpectrumInspector({
             return;
           }
         }
-        throw new Error(`Spectrum endpoint returned status ${res.status}`);
+        let detail = '';
+        try {
+          const errJson = (await res.json()) as { detail?: unknown };
+          if (typeof errJson?.detail === 'string') detail = `: ${errJson.detail}`;
+        } catch {
+          // Ignore non-JSON error body
+        }
+        throw new Error(`Spectrum endpoint returned status ${res.status}${detail}`);
       } catch (err) {
+        if ((err as { name?: string } | null)?.name === 'AbortError' && !timedOut) {
+          return;
+        }
+        const message = timedOut
+          ? `102-band spectrum request timed out after ${Math.round(SPECTRUM_FETCH_TIMEOUT_MS / 1000)}s`
+          : err instanceof Error
+            ? err.message
+            : 'Backend spectrum extractor could not be reached.';
         observatoryLogger.warn('spectrum', 'Spectrum request failed', {
-          error: err instanceof Error ? err.message : 'unavailable',
+          error: message,
         });
         if (!latestRef.current.activeSpectrum) {
           notificationsRef.current?.pushWarning({
             id: 'spectrum-error',
             title: '102-band spectrum unavailable',
-            detail:
-              err instanceof Error
-                ? err.message
-                : 'Backend spectrum extractor could not be reached.',
+            detail: message,
             level: 'warning',
           });
         }
       } finally {
-        setIsSpectrumLoading(false);
-        notificationsRef.current?.finishAsyncTask('spectrum-fetch');
+        window.clearTimeout(timeoutId);
+        if (abortControllerRef.current === controller) {
+          abortControllerRef.current = null;
+          setIsSpectrumLoading(false);
+          notificationsRef.current?.finishAsyncTask('spectrum-fetch');
+        }
       }
     },
     [notificationsRef],
   );
 
   const closeSpectraModal = useCallback(() => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setIsSpectrumLoading(false);
+    notificationsRef.current?.finishAsyncTask('spectrum-fetch');
     setIsSpectraModalOpen(false);
-  }, []);
+  }, [notificationsRef]);
 
   return {
     activeSpectrum,

@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import { readStoredNumber } from '../src/hooks/useResizableSplit.ts';
 import { TRACKING_SQUARE_COLORS } from '../src/types/contracts.ts';
+import { attachAladinIdleThrottler } from '../src/utils/skyProjection.ts';
 import {
   HOVER_DETAILS_DELAY_MS,
   computeSmartCalloutLayout,
@@ -19,6 +20,7 @@ import {
   clampGlobeFov,
   resolveBestDeepSkyHiPS,
   resolveGlobeClickAction,
+  resolveGlobeKeyboardAction,
   resolveGlobeLodTier,
   stepPanCoordinates,
   targetFovForClickAction,
@@ -363,6 +365,31 @@ test('Progressive globe click navigation reveals sky panels without auto-opening
   assert.ok(pannedNorth.dec <= 89.9);
   const pannedEast = stepPanCoordinates(359.0, 0, 20, 'east');
   assert.ok(pannedEast.ra >= 0 && pannedEast.ra < 360);
+  // North-up orientation: East (screen-left) increases RA, West (screen-right) decreases RA
+  const fromCenterEast = stepPanCoordinates(180.0, 0, 20, 'east');
+  const fromCenterWest = stepPanCoordinates(180.0, 0, 20, 'west');
+  assert.ok(fromCenterEast.ra > 180.0);
+  assert.ok(fromCenterWest.ra < 180.0);
+  const fineEast = stepPanCoordinates(180.0, 0, 20, 'east', 0.35);
+  assert.ok(fineEast.ra - 180.0 < (fromCenterEast.ra - 180.0) * 0.5);
+
+  assert.deepEqual(resolveGlobeKeyboardAction({ key: 'ArrowLeft' }), {
+    type: 'pan',
+    dir: 'east',
+    fine: false,
+  });
+  assert.deepEqual(resolveGlobeKeyboardAction({ key: 'd', shiftKey: true }), {
+    type: 'pan',
+    dir: 'west',
+    fine: true,
+  });
+  assert.deepEqual(resolveGlobeKeyboardAction({ key: '=' }), { type: 'zoom', factor: 0.72 });
+  assert.deepEqual(resolveGlobeKeyboardAction({ key: '-' }), { type: 'zoom', factor: 1.38 });
+  assert.deepEqual(resolveGlobeKeyboardAction({ key: '0' }), { type: 'zoom', factor: 'reset' });
+  assert.equal(resolveGlobeKeyboardAction({ key: '+', ctrlKey: true }), null);
+  assert.equal(resolveGlobeKeyboardAction({ key: 'ArrowUp', metaKey: true }), null);
+  assert.equal(resolveGlobeKeyboardAction({ key: 'x' }), null);
+
   assert.equal(clampGlobeFov(999), 160);
   assert.equal(clampGlobeFov(0.01), 0.25);
 });
@@ -589,4 +616,92 @@ test('Phase 2 readStoredNumber safely validates localStorage bounds and SSR fall
       delete globalThis.window;
     }
   }
+});
+
+test('attachAladinIdleThrottler is event-driven on tile rendering/motion, pauses when hidden, and stops on destroy', () => {
+  let redrawCount = 0;
+  let renderingTiles = true;
+  const scheduledTimers = new Map();
+  let nextTimerId = 1;
+  const scheduledFrames = [];
+
+  const view = {
+    moving: false,
+    needRedraw: false,
+    wasm: {
+      isRendering: () => renderingTiles,
+      isInerting: () => false,
+    },
+    redrawClbk() {
+      redrawCount += 1;
+    },
+  };
+  const instance = { gotoRaDec() {}, view };
+
+  const throttler = attachAladinIdleThrottler(instance, {
+    idleIntervalMs: 500,
+    quietFramesBeforeIdle: 2,
+    scheduleFrame: (cb) => scheduledFrames.push(cb),
+    scheduleTimer: (cb) => {
+      const id = nextTimerId++;
+      scheduledTimers.set(id, cb);
+      return id;
+    },
+    cancelTimer: (id) => {
+      scheduledTimers.delete(id);
+    },
+  });
+
+  // While HiPS tiles are actively rendering: runs immediately at 60 FPS
+  view.redrawClbk();
+  view.redrawClbk();
+  assert.equal(redrawCount, 2);
+  assert.equal(scheduledTimers.size, 0);
+
+  // Once tiles finish rendering: 1 quiet frame runs, 2nd quiet frame drops to idle timer
+  renderingTiles = false;
+  view.redrawClbk();
+  assert.equal(redrawCount, 3);
+  assert.equal(scheduledTimers.size, 0);
+  view.redrawClbk();
+  assert.equal(redrawCount, 3);
+  assert.equal(scheduledTimers.size, 1);
+
+  // If a late HiPS tile arrives during an idle keepalive check, ramps back up to 60 FPS
+  renderingTiles = true;
+  const [idleCb] = [...scheduledTimers.values()];
+  scheduledTimers.clear();
+  idleCb();
+  assert.equal(redrawCount, 4);
+  view.redrawClbk();
+  assert.equal(redrawCount, 5);
+  assert.equal(scheduledTimers.size, 0);
+
+  // Drop back to idle, then wake() cancels timer and schedules immediate frame
+  renderingTiles = false;
+  view.redrawClbk();
+  view.redrawClbk();
+  assert.equal(scheduledTimers.size, 1);
+  throttler.wake();
+  assert.equal(scheduledTimers.size, 0);
+  assert.equal(scheduledFrames.length, 1);
+  scheduledFrames.shift()();
+  assert.equal(redrawCount, 7);
+
+  // Pausing (modal open / tab hidden) halts rendering to 0 FPS until unpaused
+  throttler.setPaused(true);
+  view.redrawClbk();
+  assert.equal(redrawCount, 7);
+  assert.equal(scheduledTimers.size, 0);
+
+  // Unpausing schedules immediate resume
+  throttler.setPaused(false);
+  assert.equal(scheduledFrames.length, 1);
+  scheduledFrames.shift()();
+  assert.equal(redrawCount, 8);
+
+  // destroy() permanently halts loop
+  throttler.destroy();
+  view.redrawClbk();
+  assert.equal(redrawCount, 8);
 });

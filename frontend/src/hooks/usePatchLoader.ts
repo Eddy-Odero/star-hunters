@@ -66,6 +66,9 @@ export function usePatchLoader({
   );
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastLoadRequestRef = useRef<
+    { kind: 'preset'; slug: string } | { kind: 'live'; ra: number; dec: number; fovArcmin: number }
+  >({ kind: 'preset', slug: 'wise_0855' });
   const callbacksRef = useRef({
     onResetPatchDependents,
     onStageACheckedIds,
@@ -168,6 +171,7 @@ export function usePatchLoader({
 
   const loadPresetBundle = useCallback(
     async (slug: string) => {
+      lastLoadRequestRef.current = { kind: 'preset', slug };
       await runPatchLoad({
         taskMessage: 'Loading target frames...',
         errorTitle: 'Failed to load preset patch',
@@ -191,6 +195,7 @@ export function usePatchLoader({
 
   const loadLiveCoordinates = useCallback(
     async (ra: number, dec: number, fovArcmin: number) => {
+      lastLoadRequestRef.current = { kind: 'live', ra, dec, fovArcmin };
       await runPatchLoad({
         taskMessage: 'Streaming epoch frames...',
         errorTitle: 'Sky patch stream interrupted',
@@ -243,6 +248,15 @@ export function usePatchLoader({
     [applyLoadedPatch, notificationsRef, runPatchLoad],
   );
 
+  const retryActivePatch = useCallback(() => {
+    const req = lastLoadRequestRef.current;
+    if (req.kind === 'preset') {
+      void loadPresetBundle(req.slug);
+    } else {
+      void loadLiveCoordinates(req.ra, req.dec, req.fovArcmin);
+    }
+  }, [loadLiveCoordinates, loadPresetBundle]);
+
   return {
     activePresetSlug,
     setActivePresetSlug,
@@ -256,5 +270,6 @@ export function usePatchLoader({
     objectHighlighterColors,
     loadPresetBundle,
     loadLiveCoordinates,
+    retryActivePatch,
   };
 }

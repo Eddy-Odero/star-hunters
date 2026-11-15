@@ -62,7 +62,8 @@ export const BlinkerHeader: React.FC<BlinkerHeaderProps> = ({
       <button
         type="button"
         className="hud-icon-btn"
-        aria-label="Zoom out cutout"
+        aria-label="Zoom out cutout (- or _)"
+        title="Zoom out (- / _)"
         onClick={() => onSetZoomPan(zoom / 1.4, panX, panY)}
       >
         <ZoomOutIcon size={14} />
@@ -73,7 +74,8 @@ export const BlinkerHeader: React.FC<BlinkerHeaderProps> = ({
       <button
         type="button"
         className="hud-icon-btn"
-        aria-label="Zoom in cutout"
+        aria-label="Zoom in cutout (+ or =)"
+        title="Zoom in (+ / =)"
         onClick={() => onSetZoomPan(zoom * 1.4, panX, panY)}
       >
         <ZoomInIcon size={14} />
@@ -82,7 +84,8 @@ export const BlinkerHeader: React.FC<BlinkerHeaderProps> = ({
         <button
           type="button"
           className="hud-icon-btn"
-          aria-label="Reset zoom and pan"
+          aria-label="Reset zoom and pan (0)"
+          title="Reset zoom and pan (0)"
           onClick={onResetZoomPan}
         >
           <ResetViewIcon size={14} />

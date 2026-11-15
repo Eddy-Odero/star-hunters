@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
-import { DEFAULT_MOLECULAR_BANDS } from '../types/contracts';
+import { DEFAULT_MOLECULAR_BANDS, type MolecularFeature } from '../types/contracts';
 import { downloadSpectrumCsv } from '../utils/csvExport';
 import { formatImageProvenanceBadge, formatRaDecCompact } from '../utils/observatoryMath';
 import { ChevronIcon, CloseIcon, DownloadIcon, SpinnerIcon } from './icons/ObservatoryIcons';
@@ -23,6 +23,7 @@ export const SpectraModal: React.FC = () => {
     isSpectraModalOpen = false,
     closeSpectraModal,
     renderSettings,
+    updateRenderSettings,
     selectedObject,
   } = useSkyExplorer();
 
@@ -98,6 +99,18 @@ export const SpectraModal: React.FC = () => {
       : DEFAULT_MOLECULAR_BANDS;
 
   const hoverChannel = hoverIdx !== null && plotGeometry ? plotGeometry.channels[hoverIdx] : null;
+
+  const isFeatureActive = (feat: MolecularFeature): boolean =>
+    Math.abs(renderSettings.wavelengthRangeUm[0] - feat.min_um) < 0.02 &&
+    Math.abs(renderSettings.wavelengthRangeUm[1] - feat.max_um) < 0.02;
+
+  const handleSelectMolecularFeature = (feat: MolecularFeature) => {
+    if (isFeatureActive(feat)) {
+      updateRenderSettings({ wavelengthRangeUm: [0.75, 5.0] });
+    } else {
+      updateRenderSettings({ wavelengthRangeUm: [feat.min_um, feat.max_um] });
+    }
+  };
 
   return (
     <section
@@ -176,12 +189,27 @@ export const SpectraModal: React.FC = () => {
             <>
               <div className="spectra-feature-bar">
                 <div className="spectra-feature-pills">
-                  {features.slice(0, 4).map((feat) => (
-                    <span key={feat.molecule} className="badge-pill spectra-feature-pill">
-                      {feat.label || feat.molecule}: {feat.min_um.toFixed(2)}-
-                      {feat.max_um.toFixed(2)} µm
-                    </span>
-                  ))}
+                  {features.slice(0, 4).map((feat) => {
+                    const active = isFeatureActive(feat);
+                    return (
+                      <button
+                        key={feat.molecule}
+                        type="button"
+                        className={`badge-pill spectra-feature-pill${active ? ' is-active' : ''}`}
+                        aria-pressed={active}
+                        data-testid={`spectra-feature-pill-${feat.molecule}`}
+                        title={
+                          active
+                            ? `Reset wavelength filter to full 0.75–5.00 µm spectrum`
+                            : `Filter image to ${feat.label || feat.molecule} (${feat.min_um.toFixed(2)}–${feat.max_um.toFixed(2)} µm)`
+                        }
+                        onClick={() => handleSelectMolecularFeature(feat)}
+                      >
+                        {feat.label || feat.molecule}: {feat.min_um.toFixed(2)}-
+                        {feat.max_um.toFixed(2)} µm
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -191,6 +219,7 @@ export const SpectraModal: React.FC = () => {
                 wavelengthRangeUm={renderSettings.wavelengthRangeUm}
                 hoverIdx={hoverIdx}
                 onHoverIdxChange={setHoverIdx}
+                onSelectFeature={handleSelectMolecularFeature}
               />
 
               <div className="spectra-hover-readout" data-testid="spectra-hover-readout">

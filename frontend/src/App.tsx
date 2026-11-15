@@ -124,7 +124,13 @@ const ObservatoryWorkspace: React.FC = () => {
       <SpotlightTourOverlay />
 
       {/* z-index 50 NASA Photography Landing Curtain (<= 2s warmup lock + 600ms slide-out) */}
-      <LandingCurtainOverlay />
+      <LandingCurtainOverlay
+        onDismissed={() => {
+          document
+            .querySelector<HTMLElement>('[data-testid="night-sky-globe"]')
+            ?.focus({ preventScroll: true });
+        }}
+      />
     </main>
   );
 };
