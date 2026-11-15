@@ -201,7 +201,14 @@ def fetch_skyview_fallback(
         try:
             raw_img, src_hdr = downloader(ra, dec, fov_arcmin, survey, session=session)
         except Exception as exc:
-            _logger.warning("SkyView survey %s failed for (%.4f, %.4f): %s", survey, ra, dec, exc)
+            _logger.warning(
+                "SkyView survey %s failed at %s for (%.4f, %.4f): %s",
+                survey,
+                SKYVIEW_IMAGE_URL,
+                ra,
+                dec,
+                exc,
+            )
             return None
 
         if target_wcs_header is not None and src_hdr and "CTYPE1" in src_hdr:
@@ -261,7 +268,8 @@ def fetch_skyview_fallback(
         )
 
     _logger.info(
-        "SkyView archival fallback retrieved %d plate(s) for (%.4f, %.4f) in %.2fs",
+        "SkyView (%s) archival fallback retrieved %d plate(s) for (%.4f, %.4f) in %.2fs",
+        SKYVIEW_IMAGE_URL,
         len(valid_epochs),
         ra,
         dec,

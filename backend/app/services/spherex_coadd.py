@@ -218,8 +218,10 @@ def _detector_index(cutout: SpherexCutout) -> int:
 
 def _source_wcs(cutout: SpherexCutout) -> WCS:
     """Extract a validated celestial Astropy WCS from a cutout's header."""
+    from app.services.spherex_fits import sanitized_fits_wcs_header
+
     try:
-        source_wcs = WCS(cutout.header).celestial
+        source_wcs = WCS(sanitized_fits_wcs_header(cutout.header)).celestial
     except Exception as exc:
         raise SpherexCoaddError(
             f"Cutout {cutout.bandpass} at MJD {cutout.mjd_obs} has an invalid WCS header."

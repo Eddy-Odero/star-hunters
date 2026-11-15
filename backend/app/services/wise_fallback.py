@@ -41,8 +41,18 @@ IRSA_INVENTORIES = (
     ),
     ("https://irsa.ipac.caltech.edu/ibe/search/wise/neowiser/p1bm_frm", "neowiser", "p1bm_frm"),
 )
-IRSA_TIMEOUT = 12.0
+IRSA_WISE_SEARCH_BASE_URL = "https://irsa.ipac.caltech.edu/ibe/search/wise"
+IRSA_WISE_DATA_BASE_URL = "https://irsa.ipac.caltech.edu/ibe/data/wise"
+IRSA_CONNECT_TIMEOUT = 3.5
+IRSA_TIMEOUT = 10.0
 WISE_ZERO_POINT_JY = {1: 309.540, 2: 171.787}
+
+
+def _wise_request_timeout(session: Any) -> float | tuple[float, float]:
+    """Use bounded ``(connect, read)`` tuple for live ``requests``, scalar for mocks."""
+    if session is requests:
+        return (IRSA_CONNECT_TIMEOUT, IRSA_TIMEOUT)
+    return IRSA_TIMEOUT
 
 
 class WiseFallbackError(RuntimeError):
@@ -131,6 +141,16 @@ def query_wise_exposures(
         WiseFallbackError: If coordinates are invalid or no exposures match.
     """
     _validate_target(ra, dec, fov_arcmin)
+    if session is requests:
+        from app.services.spherex_ingest import irsa_circuit_breaker
+
+        if irsa_circuit_breaker.is_open():
+            rem = irsa_circuit_breaker.remaining_seconds()
+            raise WiseFallbackError(
+                f"IRSA circuit breaker open ({rem:.0f}s remaining); "
+                f"skipping WISE query ({IRSA_WISE_SEARCH_BASE_URL})."
+            )
+
     params = {
         "POS": f"{ra:.8f},{dec:.8f}",
         "SIZE": f"{fov_arcmin / 60.0:.8f}",
@@ -145,7 +165,7 @@ def query_wise_exposures(
         endpoint, dataset, table = inv
         inv_exposures: list[WiseExposure] = []
         try:
-            response = session.get(endpoint, params=params, timeout=IRSA_TIMEOUT)
+            response = session.get(endpoint, params=params, timeout=_wise_request_timeout(session))
             response.raise_for_status()
             lines = response.text.splitlines()
             header_index = next(
@@ -201,10 +221,12 @@ def query_wise_exposures(
     if not exposures:
         detail = "; ".join(query_errors) if query_errors else "no quality-screened rows"
         _logger.info(
-            "WISE inventory returned 0 usable exposures for (%.4f, %.4f) in %.2fs",
+            "WISE inventory (%s) returned 0 usable exposures for (%.4f, %.4f) in %.2fs (%s)",
+            IRSA_WISE_SEARCH_BASE_URL,
             ra,
             dec,
             time.perf_counter() - t0,
+            detail,
         )
         raise WiseFallbackError(f"IRSA returned no usable WISE W1/W2 exposures ({detail}).")
     # The two inventory services can overlap at release boundaries. Deduplicate
@@ -212,7 +234,8 @@ def query_wise_exposures(
     unique = {(item.band, item.mjd, item.intensity_url): item for item in exposures}
     sorted_exposures = sorted(unique.values(), key=lambda item: item.mjd)
     _logger.info(
-        "WISE inventory discovered %d unique exposure(s) for (%.4f, %.4f) in %.2fs",
+        "WISE inventory (%s) discovered %d unique exposure(s) for (%.4f, %.4f) in %.2fs",
+        IRSA_WISE_SEARCH_BASE_URL,
         len(sorted_exposures),
         ra,
         dec,
@@ -262,7 +285,7 @@ def _to_mjy_sr(
 def _download_fits(url: str, session: Any = requests) -> tuple[np.ndarray, Any]:
     """Download and extract the first 2D FITS image plane from a WISE cutout URL."""
     try:
-        response = session.get(url, timeout=IRSA_TIMEOUT)
+        response = session.get(url, timeout=_wise_request_timeout(session))
         response.raise_for_status()
         from astropy.io import fits
 
@@ -444,7 +467,9 @@ def fetch_wise_fallback(
             latest_by_band[b] = (ep_mjd, proj)
 
     _logger.info(
-        "WISE W1/W2 fallback downloaded & reprojected %d exposure(s) for (%.4f, %.4f) in %.2fs",
+        "WISE W1/W2 (%s) fallback downloaded & reprojected %d exposure(s) "
+        "for (%.4f, %.4f) in %.2fs",
+        IRSA_WISE_DATA_BASE_URL,
         len(exposures),
         ra,
         dec,

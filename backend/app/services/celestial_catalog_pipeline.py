@@ -22,6 +22,8 @@ import httpx
 
 from app.models.contracts import GRID_HEIGHT, GRID_WIDTH
 from app.services.catalog_clients import (
+    JPL_HORIZONS_ENDPOINT,
+    PROVIDER_BASE_URLS,
     fetch_gaia_dr3_objects,
     fetch_horizons_ephemeris,
     fetch_simbad_objects,
@@ -265,13 +267,16 @@ class AutomatedCelestialPipeline:
                     radius_deg=radius_deg,
                     client=active_client,
                 )
+        base_url = PROVIDER_BASE_URLS.get(provider)
+        url_suffix = f" ({base_url})" if base_url else ""
         _logger.info(
-            "Catalog %s query at (%.4f, %.4f) returned %d row(s) via %s in %.2fs",
+            "Catalog %s query at (%.4f, %.4f) returned %d row(s) via %s%s in %.2fs",
             source,
             ra_deg,
             dec_deg,
             len(records),
             provider,
+            url_suffix,
             time.perf_counter() - t0,
         )
         if records:
@@ -327,7 +332,8 @@ class AutomatedCelestialPipeline:
         self.cache.upsert_ephemeris_points(points)
         closest = min(points, key=lambda pt: abs(float(pt["mjd"]) - now_mjd))
         _logger.info(
-            "JPL Horizons resolved live ephemeris for %s (NAIF %s) at RA=%.4f Dec=%.4f",
+            "JPL Horizons (%s) resolved live ephemeris for %s (NAIF %s) at RA=%.4f Dec=%.4f",
+            JPL_HORIZONS_ENDPOINT,
             body_spec["name"],
             body_spec["naif_id"],
             closest["ra"],

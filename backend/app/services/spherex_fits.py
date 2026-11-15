@@ -120,6 +120,28 @@ def validate_coordinates(
         raise SpherexValidationError("Field of view must be greater than zero.")
 
 
+def sanitized_fits_wcs_header(header: dict[str, Any]) -> dict[str, Any]:
+    """Return a FITS-standard subset of ``header`` safe for ``astropy.wcs.WCS``.
+
+    Real SPHEREx DR1 Level 2 FITS headers contain non-WCS HIERARCH telemetry cards
+    longer than 8 characters or containing spaces (e.g. ``NVISITROW``, ``L2 N_NONLINEAR``).
+    Passing a raw Python ``dict`` containing those keys to ``astropy.wcs.WCS`` forces
+    Astropy to emit ``VerifyWarning`` while re-creating HIERARCH cards that WCS ignores.
+    Filtering to standard ``<= 8``-character FITS keywords preserves all WCS/SIP/time
+    cards while avoiding invalid card construction.
+    """
+    clean: dict[str, Any] = {}
+    for raw_key, value in header.items():
+        if not isinstance(raw_key, str):
+            continue
+        key = raw_key.strip().upper()
+        if not key or len(key) > 8 or key in ("COMMENT", "HISTORY"):
+            continue
+        if all(ch.isalnum() or ch in ("-", "_") for ch in key):
+            clean[key] = value
+    return clean
+
+
 def detector_to_bandpass(value: Any) -> str | None:
     """Convert a 1-based SPHEREx detector integer to its bandpass name.
 

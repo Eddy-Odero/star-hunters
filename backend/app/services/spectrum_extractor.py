@@ -110,8 +110,10 @@ def _pixel_coordinates(cutout: SpherexCutout, ra: float, dec: float) -> tuple[fl
     except ImportError:
         x, y = _fallback_pixel_coordinates(cutout.header, ra, dec)
     else:
+        from app.services.spherex_fits import sanitized_fits_wcs_header
+
         try:
-            wcs = WCS(cutout.header).celestial
+            wcs = WCS(sanitized_fits_wcs_header(cutout.header)).celestial
             if not wcs.has_celestial:
                 raise ValueError("missing celestial axes")
             x, y = wcs.world_to_pixel_values(ra, dec)

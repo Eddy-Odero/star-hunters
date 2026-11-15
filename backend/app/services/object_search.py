@@ -246,8 +246,8 @@ async def search_known_objects_async(
         if ephem_match.get("vmag") is not None:
             enriched["magnitude"] = round(float(ephem_match["vmag"]), 2)
         enriched["data_source"] = "jpl_horizons_live"
-        _logger.info(
-            "Resolved Horizons ephemeris for %s -> RA=%.4f Dec=%.4f",
+        _logger.debug(
+            "Applied Horizons ephemeris for %s -> RA=%.4f Dec=%.4f",
             enriched.get("label"),
             ra_live,
             dec_live,
