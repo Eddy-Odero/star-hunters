@@ -1,21 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
-import {
-  computeViewportViewBox,
-  screenToImageCoordinates,
-  type EarthToSkyResponse,
-} from './types/contracts';
+import { computeViewportViewBox, screenToImageCoordinates } from './types/contracts';
+import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
 import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
-
-const PRESET_SLUGS = [
-  { slug: 'wise_0855', label: 'WISE 0855 (Brown Dwarf)' },
-  { slug: 'barnards_star', label: "Barnard's Star (Fast Mover)" },
-  { slug: 'epsilon_indi_b', label: 'Epsilon Indi B (T-Dwarf Pair)' },
-  { slug: 'rw_aurigae', label: 'RW Aurigae (Variable Star)' },
-  { slug: 'r_draconis', label: 'R Draconis (Mira Giant)' },
-  { slug: 'comet_3i_atlas', label: 'Comet 3I/ATLAS (Solar System)' },
-];
+import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 
 const StarHuntersWorkspace: React.FC = () => {
   const {
@@ -23,6 +12,7 @@ const StarHuntersWorkspace: React.FC = () => {
     manifest,
     loadingState,
     renderSettings,
+    setViewportZoomPan,
     knownObjects,
     selectedObject,
     trackedTargets,
@@ -30,7 +20,6 @@ const StarHuntersWorkspace: React.FC = () => {
     removeTrackedTarget,
     clearTrackedTargets,
     selectPreset,
-    navigateToCoordinates,
     inspectPixelOrCoord,
   } = useSkyExplorer();
 
@@ -44,7 +33,12 @@ const StarHuntersWorkspace: React.FC = () => {
   }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
 
   const viewBox = useMemo(
-    () => computeViewportViewBox(renderSettings.zoom, renderSettings.panX, renderSettings.panY),
+    () =>
+      computeViewportViewBox(
+        renderSettings.zoom,
+        renderSettings.panX,
+        renderSettings.panY,
+      ),
     [renderSettings.zoom, renderSettings.panX, renderSettings.panY],
   );
 
@@ -65,25 +59,11 @@ const StarHuntersWorkspace: React.FC = () => {
     }
   };
 
-  const handleWhatsAboveMe = async () => {
-    try {
-      const res = await fetch('/api/v1/earth-to-sky');
-      if (!res.ok) return;
-      const data = (await res.json()) as EarthToSkyResponse;
-      const locLabel = data.earth.is_fallback_capital
-        ? `${data.earth.city_name ?? 'Capital'}, ${data.earth.country ?? ''} (Random Capital Fallback)`
-        : `(${data.earth.lat.toFixed(2)}°, ${data.earth.lon.toFixed(2)}°)`;
-      setZenithBanner(
-        `Zenith over ${locLabel}: RA ${data.zenith_icrs.ra.toFixed(2)}°, Dec ${data.zenith_icrs.dec.toFixed(2)}° (${data.zenith_icrs.constellation})`,
-      );
-      navigateToCoordinates(data.zenith_icrs.ra, data.zenith_icrs.dec, 5.0);
-    } catch {
-      // Offline fallback
-    }
-  };
-
   const checkedKnownObjects = useMemo(
-    () => knownObjects.filter((obj) => renderSettings.checkedObjectIds.includes(obj.object_id)),
+    () =>
+      knownObjects.filter((obj) =>
+        renderSettings.checkedObjectIds.includes(obj.object_id),
+      ),
     [knownObjects, renderSettings.checkedObjectIds],
   );
 
@@ -93,26 +73,30 @@ const StarHuntersWorkspace: React.FC = () => {
         <div>
           <h1>Star Hunters — Planet X &amp; SPHEREx Blinker</h1>
           <p className="subtitle">
-            Multi-Epoch Near-Infrared Blinker (0.75–5.0 &mu;m) &bull; SPHEREx + WISE/NEOWISE + Gaia
-            DR3 + MOST
+            Multi-Epoch Near-Infrared Blinker (0.75–5.0 &mu;m) &bull; SPHEREx + WISE/NEOWISE + Gaia DR3 + MOST
           </p>
         </div>
-        <div className="preset-bar">
-          {PRESET_SLUGS.map((p) => (
-            <button
-              key={p.slug}
-              type="button"
-              className={activePresetSlug === p.slug ? 'preset-btn active' : 'preset-btn'}
-              onClick={() => selectPreset(p.slug)}
-            >
-              {p.label}
-            </button>
-          ))}
-          <button type="button" className="preset-btn" onClick={() => void handleWhatsAboveMe()}>
-            What&apos;s Above Me? (Zenith / Capital Fallback)
-          </button>
+
+        {/* Telemetry Header Banner */}
+        <div className="header-telemetry">
+          {manifest?.data_source_summary && (
+            <span className="telemetry-badge" title={manifest.data_source_summary.status_note}>
+              🛰️ Baseline: {manifest.data_source_summary.baseline_days} days |{' '}
+              {manifest.data_source_summary.uses_wise_fallback ? 'WISE Fallback' : 'Primary SPHEREx'}
+            </span>
+          )}
+          <span className="telemetry-badge">
+            ⚡ Stage: {loadingState.stage}
+            {loadingState.fromClientCache ? ' (3G Browser Cache Hit)' : ' (Live Stream)'}
+          </span>
         </div>
       </header>
+
+      {/* Target Tour Carousel Component */}
+      <TargetTourBar />
+
+      {/* What's Above Me Zenith Discovery Flow */}
+      <WhatsAboveMeBar onZenithResolved={(text) => setZenithBanner(text)} />
 
       {zenithBanner && (
         <div className="diagnostic-banner" role="status">
@@ -128,14 +112,11 @@ const StarHuntersWorkspace: React.FC = () => {
               {manifest ? `— ${manifest.target_metadata.name}` : ''}
             </h2>
             <span className="status-badge">
-              Stage: {loadingState.stage}
-              {loadingState.fromClientCache ? ' (Cached in Browser)' : ''} &bull; Zoom:{' '}
-              {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: ({renderSettings.panX.toFixed(0)},{' '}
+              Zoom: {renderSettings.zoom.toFixed(1)}&times; &bull; Pan: ({renderSettings.panX.toFixed(0)},{' '}
               {renderSettings.panY.toFixed(0)})
             </span>
           </div>
 
-          {/* Viewport Controls Bar Component */}
           <ViewportControlsBar />
 
           <div className="secondary-action-bar">
@@ -189,7 +170,8 @@ const StarHuntersWorkspace: React.FC = () => {
               }}
             >
               {checkedKnownObjects.map((obj) => {
-                const epPos = obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
+                const epPos =
+                  obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
                 return (
                   <g key={obj.object_id}>
                     <circle
@@ -200,7 +182,12 @@ const StarHuntersWorkspace: React.FC = () => {
                       stroke="#38bdf8"
                       strokeWidth={1.1}
                     />
-                    <text x={epPos.x + 6} y={epPos.y - 4} fill="#e2e8f0" fontSize={7}>
+                    <text
+                      x={epPos.x + 6}
+                      y={epPos.y - 4}
+                      fill="#e2e8f0"
+                      fontSize={7}
+                    >
                       {obj.label}
                     </text>
                   </g>
@@ -265,10 +252,9 @@ const StarHuntersWorkspace: React.FC = () => {
                     marginRight: 6,
                   }}
                 />
-                Origin Centroid: ({selectedObject.originCentroidX}, {selectedObject.originCentroidY}
-                ) &bull; Proper Motion: {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull;
-                Match: {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
-                {selectedObject.isOverlappedAtOrigin ? ' • Overlapped Body Branch' : ''}
+                Origin Centroid: ({selectedObject.originCentroidX}, {selectedObject.originCentroidY})
+                &bull; Proper Motion: {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull; Match:{' '}
+                {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
               </p>
               <ul>
                 {selectedObject.waypoints.map((wp) => (
@@ -280,27 +266,8 @@ const StarHuntersWorkspace: React.FC = () => {
               </ul>
             </div>
           )}
-
-          {trackedTargets.length > 1 && (
-            <div className="traced-card">
-              <h4>All Tracked Targets ({trackedTargets.length})</h4>
-              <ul>
-                {trackedTargets.map((t) => (
-                  <li key={t.trackId}>
-                    <span style={{ color: t.color, fontWeight: 700 }}>■</span> {t.trackId}: (
-                    {t.originCentroidX}, {t.originCentroidY}) &rarr; ({t.xN}, {t.yN}) [
-                    {t.statusMessage}]{' '}
-                    <button type="button" onClick={() => removeTrackedTarget(t.trackId)}>
-                      Remove
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
         </section>
 
-        {/* Known Celestial Objects Checkbox Menu Component */}
         <KnownObjectsCheckboxMenu />
       </main>
     </div>
