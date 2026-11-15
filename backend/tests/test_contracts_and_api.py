@@ -205,6 +205,8 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertIsNotNone(fb1["earth"]["city_name"])
         self.assertIsNotNone(fb1["earth"]["country"])
         capital_names = {c["city_name"] for c in WORLD_CAPITAL_CITIES}
+        self.assertGreater(len(WORLD_CAPITAL_CITIES), 0)
+        self.assertEqual(len({c["slug"] for c in WORLD_CAPITAL_CITIES}), len(WORLD_CAPITAL_CITIES))
         self.assertIn(fb1["earth"]["city_name"], capital_names)
 
         # Repeat lookup hits SQLite capital_zenith_cache (cached=True)
