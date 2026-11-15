@@ -1,0 +1,5 @@
+dist
+node_modules
+public/presets
+pnpm-lock.yaml
+src/types/world_capital_cities.json
