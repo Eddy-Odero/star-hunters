@@ -19,15 +19,21 @@
 
 ---
 
-## 3. Multi-Mission Fallback & Cross-Match Archives (WISE, Gaia DR3, MOST)
+## 3. Multi-Mission Fallback & Cross-Match Archives (SIMBAD, Gaia DR3, WISE, Horizons, MOST)
+- **SIMBAD TAP (Official Mirrors — do NOT use `cds.unistra.fr`):**
+  - **Primary (IDIA South Africa):** `https://simbad.idia.ac.za/simbad/sim-tap/sync`
+  - **Fallback (Harvard CfA):** `https://simbad.cfa.harvard.edu/simbad/sim-tap/sync`
 - **WISE / NEOWISE Image & Catalog Services (IRSA):**
   - **IRSA AllWISE / NEOWISE Catalogs via TAP:** `https://irsa.ipac.caltech.edu/TAP` (Tables: `allwise_p3as_psd`, `neowiser_p1bs_psd`)
   - **WISE Image Atlas / SIA Cutouts (W1 $3.4\ \mu\text{m}$ & W2 $4.6\ \mu\text{m}$):** https://irsa.ipac.caltech.edu/Missions/wise.html (Accessible via `astroquery.ipac.irsa` / `pyvo` SIA)
 - **Gaia DR3 Archive (Optical Astrometry & Proper Motions):**
-  - **ESA Gaia TAP Endpoint:** `https://gea.esac.esa.int/tap-server/tap` (Table: `gaiadr3.gaia_source` — columns `source_id`, `ra`, `dec`, `phot_g_mean_mag`, `bp_rp`, `pmra`, `pmdec`, `parallax`)
+  - **ESA Gaia TAP Endpoint (Primary):** `https://gea.esac.esa.int/tap-server/tap/sync` (Table: `gaiadr3.gaia_source` — columns `source_id`, `ra`, `dec`, `pmra`, `pmdec`, `parallax`, `phot_g_mean_mag`)
+  - **Mirror Fallbacks:** `https://gaia.ari.uni-heidelberg.de/tap/sync` (ARI Heidelberg TAP) and `https://vizier.cfa.harvard.edu/viz-bin/asu-tsv` (VizieR CfA `I/355/gaiadr3`)
+- **NASA/JPL Horizons REST API (Planets, Moons, Comets & Asteroids):**
+  - **Endpoint:** `https://ssd.jpl.nasa.gov/api/horizons.api` (`EPHEM_TYPE='OBSERVER'`, `CENTER='500@399'`, `QUANTITIES='1,9'`, `ANG_FORMAT='DEG'`, `CSV_FORMAT='YES'`)
 - **NASA / IPAC MOST (Moving Object Search Tool — Asteroids & Comets):**
   - **Interactive & API Documentation:** https://irsa.ipac.caltech.edu/applications/MOST/
-  - **Programmatic CGI Endpoint:** `https://irsa.ipac.caltech.edu/cgi-bin/MOST/nph-most` (or via `astroquery.ipac.irsa.most`)
+  - **Programmatic CGI Endpoint:** `https://irsa.ipac.caltech.edu/cgi-bin/MOST/nph-most` (`output_mode=Brief` or `VOTable`; note `JSON` / `CSV` return HTTP 400)
 
 ---
 

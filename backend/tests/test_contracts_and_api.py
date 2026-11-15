@@ -24,6 +24,7 @@ from app.models.contracts import (
     BINARY_DETECTOR_FLOAT32_BYTES,
     BINARY_FLAGS_UINT8_BYTES,
     SHOWCASE_TARGETS,
+    TRACKING_SQUARE_COLORS,
     WORLD_CAPITAL_CITIES,
     convert_float16_bytes_to_float32_bytes,
     convert_float32_bytes_to_float16_bytes,
@@ -415,6 +416,42 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             compute_zenith_icrs(lat=95.0, lon=0.0)
         with self.assertRaises(ValueError):
             compute_zenith_icrs(lat=0.0, lon=195.0)
+
+    def test_highlighter_palette_fuzzy_search_and_pinned_cache(self) -> None:
+        # At least 16 distinct highlighter colors
+        self.assertGreaterEqual(len(TRACKING_SQUARE_COLORS), 16)
+        self.assertEqual(len(set(TRACKING_SQUARE_COLORS)), len(TRACKING_SQUARE_COLORS))
+
+        # Fuzzy search finds objects by exact name, partial token, subsequence, or typo
+        barnard_hits = self.service.search_known_objects(query="barnrd", limit=10)
+        self.assertGreater(len(barnard_hits), 0)
+        self.assertEqual(barnard_hits[0]["target_slug"], "barnards_star")
+
+        luhman_hits = self.service.search_known_objects(query="luhman", limit=10)
+        self.assertGreater(len(luhman_hits), 0)
+        self.assertEqual(luhman_hits[0]["target_slug"], "luhman_16")
+
+        ceres_hits = self.service.search_known_objects(query="ceres", limit=10)
+        self.assertGreater(len(ceres_hits), 0)
+        self.assertEqual(ceres_hits[0]["target_slug"], "ceres_asteroid")
+
+        # Pinned showcase patches survive LRU eviction before non-pinned custom patches
+        pin_db = str(Path(self.temp_dir.name) / "pin.db")
+        pin_cache = SpatialSqliteCache(db_path=pin_db, max_cache_bytes=20_000_000)
+        svc = StarHuntersBackendService(cache=pin_cache)
+
+        # Fetch showcase patch (automatically pinned) and custom patch (unpinned)
+        m_showcase = svc.get_sky_patch(133.7951, -7.2451, 5.0)
+        m_custom = svc.get_sky_patch(15.0, 15.0, 5.0)
+        showcase_size = pin_cache.get_patch_byte_size(m_showcase["query"]["grid_key"])
+        custom_size = pin_cache.get_patch_byte_size(m_custom["query"]["grid_key"])
+        pin_cache.max_cache_bytes = int(showcase_size + custom_size * 1.15)
+
+        # Inserting a third patch must evict the unpinned custom patch, preserving pinned showcase
+        m_custom2 = svc.get_sky_patch(45.0, 25.0, 5.0)
+        self.assertIsNotNone(pin_cache.get_manifest(m_showcase["query"]["grid_key"]))
+        self.assertIsNone(pin_cache.get_manifest(m_custom["query"]["grid_key"]))
+        self.assertIsNotNone(pin_cache.get_manifest(m_custom2["query"]["grid_key"]))
 
 
 if __name__ == "__main__":

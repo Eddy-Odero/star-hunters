@@ -237,6 +237,50 @@ button.active {
   color: #fbbf24;
 }
 
+.catalog-badge-simbad {
+  color: #a78bfa;
+}
+
+.catalog-badge-jpl_horizons {
+  color: #34d399;
+}
+
+.class-badge {
+  display: inline-block;
+  padding: 0 0.35rem;
+  border-radius: 4px;
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.class-badge-planet,
+.class-badge-moon,
+.class-badge-comet,
+.class-badge-asteroid {
+  background: rgba(52, 211, 153, 0.16);
+  color: #6ee7b7;
+}
+
+.class-badge-brown_dwarf {
+  background: rgba(244, 114, 182, 0.16);
+  color: #f9a8d4;
+}
+
+.class-badge-galaxy,
+.class-badge-nebula {
+  background: rgba(167, 139, 250, 0.16);
+  color: #c4b5fd;
+}
+
+.mode-btn.active {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #38bdf8;
+}
+
 .no-objects-item {
   color: #64748b;
   font-size: 0.85rem;

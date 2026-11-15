@@ -9,14 +9,15 @@ We are building **Star Hunters (Planet X & SPHEREx Blinker)** — an interactive
 3. **Multi-Mission Resiliency (SPHEREx + WISE/NEOWISE + Gaia DR3 + MOST):**
    - Where SPHEREx has $\ge 2$ epochs, users compare SPHEREx passes directly.
    - Where live SPHEREx coverage is sparse (only 1 pass or narrow time baseline, e.g., when a user clicks *"What's Above Me?"*), the pipeline automatically supplements the patch with archival **WISE/NEOWISE ($W1\ 3.4\ \mu\text{m}$ and $W2\ 4.6\ \mu\text{m}$)** cutouts aligned to the exact same $256 \times 256$ WCS grid (giving a 10–15 year baseline!) alongside **Gaia DR3** optical astrometry and **NASA MOST** Solar System asteroid/comet overlays.
-4. **Asynchronous Known-Object Tracking & Interactive Checkbox Filter (with Check/Uncheck All):**
-   - The backend asynchronously queries and cross-matches **Gaia DR3**, **WISE**, and **NASA MOST** for all known celestial objects in the current field of view and propagates their expected pixel positions `(x, y)` across every epoch (`epoch_positions`).
-   - On the frontend, an interactive **Known Celestial Objects Checkbox Menu** (with **Check All**, **Uncheck All**, and **Notable Movers Default** controls) lets users choose exactly which cataloged objects are highlighted and labeled across each epoch image to track their movement without visual clutter.
-5. **Automatic Bright-Body Detection & Backward/Forward Multi-Frame Tracking on Click:**
+4. **Asynchronous Known-Object Tracking, Fuzzy Search & Interactive Checkbox Filter (with Check/Uncheck All):**
+   - The backend asynchronously queries and cross-matches **Gaia DR3** (`I/355/gaiadr3`), **AllWISE/CatWISE** (`II/328/allwise`), and **NASA MOST** for all SPHEREx-trackable celestial objects in the current field of view (without arbitrary numerical caps) and propagates their expected pixel positions `(x, y)` across every epoch (`epoch_positions`).
+   - On the frontend, an interactive **Known Celestial Objects Checkbox Menu** (with **Fuzzy Search**, **Check All**, **Uncheck All**, **Notable Movers Default**, and one-click **Track / Jump & Track** controls) lets users fuzzy-search any celestial object by name, designation, or type and turn on its tracking across passes.
+5. **Automatic Bright-Body Detection, Auto-List Sync & Backward/Forward Multi-Frame Tracking on Click:**
    - Clicking any spot on any currently viewed image (`originEpochIndex`) automatically detects and highlights the local **"bright" body** in the surrounding pixels on that image (`(x_origin, y_origin)`), and then searches both **backward (previous epochs)** and **forward (future epochs)** from that origin point to trace the body's multi-frame trajectory (`waypoints` across all frames), calculating its proper motion ($\text{arcsec/yr}$), cross-matching against known catalogs, flagging uncataloged movers, and opening its $102$-channel near-infrared spectrum ($0.75\text{–}5.0\ \mu\text{m}$) with highlighted molecular absorption bands ($\text{H}_2\text{O}, \text{CH}_4, \text{CO}_2, \text{CO}$).
-6. **3G-Optimised Two-Tier Caching & Local Client Calculation:**
-   - **Backend Preprocessing + SQLite Cache (Tier 1):** The backend handles heavy FITS cutout downloads, `IMAGE - ZODI` subtraction, WCS reprojection, and catalog extraction, caching processed artifacts in SQLite and serving GZip-compressed raw binary frames (`Float16`/`Float32`) with immutable `Cache-Control` headers.
-   - **Browser HTTP Cache + IndexedDB (Tier 2):** The frontend persists raw patch manifests, catalog overlays, and decoded binary buffers in memory and **IndexedDB** (`star_hunters_patch_cache_v1`) so all user-configurable options — epoch combination (blink, subtract, co-add), wavelength colorization, known-object checkbox filtering, and click-to-track trajectory detection — run locally with zero repeated network fetches.
+   - Every tracked object in the viewport (both checked `knownObjects` and user-clicked `trackedTargets`) is assigned a randomly selected distinct highlighter color from a $\ge 16$-color high-contrast palette (`TRACKING_SQUARE_COLORS`, 20 colors). If a user clicks a known celestial object on the viewport that was not yet checked in the Known Celestial Objects list, its checkbox tracking is automatically enabled and synchronized with its official catalog label and highlighter color.
+6. **Aggressive Known-Data Pre-Warming & 3G-Optimised Two-Tier Caching:**
+   - **Backend Preprocessing + Pinned SQLite Cache (Tier 1):** Known showcase targets, catalogs, spectra, and the global fuzzy-search index (`/api/v1/catalogs/search`) are aggressively pre-warmed in memory and pinned in SQLite (`pin_grid_key`) so LRU eviction never purges showcase data before custom patches.
+   - **Browser HTTP Cache + IndexedDB (Tier 2):** The frontend persists raw patch manifests, global known-object search indices, catalog overlays, and decoded binary buffers in memory and **IndexedDB** (`star_hunters_patch_cache_v1`) so all user-configurable options — epoch combination (blink, subtract, co-add), wavelength colorization, fuzzy search, known-object checkbox filtering, and click-to-track trajectory detection — run locally with zero repeated network fetches.
 
 ---
 
@@ -278,7 +279,7 @@ To allow **Dev 4** (Interactive Viewport, IndexedDB Cache, Pixel & Bright-Body T
 ```typescript
 export type ComparisonMode = 'blink' | 'subtract' | 'coadd';
 export type ContrastStretch = 'asinh' | 'linear' | 'zscale';
-export type CatalogSourceType = 'gaia_dr3' | 'wise' | 'most';
+export type CatalogSourceType = 'gaia_dr3' | 'wise' | 'most' | 'simbad' | 'jpl_horizons';
 export type CelestialObjectCategory =
   | 'star'
   | 'high_pm_star'
@@ -286,6 +287,24 @@ export type CelestialObjectCategory =
   | 'solar_system'
   | 'variable_star'
   | 'infrared_source';
+export type CelestialObjectClass =
+  | 'star'
+  | 'brown_dwarf'
+  | 'planet'
+  | 'moon'
+  | 'comet'
+  | 'asteroid'
+  | 'galaxy'
+  | 'nebula'
+  | 'variable_star'
+  | 'infrared_source';
+
+export interface MotionVector {
+  dx_px: number;
+  dy_px: number;
+  dra_arcsec: number;
+  ddec_arcsec: number;
+}
 
 export interface KnownObjectEpochPosition {
   epoch_id: string;
@@ -301,12 +320,20 @@ export interface KnownCelestialObject {
   label: string;
   catalog: CatalogSourceType;
   object_type: CelestialObjectCategory;
+  object_class?: CelestialObjectClass | null;
+  canonical_name?: string | null;
+  otype?: string | null;
   ra: number;
   dec: number;
   x: number;
   y: number;
   magnitude: number | null;
   proper_motion_arcsec_yr: number | null;
+  pmra_mas_yr?: number | null;
+  pmdec_mas_yr?: number | null;
+  parallax_mas?: number | null;
+  motion_vector?: MotionVector | null;
+  data_source?: string | null;
   w1_w2_color: number | null;
   default_checked: boolean;
   epoch_positions: KnownObjectEpochPosition[];

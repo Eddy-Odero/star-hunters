@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import math
 import os
 import random
 import struct
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 from .models.contracts import (
@@ -25,7 +28,15 @@ from .models.contracts import (
     validate_sky_patch_manifest,
     validate_spectrum_payload,
 )
-from .services.spatial_cache import SpatialSqliteCache, compute_grid_key
+from .services.celestial_catalog_pipeline import (
+    AutomatedCelestialPipeline,
+    fetch_most_spherex_matches,
+)
+from .services.spatial_cache import (
+    SpatialSqliteCache,
+    angular_separation_deg,
+    compute_grid_key,
+)
 from .services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
 from .services.wise_fallback import fetch_wise_fallback
 
@@ -45,14 +56,33 @@ except ImportError:  # pragma: no cover
 
 CONSTELLATION_BANDS: list[tuple[float, float, float, float, str]] = [
     (0.0, 90.0, 15.0, 90.0, "Cassiopeia"),
+    (30.0, 55.0, 10.0, 28.0, "Aries"),
+    (55.0, 75.0, 12.0, 28.0, "Taurus"),
     (60.0, 100.0, 15.0, 45.0, "Auriga"),
     (110.0, 160.0, -25.0, 5.0, "Hydra"),
+    (140.0, 175.0, 0.0, 28.0, "Leo"),
+    (150.0, 175.0, -60.0, -40.0, "Vela"),
+    (180.0, 210.0, -15.0, 20.0, "Virgo"),
     (230.0, 265.0, 50.0, 80.0, "Draco"),
     (250.0, 280.0, -10.0, 15.0, "Ophiuchus"),
     (275.0, 305.0, -10.0, 15.0, "Aquila"),
     (280.0, 310.0, -35.0, -10.0, "Sagittarius"),
     (310.0, 350.0, -70.0, -40.0, "Indus"),
 ]
+
+
+def _load_celestial_catalog_data() -> dict[str, dict[str, Any]]:
+    data_path = Path(__file__).resolve().parent / "models" / "celestial_catalog_data.json"
+    if not data_path.is_file():
+        return {}
+    return json.loads(data_path.read_text(encoding="utf-8"))
+
+
+CELESTIAL_CATALOG_DATA: dict[str, dict[str, Any]] = _load_celestial_catalog_data()
+_PREWARMED_MANIFESTS: dict[tuple[str, bool], dict[str, Any]] = {}
+_PREWARMED_FRAMES: dict[str, dict[str, bytes]] = {}
+_PREWARMED_SPECTRA: dict[str, dict[str, Any]] = {}
+_GLOBAL_KNOWN_OBJECTS_INDEX: list[dict[str, Any]] = []
 
 
 def lookup_constellation(ra: float, dec: float) -> str:
@@ -209,6 +239,205 @@ def pixel_to_sky(
     return round(ra, 5), round(dec, 5)
 
 
+def _format_wise_designation(ra: float, dec: float) -> str:
+    """Format ICRS (ra, dec) into standard WISE Jhhmmss.ss±ddmmss.s designation."""
+    ra_norm = (ra % 360.0) / 15.0
+    rh = int(ra_norm)
+    rm = int((ra_norm - rh) * 60.0)
+    rs = ((ra_norm - rh) * 60.0 - rm) * 60.0
+    sign = "+" if dec >= 0 else "-"
+    adec = abs(dec)
+    dd = int(adec)
+    dm = int((adec - dd) * 60.0)
+    ds = ((adec - dd) * 60.0 - dm) * 60.0
+    return f"J{rh:02d}{rm:02d}{rs:05.2f}{sign}{dd:02d}{dm:02d}{ds:04.1f}"
+
+
+def _build_coordinate_seeded_catalog(
+    ra: float,
+    dec: float,
+    wcs: dict[str, Any],
+    epochs_meta: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Generate a rich, deterministic, SPHEREx-trackable multi-catalog field for any (ra, dec)."""
+    seed_val = int(round((ra % 360.0) * 1000.0) * 1_000_000 + round((dec + 90.0) * 1000.0))
+    rng = random.Random(seed_val)
+
+    gaia_dr3: list[dict[str, Any]] = []
+    wise_sources: list[dict[str, Any]] = []
+    most_solar_system: list[dict[str, Any]] = []
+    known_objects: list[dict[str, Any]] = []
+
+    p1_x, p1_y = 124.0, 126.0
+    p2_x, p2_y = 132.0, 130.0
+    placed: list[tuple[float, float]] = [(p1_x, p1_y), (p2_x, p2_y)]
+
+    def _can_place(x: float, y: float, min_dist: float = 11.2) -> bool:
+        if not (14.0 <= x <= 242.0 and 14.0 <= y <= 242.0):
+            return False
+        return all(math.hypot(x - px, y - py) >= min_dist for px, py in placed)
+
+    p1_ra, p1_dec = pixel_to_sky(p1_x, p1_y, wcs)
+    target_epoch_positions: list[dict[str, Any]] = []
+    for idx, ep in enumerate(epochs_meta):
+        frac = 0.0 if len(epochs_meta) <= 1 else idx / float(len(epochs_meta) - 1)
+        ex = round(p1_x + frac * (p2_x - p1_x), 2)
+        ey = round(p1_y + frac * (p2_y - p1_y), 2)
+        era, edec = pixel_to_sky(ex, ey, wcs)
+        target_epoch_positions.append(
+            {
+                "epoch_id": ep["epoch_id"],
+                "mjd": ep["mjd"],
+                "ra": era,
+                "dec": edec,
+                "x": ex,
+                "y": ey,
+            }
+        )
+
+    constellation = lookup_constellation(ra, dec)
+    wise_id = _format_wise_designation(p1_ra, p1_dec)
+    w1_mag = round(14.8 + rng.uniform(-1.2, 1.8), 2)
+    w2_mag = round(w1_mag - rng.uniform(1.4, 2.8), 2)
+    w1_w2 = round(w1_mag - w2_mag, 2)
+    pm_primary = round(rng.uniform(2.4, 7.8), 2)
+
+    wise_sources.append(
+        {
+            "source_id": wise_id,
+            "ra": p1_ra,
+            "dec": p1_dec,
+            "x": p1_x,
+            "y": p1_y,
+            "w1_mag": w1_mag,
+            "w2_mag": w2_mag,
+            "w1_w2_color": w1_w2,
+        }
+    )
+    known_objects.append(
+        {
+            "object_id": f"wise:{wise_id}",
+            "label": f"WISE {wise_id} ({constellation} IR Mover)",
+            "catalog": "wise",
+            "object_type": "brown_dwarf_candidate",
+            "ra": p1_ra,
+            "dec": p1_dec,
+            "x": p1_x,
+            "y": p1_y,
+            "magnitude": w2_mag,
+            "proper_motion_arcsec_yr": pm_primary,
+            "w1_w2_color": w1_w2,
+            "default_checked": True,
+            "epoch_positions": target_epoch_positions,
+        }
+    )
+
+    # Populate trackable Gaia DR3 stars and AllWISE infrared sources across the 256x256 field
+    base_gaia_id = 4000000000000000000 + (seed_val % 900000000000000000)
+    for idx in range(90):
+        cand_x = round(rng.uniform(16.0, 240.0), 2)
+        cand_y = round(rng.uniform(16.0, 240.0), 2)
+        if not _can_place(cand_x, cand_y):
+            continue
+        placed.append((cand_x, cand_y))
+        s_ra, s_dec = pixel_to_sky(cand_x, cand_y, wcs)
+        ep_positions = [
+            {
+                "epoch_id": ep["epoch_id"],
+                "mjd": ep["mjd"],
+                "ra": s_ra,
+                "dec": s_dec,
+                "x": cand_x,
+                "y": cand_y,
+            }
+            for ep in epochs_meta
+        ]
+        if idx % 4 != 3:
+            sid = str(base_gaia_id + idx * 131071)
+            g_mag = round(rng.uniform(11.8, 17.8), 2)
+            bp_rp = round(rng.uniform(0.55, 2.65), 2)
+            is_high_pm = idx == 0
+            pmra = round(rng.uniform(-220.0, 220.0) if is_high_pm else rng.uniform(-18.0, 18.0), 2)
+            pmdec = round(rng.uniform(-220.0, 220.0) if is_high_pm else rng.uniform(-18.0, 18.0), 2)
+            pm_tot = round(math.hypot(pmra, pmdec) / 1000.0, 3)
+            gaia_dr3.append(
+                {
+                    "source_id": sid,
+                    "ra": s_ra,
+                    "dec": s_dec,
+                    "x": cand_x,
+                    "y": cand_y,
+                    "g_mag": g_mag,
+                    "bp_rp": bp_rp,
+                    "pmra": pmra,
+                    "pmdec": pmdec,
+                }
+            )
+            known_objects.append(
+                {
+                    "object_id": f"gaia:{sid}",
+                    "label": (
+                        f"Gaia DR3 {sid} (High-PM Star)" if pm_tot >= 0.15 else f"Gaia DR3 {sid}"
+                    ),
+                    "catalog": "gaia_dr3",
+                    "object_type": "high_pm_star" if pm_tot >= 0.15 else "star",
+                    "ra": s_ra,
+                    "dec": s_dec,
+                    "x": cand_x,
+                    "y": cand_y,
+                    "magnitude": g_mag,
+                    "proper_motion_arcsec_yr": pm_tot,
+                    "w1_w2_color": None,
+                    "default_checked": pm_tot >= 0.15,
+                    "epoch_positions": ep_positions,
+                }
+            )
+        else:
+            wid = _format_wise_designation(s_ra, s_dec)
+            fw1 = round(rng.uniform(12.2, 16.0), 2)
+            fw2 = round(fw1 - rng.uniform(-0.15, 1.15), 2)
+            f_color = round(fw1 - fw2, 2)
+            is_bd = f_color >= 0.85
+            wise_sources.append(
+                {
+                    "source_id": wid,
+                    "ra": s_ra,
+                    "dec": s_dec,
+                    "x": cand_x,
+                    "y": cand_y,
+                    "w1_mag": fw1,
+                    "w2_mag": fw2,
+                    "w1_w2_color": f_color,
+                }
+            )
+            known_objects.append(
+                {
+                    "object_id": f"wise:{wid}",
+                    "label": (
+                        f"AllWISE {wid} (IR Brown Dwarf Candidate)" if is_bd else f"AllWISE {wid}"
+                    ),
+                    "catalog": "wise",
+                    "object_type": "brown_dwarf_candidate" if is_bd else "infrared_source",
+                    "ra": s_ra,
+                    "dec": s_dec,
+                    "x": cand_x,
+                    "y": cand_y,
+                    "magnitude": fw2,
+                    "proper_motion_arcsec_yr": 0.025,
+                    "w1_w2_color": f_color,
+                    "default_checked": is_bd,
+                    "epoch_positions": ep_positions,
+                }
+            )
+
+    return {
+        "known_objects": known_objects,
+        "gaia_dr3": gaia_dr3,
+        "wise_sources": wise_sources,
+        "most_solar_system": most_solar_system,
+    }
+
+
 def build_catalog_overlays_for_patch(
     ra: float,
     dec: float,
@@ -217,77 +446,26 @@ def build_catalog_overlays_for_patch(
     target_slug: str | None = None,
 ) -> dict[str, Any]:
     """Build epoch-aware known_objects (for the checkbox list UI) and raw catalog lists."""
-    # Stationary field stars from Gaia DR3
-    field_offsets = [
-        ("57648291038471", -12.0, -12.6, 16.4, 1.25, -12.4, 4.1),
-        ("57648291038472", 34.0, -28.0, 15.1, 0.92, 3.2, -5.0),
-        ("57648291038473", -42.0, 31.0, 17.2, 1.68, -4.1, 2.8),
-        ("57648291038474", 48.0, 39.0, 14.8, 0.78, 1.5, -1.9),
-    ]
+    resolved_slug = target_slug
+    if not resolved_slug:
+        for cand_slug, meta in SHOWCASE_TARGETS.items():
+            if math.hypot(ra - meta["ra"], dec - meta["dec"]) < 0.25:
+                resolved_slug = cand_slug
+                break
+
+    if not resolved_slug or resolved_slug not in CELESTIAL_CATALOG_DATA:
+        return _build_coordinate_seeded_catalog(ra=ra, dec=dec, wcs=wcs, epochs_meta=epochs_meta)
+
+    field_data = CELESTIAL_CATALOG_DATA[resolved_slug]
+    prim = field_data["primary"]
     gaia_dr3: list[dict[str, Any]] = []
-    known_objects: list[dict[str, Any]] = []
-
-    for sid, dx, dy, g_mag, bp_rp, pmra, pmdec in field_offsets:
-        px = round(128.0 + dx, 1)
-        py = round(128.0 + dy, 1)
-        s_ra, s_dec = pixel_to_sky(px, py, wcs)
-        pm_tot = round(math.hypot(pmra, pmdec) / 1000.0, 3)
-        gaia_dr3.append(
-            {
-                "source_id": sid,
-                "ra": s_ra,
-                "dec": s_dec,
-                "x": px,
-                "y": py,
-                "g_mag": g_mag,
-                "bp_rp": bp_rp,
-                "pmra": pmra,
-                "pmdec": pmdec,
-            }
-        )
-        epoch_positions = [
-            {
-                "epoch_id": ep["epoch_id"],
-                "mjd": ep["mjd"],
-                "ra": s_ra,
-                "dec": s_dec,
-                "x": px,
-                "y": py,
-            }
-            for ep in epochs_meta
-        ]
-        known_objects.append(
-            {
-                "object_id": f"gaia:{sid}",
-                "label": f"Gaia DR3 {sid}",
-                "catalog": "gaia_dr3",
-                "object_type": "star",
-                "ra": s_ra,
-                "dec": s_dec,
-                "x": px,
-                "y": py,
-                "magnitude": g_mag,
-                "proper_motion_arcsec_yr": pm_tot,
-                "w1_w2_color": None,
-                "default_checked": False,
-                "epoch_positions": epoch_positions,
-            }
-        )
-
     wise_sources: list[dict[str, Any]] = []
     most_solar_system: list[dict[str, Any]] = []
+    known_objects: list[dict[str, Any]] = []
 
-    # Primary target / notable mover at patch center (checked by default!)
-    slug = target_slug or "wise_0855"
-    target_info = SHOWCASE_TARGETS.get(slug, SHOWCASE_TARGETS["wise_0855"])
-    p1_x, p1_y = 124.0, 126.0
-    p2_x, p2_y = 132.0, 130.0
-    if slug in ("rw_aurigae", "r_draconis"):
-        p1_x, p1_y = 128.0, 128.0
-        p2_x, p2_y = 128.0, 128.0
-
+    p1_x, p1_y = float(prim["p1_x"]), float(prim["p1_y"])
+    p2_x, p2_y = float(prim["p2_x"]), float(prim["p2_y"])
     p1_ra, p1_dec = pixel_to_sky(p1_x, p1_y, wcs)
-    p2_ra, p2_dec = pixel_to_sky(p2_x, p2_y, wcs)
 
     target_epoch_positions: list[dict[str, Any]] = []
     for idx, ep in enumerate(epochs_meta):
@@ -306,108 +484,172 @@ def build_catalog_overlays_for_patch(
             }
         )
 
-    if slug == "comet_3i_atlas":
+    prim_cat = prim["catalog"]
+    if prim_cat == "most":
         for ep_pos in target_epoch_positions:
             most_solar_system.append(
                 {
-                    "object_name": "3I/ATLAS",
+                    "object_name": str(prim["source_id"]),
                     "epoch_id": ep_pos["epoch_id"],
                     "ra": ep_pos["ra"],
                     "dec": ep_pos["dec"],
                     "x": ep_pos["x"],
                     "y": ep_pos["y"],
-                    "v_mag": 17.6,
+                    "v_mag": float(prim.get("v_mag", prim["magnitude"])),
                 }
             )
-        known_objects.insert(
-            0,
+    elif prim_cat == "gaia_dr3":
+        gaia_dr3.append(
             {
-                "object_id": "most:3I/ATLAS",
-                "label": "Comet 3I/ATLAS (Solar System Mover)",
-                "catalog": "most",
-                "object_type": "solar_system",
+                "source_id": str(prim["source_id"]),
                 "ra": p1_ra,
                 "dec": p1_dec,
                 "x": p1_x,
                 "y": p1_y,
-                "magnitude": 17.6,
-                "proper_motion_arcsec_yr": 19.4,
-                "w1_w2_color": 1.4,
-                "default_checked": True,
-                "epoch_positions": target_epoch_positions,
-            },
-        )
-    elif slug == "barnards_star":
-        gaia_dr3.insert(
-            0,
-            {
-                "source_id": "4472832130942575872",
-                "ra": p1_ra,
-                "dec": p1_dec,
-                "x": p1_x,
-                "y": p1_y,
-                "g_mag": 9.51,
-                "bp_rp": 2.81,
-                "pmra": -801.5,
-                "pmdec": 10362.5,
-            },
-        )
-        known_objects.insert(
-            0,
-            {
-                "object_id": "gaia:4472832130942575872",
-                "label": "Barnard's Star (High Proper Motion)",
-                "catalog": "gaia_dr3",
-                "object_type": "high_pm_star",
-                "ra": p1_ra,
-                "dec": p1_dec,
-                "x": p1_x,
-                "y": p1_y,
-                "magnitude": 9.51,
-                "proper_motion_arcsec_yr": 10.39,
-                "w1_w2_color": 0.25,
-                "default_checked": True,
-                "epoch_positions": target_epoch_positions,
-            },
-        )
-    else:
-        wise_id = f"J{int(ra * 100):06d}{int(abs(dec) * 100):05d}"
-        w1_mag = 17.8 if slug == "wise_0855" else 13.2
-        w2_mag = 14.0 if slug == "wise_0855" else 11.4
-        w1_w2 = round(w1_mag - w2_mag, 2)
-        wise_sources.append(
-            {
-                "source_id": wise_id,
-                "ra": p1_ra,
-                "dec": p1_dec,
-                "x": p1_x,
-                "y": p1_y,
-                "w1_mag": w1_mag,
-                "w2_mag": w2_mag,
-                "w1_w2_color": w1_w2,
+                "g_mag": float(prim.get("g_mag", prim["magnitude"])),
+                "bp_rp": float(prim.get("bp_rp", 2.8)),
+                "pmra": float(prim.get("pmra", 0.0)),
+                "pmdec": float(prim.get("pmdec", 0.0)),
             }
         )
-        obj_type: Literal["brown_dwarf_candidate", "variable_star", "infrared_source"] = (
-            "variable_star" if slug in ("rw_aurigae", "r_draconis") else "brown_dwarf_candidate"
-        )
-        pm_val = 0.02 if slug in ("rw_aurigae", "r_draconis") else 8.12
-        known_objects.insert(
-            0,
+    else:
+        wise_sources.append(
             {
-                "object_id": f"wise:{wise_id}",
-                "label": f"{target_info['name']} ({target_info['category']})",
-                "catalog": "wise",
-                "object_type": obj_type,
+                "source_id": str(prim["source_id"]),
                 "ra": p1_ra,
                 "dec": p1_dec,
                 "x": p1_x,
                 "y": p1_y,
-                "magnitude": w2_mag,
-                "proper_motion_arcsec_yr": pm_val,
-                "w1_w2_color": w1_w2,
-                "default_checked": True,
-                "epoch_positions": target_epoch_positions,
-            },
+                "w1_mag": float(prim.get("w1_mag", prim["magnitude"])),
+                "w2_mag": float(prim.get("w2_mag", prim["magnitude"])),
+                "w1_w2_color": float(prim.get("w1_w2_color", 1.2)),
+            }
+        )
+
+    known_objects.append(
+        {
+            "object_id": str(prim["object_id"]),
+            "label": str(prim["label"]),
+            "catalog": prim_cat,
+            "object_type": str(prim["object_type"]),
+            "ra": p1_ra,
+            "dec": p1_dec,
+            "x": p1_x,
+            "y": p1_y,
+            "magnitude": float(prim["magnitude"]),
+            "proper_motion_arcsec_yr": float(prim["proper_motion_arcsec_yr"]),
+            "w1_w2_color": prim.get("w1_w2_color"),
+            "default_checked": True,
+            "epoch_positions": target_epoch_positions,
+        }
+    )
+
+    notable_count = 1
+    for g in field_data.get("gaia_dr3", []):
+        gx, gy = float(g["x"]), float(g["y"])
+        s_ra, s_dec = pixel_to_sky(gx, gy, wcs)
+        sid = str(g["source_id"])
+        g_mag = float(g["g_mag"])
+        bp_rp = float(g["bp_rp"]) if g.get("bp_rp") is not None else None
+        pmra = float(g.get("pmra") or 0.0)
+        pmdec = float(g.get("pmdec") or 0.0)
+        pm_tot = round(math.hypot(pmra, pmdec) / 1000.0, 3)
+        is_high_pm = pm_tot >= 0.05
+        is_checked = is_high_pm and notable_count < 6
+        if is_checked:
+            notable_count += 1
+        gaia_dr3.append(
+            {
+                "source_id": sid,
+                "ra": s_ra,
+                "dec": s_dec,
+                "x": gx,
+                "y": gy,
+                "g_mag": g_mag,
+                "bp_rp": bp_rp,
+                "pmra": pmra,
+                "pmdec": pmdec,
+            }
+        )
+        ep_positions = [
+            {
+                "epoch_id": ep["epoch_id"],
+                "mjd": ep["mjd"],
+                "ra": s_ra,
+                "dec": s_dec,
+                "x": gx,
+                "y": gy,
+            }
+            for ep in epochs_meta
+        ]
+        known_objects.append(
+            {
+                "object_id": f"gaia:{sid}",
+                "label": (f"Gaia DR3 {sid} (High-PM Star)" if is_high_pm else f"Gaia DR3 {sid}"),
+                "catalog": "gaia_dr3",
+                "object_type": "high_pm_star" if is_high_pm else "star",
+                "ra": s_ra,
+                "dec": s_dec,
+                "x": gx,
+                "y": gy,
+                "magnitude": g_mag,
+                "proper_motion_arcsec_yr": pm_tot,
+                "w1_w2_color": None,
+                "default_checked": is_checked,
+                "epoch_positions": ep_positions,
+            }
+        )
+
+    for w in field_data.get("wise_sources", []):
+        wx, wy = float(w["x"]), float(w["y"])
+        w_ra, w_dec = pixel_to_sky(wx, wy, wcs)
+        wid = str(w["source_id"])
+        w1 = float(w["w1_mag"])
+        w2 = float(w["w2_mag"])
+        w_color = float(w["w1_w2_color"])
+        is_bd = w_color >= 0.75
+        is_checked = is_bd and notable_count < 6
+        if is_checked:
+            notable_count += 1
+        wise_sources.append(
+            {
+                "source_id": wid,
+                "ra": w_ra,
+                "dec": w_dec,
+                "x": wx,
+                "y": wy,
+                "w1_mag": w1,
+                "w2_mag": w2,
+                "w1_w2_color": w_color,
+            }
+        )
+        ep_positions = [
+            {
+                "epoch_id": ep["epoch_id"],
+                "mjd": ep["mjd"],
+                "ra": w_ra,
+                "dec": w_dec,
+                "x": wx,
+                "y": wy,
+            }
+            for ep in epochs_meta
+        ]
+        known_objects.append(
+            {
+                "object_id": f"wise:{wid}",
+                "label": (f"AllWISE {wid} (Red IR Candidate)" if is_bd else f"AllWISE {wid}"),
+                "catalog": "wise",
+                "object_type": "brown_dwarf_candidate" if is_bd else "infrared_source",
+                "ra": w_ra,
+                "dec": w_dec,
+                "x": wx,
+                "y": wy,
+                "magnitude": w2,
+                "proper_motion_arcsec_yr": 0.015,
+                "w1_w2_color": w_color,
+                "default_checked": is_checked,
+                "epoch_positions": ep_positions,
+            }
         )
 
     return {
@@ -420,35 +662,36 @@ def build_catalog_overlays_for_patch(
 
 def generate_synthetic_epoch_frames(
     slug: str = "wise_0855",
+    manifest: dict[str, Any] | None = None,
 ) -> dict[str, bytes]:
-    """Generate deterministic (6, 256, 256) float32 and (256, 256) uint8 binary buffers."""
-    # Stationary field stars at identical (x, y) across Pass 1 and Pass 2
-    field_stars = [
-        (116.0, 115.4, 2.8),
-        (162.0, 100.0, 3.6),
-        (86.0, 159.0, 2.2),
-        (176.0, 167.0, 4.1),
-    ]
-    if slug in ("rw_aurigae", "r_draconis"):
-        p1_pos = (128.0, 128.0)
-        p2_pos = (128.0, 128.0)
-        p1_scale, p2_scale = 2.0, 6.5
-    else:
-        p1_pos = (124.0, 126.0)
-        p2_pos = (132.0, 130.0)
-        p1_scale, p2_scale = 5.5, 5.5
+    """Generate deterministic (6, 256, 256) float32 and (256, 256) uint8 binary buffers
+    rendering every KnownCelestialObject in the sky patch across passes."""
+    if manifest is None and slug in _PREWARMED_FRAMES:
+        return _PREWARMED_FRAMES[slug]
 
-    cold_only = slug in ("wise_0855", "epsilon_indi_b")
+    if manifest is None:
+        meta = SHOWCASE_TARGETS.get(slug, SHOWCASE_TARGETS["wise_0855"])
+        manifest = build_sky_patch_manifest_payload(
+            ra=meta["ra"],
+            dec=meta["dec"],
+            fov_arcmin=5.0,
+            slug=slug if slug in SHOWCASE_TARGETS else None,
+        )
 
-    def _build_pass(tx: float, ty: float, t_scale: float) -> bytes:
+    resolved_slug = manifest.get("target_metadata", {}).get("slug", slug)
+    known_objects = manifest.get("catalog_overlays", {}).get("known_objects", [])
+    cold_only_primary = resolved_slug in ("wise_0855", "epsilon_indi_b", "luhman_16")
+    variable_primary = resolved_slug in ("rw_aurigae", "r_draconis", "cw_leonis", "t_tauri")
+
+    def _build_pass(pass_idx: int) -> bytes:
         planes: list[float] = [0.02] * TOTAL_DETECTOR_VALUES
 
-        def _add_psf(cx: float, cy: float, det_idx: int, peak: float, sigma: float = 1.8) -> None:
+        def _add_psf(cx: float, cy: float, det_idx: int, peak: float, sigma: float = 1.65) -> None:
             plane_offset = det_idx * PIXELS_PER_PLANE
-            x_min = max(0, int(cx - 7))
-            x_max = min(GRID_WIDTH - 1, int(cx + 7))
-            y_min = max(0, int(cy - 7))
-            y_max = min(GRID_HEIGHT - 1, int(cy + 7))
+            x_min = max(0, int(cx - 6))
+            x_max = min(GRID_WIDTH - 1, int(cx + 6))
+            y_min = max(0, int(cy - 6))
+            y_max = min(GRID_HEIGHT - 1, int(cy + 6))
             two_sigma_sq = 2.0 * sigma * sigma
             for py in range(y_min, y_max + 1):
                 dy_sq = (py - cy) * (py - cy)
@@ -458,19 +701,35 @@ def generate_synthetic_epoch_frames(
                     val = peak * math.exp(-(dx_sq + dy_sq) / two_sigma_sq)
                     planes[row_offset + px] += val
 
-        # Add stationary background stars (brighter in short-wavelength detectors 0..2)
-        for sx, sy, s_flux in field_stars:
-            for d in range(NUM_DETECTORS):
-                det_weight = 1.4 - 0.18 * d
-                _add_psf(sx, sy, d, s_flux * det_weight)
+        for obj_idx, obj in enumerate(known_objects):
+            ep_positions = obj.get("epoch_positions", [])
+            if not ep_positions:
+                continue
+            ep_pos = ep_positions[min(pass_idx, len(ep_positions) - 1)]
+            cx = float(ep_pos["x"])
+            cy = float(ep_pos["y"])
 
-        # Add primary target
-        for d in range(NUM_DETECTORS):
-            if cold_only:
-                det_weight = 0.03 if d < 3 else (0.45 if d == 3 else 1.8)
+            if obj_idx == 0:
+                if variable_primary:
+                    t_scale = 2.0 if pass_idx == 0 else 6.5
+                else:
+                    t_scale = 5.8
+                for d in range(NUM_DETECTORS):
+                    if cold_only_primary:
+                        det_weight = 0.03 if d < 3 else (0.45 if d == 3 else 1.85)
+                    else:
+                        det_weight = 1.15
+                    _add_psf(cx, cy, d, t_scale * det_weight, sigma=1.75)
             else:
-                det_weight = 1.1
-            _add_psf(tx, ty, d, t_scale * det_weight)
+                mag = float(obj.get("magnitude") or 15.5)
+                base_flux = max(1.85, min(4.6, 2.4 + (16.2 - mag) * 0.32))
+                cat = obj.get("catalog", "gaia_dr3")
+                for d in range(NUM_DETECTORS):
+                    if cat == "wise":
+                        det_weight = 0.65 + 0.16 * d
+                    else:
+                        det_weight = 1.38 - 0.15 * d
+                    _add_psf(cx, cy, d, base_flux * det_weight, sigma=1.60)
 
         return struct.pack(f"<{TOTAL_DETECTOR_VALUES}f", *planes)
 
@@ -479,12 +738,15 @@ def generate_synthetic_epoch_frames(
     flags[240 * GRID_WIDTH + 240] = 2  # Sample saturation bit
     flags_bytes = bytes(flags)
 
-    return {
-        "pass_1.bin": _build_pass(p1_pos[0], p1_pos[1], p1_scale),
-        "pass_2.bin": _build_pass(p2_pos[0], p2_pos[1], p2_scale),
+    result = {
+        "pass_1.bin": _build_pass(0),
+        "pass_2.bin": _build_pass(1),
         "pass_1_flags.bin": flags_bytes,
         "pass_2_flags.bin": flags_bytes,
     }
+    if resolved_slug in SHOWCASE_TARGETS:
+        _PREWARMED_FRAMES[resolved_slug] = result
+    return result
 
 
 def build_sky_patch_manifest_payload(
@@ -502,9 +764,23 @@ def build_sky_patch_manifest_payload(
             if math.hypot(ra - meta["ra"], dec - meta["dec"]) < 0.25:
                 resolved_slug = cand_slug
                 break
+
+    if (
+        resolved_slug in SHOWCASE_TARGETS
+        and abs(fov_arcmin - 5.0) < 1e-4
+        and math.hypot(
+            ra - SHOWCASE_TARGETS[resolved_slug]["ra"],
+            dec - SHOWCASE_TARGETS[resolved_slug]["dec"],
+        )
+        < 1e-3
+    ):
+        cache_tuple = (resolved_slug, static_preset_urls)
+        if cache_tuple in _PREWARMED_MANIFESTS:
+            return copy.deepcopy(_PREWARMED_MANIFESTS[cache_tuple])
+
     target_meta = dict(
         SHOWCASE_TARGETS.get(
-            resolved_slug or "wise_0855",
+            resolved_slug or "",
             {
                 "slug": "custom_patch",
                 "name": f"Sky Patch ({ra:.2f}, {dec:.2f})",
@@ -586,6 +862,16 @@ def build_sky_patch_manifest_payload(
         "catalog_overlays": catalog_overlays,
     }
     validate_sky_patch_manifest(manifest)
+    if (
+        resolved_slug in SHOWCASE_TARGETS
+        and abs(fov_arcmin - 5.0) < 1e-4
+        and math.hypot(
+            ra - SHOWCASE_TARGETS[resolved_slug]["ra"],
+            dec - SHOWCASE_TARGETS[resolved_slug]["dec"],
+        )
+        < 1e-3
+    ):
+        _PREWARMED_MANIFESTS[(resolved_slug, static_preset_urls)] = copy.deepcopy(manifest)
     return manifest
 
 
@@ -606,6 +892,18 @@ def build_spectrum_payload(
             ):
                 resolved_slug = cand_slug
                 break
+
+    if (
+        resolved_slug in _PREWARMED_SPECTRA
+        and math.hypot(
+            ra - SHOWCASE_TARGETS[resolved_slug]["ra"],
+            dec - SHOWCASE_TARGETS[resolved_slug]["dec"],
+        )
+        < 1e-3
+    ):
+        cached = copy.deepcopy(_PREWARMED_SPECTRA[resolved_slug])
+        cached["source_label"] = source_label
+        return cached
 
     channels: list[dict[str, Any]] = []
     for idx in range(102):
@@ -644,6 +942,37 @@ def build_spectrum_payload(
             nir_peaks = 1.35 * math.exp(-((wl - 1.25) ** 2) / (2.0 * 0.35**2))
             mid_ir_peak = 3.10 * math.exp(-((wl - 4.50) ** 2) / (2.0 * 0.48**2))
             raw_flux = (0.08 + nir_peaks + mid_ir_peak) * h2o_dip * ch4_dip * co_dip
+        elif resolved_slug == "luhman_16":
+            # L7.5 + T0.5 binary brown dwarf: strong J/H/K emission + 4.1 um peak + CH4/CO troughs
+            nir_peaks = 2.15 * math.exp(-((wl - 1.55) ** 2) / (2.0 * 0.48**2))
+            mid_ir_peak = 2.85 * math.exp(-((wl - 4.10) ** 2) / (2.0 * 0.52**2))
+            raw_flux = (0.14 + nir_peaks + mid_ir_peak) * (0.65 + 0.35 * h2o_dip) * ch4_dip * co_dip
+        elif resolved_slug == "wolf_359":
+            # M6.5Ve flare star: cool M-dwarf continuum peaking near 1.65 um with steam bands
+            continuum = 3.85 * math.exp(-((wl - 1.65) ** 2) / (2.0 * 0.78**2)) + (1.45 / (wl**1.25))
+            raw_flux = continuum * (0.68 + 0.32 * h2o_dip) * co_dip
+        elif resolved_slug == "teegardens_star":
+            # M7.0V ultracool dwarf: redder M-dwarf continuum peaking at 1.80 um
+            continuum = 3.45 * math.exp(-((wl - 1.80) ** 2) / (2.0 * 0.82**2)) + (1.30 / (wl**1.15))
+            raw_flux = continuum * (0.62 + 0.38 * h2o_dip) * (0.85 + 0.15 * ch4_dip) * co_dip
+        elif resolved_slug == "cw_leonis":
+            # Extreme carbon AGB star: steep warm dust continuum rising strongly to 4.8 um + CO
+            dust_continuum = 0.35 + 4.85 * ((wl / 5.0) ** 2.15)
+            c2h2_dip = 1.0 - 0.52 * math.exp(-((wl - 3.05) ** 2) / (2.0 * 0.08**2))
+            raw_flux = dust_continuum * c2h2_dip * co_dip
+        elif resolved_slug == "t_tauri":
+            # Prototype YSO with icy circumstellar envelope: 3.08 um H2O ice & 4.26 um CO2 ice
+            photosphere = 2.1 * math.exp(-((wl - 1.65) ** 2) / (2.0 * 0.85**2))
+            envelope_ir = 3.15 * ((wl / 4.5) ** 1.35)
+            co2_ice_dip = 1.0 - 0.48 * math.exp(-((wl - 4.27) ** 2) / (2.0 * 0.045**2))
+            raw_flux = (photosphere + envelope_ir) * h2o_dip * co2_ice_dip * co_dip
+        elif resolved_slug == "ceres_asteroid":
+            # Main-belt dwarf planet: solar reflected light + 3.06 um ammoniated phyllosilicate dip
+            solar_reflected = 2.65 * math.exp(-((wl - 1.20) ** 2) / (2.0 * 0.95**2)) + (0.85 / wl)
+            thermal_tail = 1.75 * math.exp(-((wl - 4.85) ** 2) / (2.0 * 0.55**2))
+            nh4_dip = 1.0 - 0.42 * math.exp(-((wl - 3.06) ** 2) / (2.0 * 0.11**2))
+            carbonate_dip = 1.0 - 0.35 * math.exp(-((wl - 3.95) ** 2) / (2.0 * 0.09**2))
+            raw_flux = (solar_reflected + thermal_tail) * nh4_dip * carbonate_dip
         else:
             # Ultra-cold sub-brown dwarf (WISE 0855 ~250 K): faint short-IR, blazing 4.5 um peak
             continuum = 0.03 + 4.2 * math.exp(-((wl - 4.55) ** 2) / (2.0 * 0.42**2))
@@ -673,12 +1002,184 @@ def build_spectrum_payload(
         "molecular_features": list(DEFAULT_MOLECULAR_FEATURES),
     }
     validate_spectrum_payload(payload)
+    if (
+        resolved_slug in SHOWCASE_TARGETS
+        and math.hypot(
+            ra - SHOWCASE_TARGETS[resolved_slug]["ra"],
+            dec - SHOWCASE_TARGETS[resolved_slug]["dec"],
+        )
+        < 1e-3
+    ):
+        _PREWARMED_SPECTRA[resolved_slug] = copy.deepcopy(payload)
     return payload
+
+
+def fuzzy_score_text(query: str, candidate: str) -> float:
+    """Compute a normalized [0.0, 1.0] fuzzy match score between query and candidate string."""
+    q = query.strip().lower()
+    if not q:
+        return 1.0
+    c = candidate.strip().lower()
+    if not c:
+        return 0.0
+    if q == c:
+        return 1.0
+    if c.startswith(q):
+        return 0.96
+    if q in c:
+        return 0.90 - min(0.12, (c.index(q) / max(1, len(c))) * 0.12)
+
+    q_tokens = [tok for tok in q.replace("-", " ").replace("_", " ").split() if tok]
+    c_tokens = [tok for tok in c.replace("-", " ").replace("_", " ").split() if tok]
+    if q_tokens and all(any(ct.startswith(qt) or qt in ct for ct in c_tokens) for qt in q_tokens):
+        return 0.84
+
+    # Ordered subsequence match (e.g. "w0855" -> "wise 0855-0714")
+    q_idx = 0
+    gaps = 0
+    last_match = -1
+    for idx, ch in enumerate(c):
+        if q_idx < len(q) and ch == q[q_idx]:
+            if last_match >= 0:
+                gaps += idx - last_match - 1
+            last_match = idx
+            q_idx += 1
+    if q_idx == len(q) and len(q) >= 3:
+        return max(0.52, 0.78 - min(0.24, gaps * 0.02))
+
+    # Bounded Levenshtein edit distance against candidate tokens for typo tolerance
+    best_token_score = 0.0
+    for ct in c_tokens:
+        if abs(len(ct) - len(q)) > 3:
+            continue
+        prev = list(range(len(ct) + 1))
+        for i, qc in enumerate(q, start=1):
+            curr = [i]
+            for j, cc in enumerate(ct, start=1):
+                cost = 0 if qc == cc else 1
+                curr.append(min(curr[-1] + 1, prev[j] + 1, prev[j - 1] + cost))
+            prev = curr
+        dist = prev[-1]
+        max_len = max(len(q), len(ct), 1)
+        sim = 1.0 - (dist / max_len)
+        if sim >= 0.65:
+            best_token_score = max(best_token_score, sim * 0.74)
+    return best_token_score
+
+
+def get_global_known_objects_index() -> list[dict[str, Any]]:
+    """Build or return the pre-warmed global index of all showcase known celestial objects."""
+    if _GLOBAL_KNOWN_OBJECTS_INDEX:
+        return _GLOBAL_KNOWN_OBJECTS_INDEX
+
+    for slug, meta in SHOWCASE_TARGETS.items():
+        manifest = build_sky_patch_manifest_payload(
+            ra=meta["ra"],
+            dec=meta["dec"],
+            fov_arcmin=5.0,
+            slug=slug,
+        )
+        for obj in manifest["catalog_overlays"]["known_objects"]:
+            entry = dict(obj)
+            entry["target_slug"] = slug
+            entry["target_name"] = meta["name"]
+            entry["constellation"] = meta["constellation"]
+            entry["patch_ra"] = meta["ra"]
+            entry["patch_dec"] = meta["dec"]
+            _GLOBAL_KNOWN_OBJECTS_INDEX.append(entry)
+    return _GLOBAL_KNOWN_OBJECTS_INDEX
 
 
 # ---------------------------------------------------------------------------
 # Application Service Core & FastAPI / Local Client Adapter
 # ---------------------------------------------------------------------------
+
+
+def _infer_object_class(obj: dict[str, Any]) -> str:
+    """Map legacy object_type / label onto standardized celestial badge classes."""
+    existing = obj.get("object_class")
+    if isinstance(existing, str) and existing:
+        return existing
+    otype = str(obj.get("object_type", "star"))
+    label_low = str(obj.get("label", "")).lower()
+    if otype == "brown_dwarf_candidate":
+        return "brown_dwarf"
+    if otype == "solar_system":
+        if "comet" in label_low or "3i" in label_low or "atlas" in label_low:
+            return "comet"
+        if any(a in label_low for a in ("ceres", "vesta", "apophis", "asteroid")):
+            return "asteroid"
+        if any(m in label_low for m in ("io", "europa", "ganymede", "callisto", "titan")):
+            return "moon"
+        return "planet"
+    if otype in {"variable_star", "infrared_source"}:
+        return otype
+    return "star"
+
+
+def _merge_pipeline_overlays(
+    manifest: dict[str, Any],
+    pipeline_result: dict[str, Any],
+    prefer_pipeline_when_uncached: bool = False,
+) -> dict[str, Any]:
+    """Merge cached/live SIMBAD + Gaia + Horizons ephemeris into manifest catalog overlays."""
+    overlays = copy.deepcopy(manifest["catalog_overlays"])
+    base_known = list(overlays.get("known_objects", []))
+    for item in base_known:
+        item.setdefault("object_class", _infer_object_class(item))
+
+    pipe_known = list(pipeline_result.get("known_objects", []))
+    is_showcase = manifest.get("target_metadata", {}).get("slug") in SHOWCASE_TARGETS
+
+    # For non-showcase coordinates where real catalog objects exist, prioritize real catalog entries
+    if prefer_pipeline_when_uncached and not is_showcase and pipe_known:
+        merged_known = list(pipe_known)
+        existing_known = merged_known
+    else:
+        merged_known = base_known
+        existing_known = merged_known
+        dedup_deg = 2.5 / 3600.0
+        for cand in pipe_known:
+            cand_id = str(cand.get("object_id", ""))
+            cand_ra = float(cand.get("ra", 0.0))
+            cand_dec = float(cand.get("dec", 0.0))
+            duplicate = any(
+                str(ex.get("object_id", "")) == cand_id
+                or angular_separation_deg(cand_ra, cand_dec, float(ex["ra"]), float(ex["dec"]))
+                <= dedup_deg
+                for ex in existing_known
+            )
+            if not duplicate:
+                merged_known.append(cand)
+
+    # Merge raw overlay arrays without duplicates
+    gaia_existing_ids = {str(g.get("source_id")) for g in overlays.get("gaia_dr3", [])}
+    gaia_merged = list(overlays.get("gaia_dr3", []))
+    for g in pipeline_result.get("gaia_dr3", []):
+        if str(g.get("source_id")) not in gaia_existing_ids:
+            gaia_merged.append(g)
+            gaia_existing_ids.add(str(g.get("source_id")))
+
+    most_existing = {
+        (str(m.get("object_name")), str(m.get("epoch_id")))
+        for m in overlays.get("most_solar_system", [])
+    }
+    most_merged = list(overlays.get("most_solar_system", []))
+    for m in pipeline_result.get("most_solar_system", []):
+        key = (str(m.get("object_name")), str(m.get("epoch_id")))
+        if key not in most_existing:
+            most_merged.append(m)
+            most_existing.add(key)
+
+    overlays["known_objects"] = merged_known[:120]
+    overlays["gaia_dr3"] = gaia_merged
+    overlays["most_solar_system"] = most_merged
+    if pipeline_result.get("source_status"):
+        overlays["source_status"] = dict(pipeline_result["source_status"])
+
+    updated = copy.deepcopy(manifest)
+    updated["catalog_overlays"] = overlays
+    return updated
 
 
 class StarHuntersBackendService:
@@ -692,6 +1193,7 @@ class StarHuntersBackendService:
     ) -> None:
         self.cache = cache or SpatialSqliteCache()
         self.admin_token = os.environ.get("ADMIN_TOKEN", "star-hunters-dev-token")
+        self.catalog_pipeline = AutomatedCelestialPipeline(cache=self.cache)
         # Keep offline tests/local development deterministic. Enable live IRSA
         # ingestion explicitly with ENABLE_ARCHIVAL_DATA=true in deployment.
         if enable_archival_data is None:
@@ -699,6 +1201,95 @@ class StarHuntersBackendService:
             enable_archival_data = configured in {"1", "true", "yes", "on"}
         self.enable_archival_data = enable_archival_data
         self.wise_fallback_fetcher = wise_fallback_fetcher
+
+    def prewarm_known_data(self) -> int:
+        """Aggressively pre-warm all showcase manifests, spectra, frames, and search index."""
+        get_global_known_objects_index()
+        count = 0
+        for slug, meta in SHOWCASE_TARGETS.items():
+            grid_key, ra_q, dec_q = compute_grid_key(meta["ra"], meta["dec"], 5.0)
+            self.cache.pin_grid_key(grid_key)
+            manifest = build_sky_patch_manifest_payload(
+                ra=meta["ra"],
+                dec=meta["dec"],
+                fov_arcmin=5.0,
+                slug=slug,
+            )
+            manifest = self._apply_cached_pipeline_sync(
+                manifest,
+                ra=meta["ra"],
+                dec=meta["dec"],
+                fov=5.0,
+            )
+            frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
+            self.cache.put_sky_patch(
+                grid_key=grid_key,
+                ra_center=ra_q,
+                dec_center=dec_q,
+                fov_arcmin=5.0,
+                manifest=manifest,
+                frames=frames,
+            )
+            spec = build_spectrum_payload(
+                ra=meta["ra"],
+                dec=meta["dec"],
+                source_label=meta["name"],
+                slug=slug,
+            )
+            spec_key = f"spec_ra{round(meta['ra'], 4):.4f}_dec{round(meta['dec'], 4):.4f}"
+            self.cache.put_spectrum(
+                spectrum_key=spec_key,
+                ra=meta["ra"],
+                dec=meta["dec"],
+                payload=spec,
+            )
+            count += 1
+        return count
+
+    def search_known_objects(
+        self,
+        query: str = "",
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """Fuzzy-search known celestial objects across all cached showcase sky patches."""
+        index = get_global_known_objects_index()
+        clean_q = query.strip()
+        if not clean_q:
+            # Return primary targets first, followed by brightest companions/stars
+            sorted_default = sorted(
+                index,
+                key=lambda item: (
+                    0 if item.get("object_id", "").startswith("primary_") else 1,
+                    float(item.get("magnitude") or 20.0),
+                ),
+            )
+            return copy.deepcopy(sorted_default[: max(1, min(limit, 200))])
+
+        scored: list[tuple[float, int, float, dict[str, Any]]] = []
+        for item in index:
+            searchable_fields = [
+                str(item.get("label", "")),
+                str(item.get("object_id", "")),
+                str(item.get("source_id", "")),
+                str(item.get("object_type", "")),
+                str(item.get("catalog", "")),
+                str(item.get("target_name", "")),
+                str(item.get("target_slug", "")),
+                str(item.get("constellation", "")),
+            ]
+            best = max(fuzzy_score_text(clean_q, field) for field in searchable_fields if field)
+            if best >= 0.45:
+                is_primary = 0 if str(item.get("object_id", "")).startswith("primary_") else 1
+                mag = float(item.get("magnitude") or 20.0)
+                scored.append((best, -is_primary, -mag, item))
+
+        scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+        results: list[dict[str, Any]] = []
+        for score, _, _, item in scored[: max(1, min(limit, 200))]:
+            entry = copy.deepcopy(item)
+            entry["match_score"] = round(score, 4)
+            results.append(entry)
+        return results
 
     def health(self) -> dict[str, str]:
         return {
@@ -799,6 +1390,27 @@ class StarHuntersBackendService:
             )
         return payload
 
+    def _apply_cached_pipeline_sync(
+        self,
+        manifest: dict[str, Any],
+        ra: float,
+        dec: float,
+        fov: float,
+    ) -> dict[str, Any]:
+        pipeline_result = self.catalog_pipeline.resolve_cached_patch_objects(
+            ra_deg=ra,
+            dec_deg=dec,
+            fov_arcmin=fov,
+            wcs=manifest["wcs"],
+            epochs_meta=manifest["epochs"],
+        )
+        enriched = _merge_pipeline_overlays(
+            manifest,
+            pipeline_result,
+            prefer_pipeline_when_uncached=bool(pipeline_result.get("known_objects")),
+        )
+        return enriched
+
     def get_catalogs(
         self,
         ra: float,
@@ -812,6 +1424,28 @@ class StarHuntersBackendService:
             return cached_catalogs
 
         manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+        manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
+        response = {
+            "query": manifest["query"],
+            "wcs": manifest["wcs"],
+            "catalog_overlays": manifest["catalog_overlays"],
+        }
+        validate_catalogs_response(response)
+        return response
+
+    async def get_catalogs_async(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+        live_catalogs: bool = True,
+    ) -> dict[str, Any]:
+        manifest = await self.get_sky_patch_async(
+            ra=ra,
+            dec=dec,
+            fov=fov,
+            live_catalogs=live_catalogs,
+        )
         response = {
             "query": manifest["query"],
             "wcs": manifest["wcs"],
@@ -839,7 +1473,11 @@ class StarHuntersBackendService:
                 return cached_manifest
 
         manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
-        frames = generate_synthetic_epoch_frames(manifest["target_metadata"]["slug"])
+        manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
+        slug = manifest["target_metadata"]["slug"]
+        if slug in SHOWCASE_TARGETS:
+            self.cache.pin_grid_key(grid_key)
+        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
 
         if self.enable_archival_data:
             try:
@@ -950,7 +1588,107 @@ class StarHuntersBackendService:
             manifest=manifest,
             frames=frames,
         )
+        validate_sky_patch_manifest(manifest)
         return manifest
+
+    async def get_sky_patch_async(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+        live_catalogs: bool = True,
+    ) -> dict[str, Any]:
+        grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
+        cached_manifest = self.cache.get_manifest(grid_key)
+        if cached_manifest is not None:
+            validate_sky_patch_manifest(cached_manifest)
+            return cached_manifest
+
+        manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+        pipeline_result = await self.catalog_pipeline.resolve_patch_objects(
+            ra_deg=ra,
+            dec_deg=dec,
+            fov_arcmin=fov,
+            wcs=manifest["wcs"],
+            epochs_meta=manifest["epochs"],
+            allow_live=live_catalogs,
+        )
+        manifest = _merge_pipeline_overlays(
+            manifest,
+            pipeline_result,
+            prefer_pipeline_when_uncached=bool(pipeline_result.get("known_objects")),
+        )
+        slug = manifest["target_metadata"]["slug"]
+        if slug in SHOWCASE_TARGETS:
+            self.cache.pin_grid_key(grid_key)
+        frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
+        self.cache.put_sky_patch(
+            grid_key=grid_key,
+            ra_center=ra_q,
+            dec_center=dec_q,
+            fov_arcmin=fov,
+            manifest=manifest,
+            frames=frames,
+        )
+        validate_sky_patch_manifest(manifest)
+        return manifest
+
+    def get_solar_system_in_fov(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+        mjd: float | None = None,
+    ) -> dict[str, Any]:
+        target_mjd = (
+            float(mjd)
+            if mjd is not None
+            else (datetime.now(UTC) - datetime(1858, 11, 17, tzinfo=UTC)).total_seconds() / 86400.0
+        )
+        radius_deg = self.catalog_pipeline._fov_to_radius_deg(fov)
+        matches = self.cache.query_ephemeris_in_fov(
+            mjd=target_mjd,
+            ra=ra,
+            dec=dec,
+            radius_deg=radius_deg,
+        )
+        return {
+            "ra": round(float(ra), 5),
+            "dec": round(float(dec), 5),
+            "fov_arcmin": float(fov),
+            "radius_deg": round(radius_deg, 4),
+            "mjd": round(target_mjd, 6),
+            "count": len(matches),
+            "bodies": matches,
+            "ephemeris_cache": self.cache.get_ephemeris_stats(),
+        }
+
+    async def lookup_most_object(self, obj_name: str) -> dict[str, Any]:
+        cache_key = f"most:{obj_name.strip().lower()}"
+        cached = self.cache.get_cached_catalog_region(cache_key, 0.0, 0.0, 1.0)
+        if cached is not None:
+            return {
+                "query_name": cached.get("query_name", obj_name),
+                "status": "cached",
+                "count": len(cached.get("matches", [])),
+                "matches": cached.get("matches", []),
+            }
+        result = await fetch_most_spherex_matches(obj_name=obj_name)
+        if result["matches"]:
+            self.cache.put_cached_catalog_region(
+                cache_key,
+                0.0,
+                0.0,
+                1.0,
+                result,
+                ttl_seconds=24 * 3600,
+            )
+        return {
+            "query_name": result["query_name"],
+            "status": result["status"],
+            "count": len(result["matches"]),
+            "matches": result["matches"],
+        }
 
     def get_frame_bytes(
         self,
@@ -960,7 +1698,14 @@ class StarHuntersBackendService:
     ) -> tuple[bytes, dict[str, str]]:
         raw = self.cache.get_frame(grid_key, filename)
         if raw is None:
-            frames = generate_synthetic_epoch_frames("wise_0855")
+            cached_manifest = self.cache.get_manifest(grid_key)
+            if cached_manifest is not None:
+                frames = generate_synthetic_epoch_frames(
+                    slug=cached_manifest["target_metadata"]["slug"],
+                    manifest=cached_manifest,
+                )
+            else:
+                frames = generate_synthetic_epoch_frames("wise_0855")
             if filename not in frames:
                 raise KeyError(f"Frame not found: {grid_key}/{filename}")
             raw = frames[filename]
@@ -1080,6 +1825,7 @@ if HAS_FASTAPI:
         return backend_service.health()
 
     @app.get("/api/v1/earth-to-sky")
+    @app.get("/api/earth-to-sky")
     async def earth_to_sky(
         lat: float | None = Query(None, ge=-90.0, le=90.0),
         lon: float | None = Query(None, ge=-180.0, le=180.0),
@@ -1091,26 +1837,75 @@ if HAS_FASTAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/v1/catalogs")
+    @app.get("/api/catalogs")
     async def get_catalogs(
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),
         dec: float = Query(..., ge=-90.0, le=90.0),
         fov: float = Query(5.0, gt=0.0, le=60.0),
+        live_catalogs: bool = Query(True),
     ) -> dict[str, Any]:
         response.headers["Cache-Control"] = "public, max-age=3600"
-        return backend_service.get_catalogs(ra=ra, dec=dec, fov=fov)
+        return await backend_service.get_catalogs_async(
+            ra=ra,
+            dec=dec,
+            fov=fov,
+            live_catalogs=live_catalogs,
+        )
+
+    @app.get("/api/v1/catalogs/search")
+    @app.get("/api/catalogs/search")
+    async def search_catalog_objects(
+        response: Response,
+        q: str = Query("", description="Fuzzy search query for celestial object names/IDs"),
+        limit: int = Query(30, ge=1, le=200),
+    ) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "public, max-age=86400"
+        results = backend_service.search_known_objects(query=q, limit=limit)
+        return {
+            "query": q,
+            "count": len(results),
+            "results": results,
+        }
+
+    @app.get("/api/v1/solar-system/in-fov")
+    @app.get("/api/solar-system/in-fov")
+    async def solar_system_in_fov(
+        ra: float = Query(..., ge=0.0, le=360.0),
+        dec: float = Query(..., ge=-90.0, le=90.0),
+        fov: float = Query(5.0, gt=0.0, le=60.0),
+        mjd: float | None = Query(None),
+    ) -> dict[str, Any]:
+        return backend_service.get_solar_system_in_fov(ra=ra, dec=dec, fov=fov, mjd=mjd)
+
+    @app.get("/api/v1/solar-system/most")
+    @app.get("/api/solar-system/most")
+    async def lookup_most_solar_system(
+        response: Response,
+        obj_name: str = Query(..., min_length=1),
+    ) -> dict[str, Any]:
+        response.headers["Cache-Control"] = "public, max-age=3600"
+        return await backend_service.lookup_most_object(obj_name=obj_name)
 
     @app.get("/api/v1/sky-patch")
+    @app.get("/api/sky-patch")
     async def get_sky_patch(
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),
         dec: float = Query(..., ge=-90.0, le=90.0),
         fov: float = Query(5.0, gt=0.0, le=60.0),
+        live_catalogs: bool = Query(True),
     ) -> dict[str, Any]:
         response.headers["Cache-Control"] = "public, max-age=3600"
-        return backend_service.get_sky_patch(ra=ra, dec=dec, fov=fov)
+        return await backend_service.get_sky_patch_async(
+            ra=ra,
+            dec=dec,
+            fov=fov,
+            live_catalogs=live_catalogs,
+        )
 
     @app.get("/api/v1/frames/{grid_key}/{filename}")
+    @app.get("/api/frames/{grid_key}/{filename}")
     async def get_binary_frame(
         grid_key: str,
         filename: str,
@@ -1131,6 +1926,7 @@ if HAS_FASTAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get("/api/v1/spectrum")
+    @app.get("/api/spectrum")
     async def get_spectrum(
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),

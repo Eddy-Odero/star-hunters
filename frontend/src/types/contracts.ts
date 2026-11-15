@@ -11,12 +11,23 @@ export type MissionName = 'SPHEREx' | 'WISE';
 export type BinaryDtype = 'float32' | 'float16';
 export type ComparisonMode = 'blink' | 'subtract' | 'coadd';
 export type ContrastStretch = 'asinh' | 'linear' | 'zscale';
-export type CatalogSourceType = 'gaia_dr3' | 'wise' | 'most';
+export type CatalogSourceType = 'gaia_dr3' | 'wise' | 'most' | 'simbad' | 'jpl_horizons';
 export type CelestialObjectCategory =
   | 'star'
   | 'high_pm_star'
   | 'brown_dwarf_candidate'
   | 'solar_system'
+  | 'variable_star'
+  | 'infrared_source';
+export type CelestialObjectClass =
+  | 'star'
+  | 'brown_dwarf'
+  | 'planet'
+  | 'moon'
+  | 'comet'
+  | 'asteroid'
+  | 'galaxy'
+  | 'nebula'
   | 'variable_star'
   | 'infrared_source';
 
@@ -47,7 +58,55 @@ export const TRACKING_SQUARE_COLORS: readonly string[] = [
   '#8338EC', // Ultraviolet
   '#06D6A0', // Emerald
   '#FF9F1C', // Gold
+  '#F15BB5', // Rose Pink
+  '#00BBF9', // Sky Cyan
+  '#9B5DE5', // Amethyst
+  '#FEE440', // Lemon Flare
+  '#2EC4B6', // Teal Glow
+  '#E71D36', // Crimson Nova
+  '#70E000', // Lime Pulsar
+  '#FF5400', // Flame Orange
+  '#4CC9F0', // Ice Blue
+  '#F72585', // Hot Fuchsia
+  '#B5179E', // Deep Orchid
+  '#AACC00', // Chartreuse
 ] as const;
+
+/**
+ * Randomly select `count` distinct highlighter colors from `TRACKING_SQUARE_COLORS`,
+ * prioritizing colors not currently in `usedColors` before cycling.
+ */
+export function pickDistinctHighlighterColors(
+  count: number,
+  usedColors: Iterable<string> = [],
+  rng: () => number = Math.random,
+): string[] {
+  const usedSet = new Set(usedColors);
+  const available = TRACKING_SQUARE_COLORS.filter((c) => !usedSet.has(c));
+  const shuffle = (arr: string[]): string[] => {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = copy[i];
+      copy[i] = copy[j];
+      copy[j] = tmp;
+    }
+    return copy;
+  };
+
+  const result: string[] = [];
+  let pool = shuffle(available);
+  while (result.length < count) {
+    if (pool.length === 0) {
+      pool = shuffle([...TRACKING_SQUARE_COLORS]);
+    }
+    const nextColor = pool.pop();
+    if (nextColor) {
+      result.push(nextColor);
+    }
+  }
+  return result;
+}
 
 export interface WorldCapitalCity {
   slug: string;
@@ -115,20 +174,44 @@ export interface KnownObjectEpochPosition {
   y: number;
 }
 
+export interface MotionVector {
+  dx_px: number;
+  dy_px: number;
+  dra_arcsec: number;
+  ddec_arcsec: number;
+}
+
 export interface KnownCelestialObject {
   object_id: string;
   label: string;
   catalog: CatalogSourceType;
   object_type: CelestialObjectCategory;
+  object_class?: CelestialObjectClass | null;
+  canonical_name?: string | null;
+  otype?: string | null;
   ra: number;
   dec: number;
   x: number;
   y: number;
   magnitude: number | null;
   proper_motion_arcsec_yr: number | null;
+  pmra_mas_yr?: number | null;
+  pmdec_mas_yr?: number | null;
+  parallax_mas?: number | null;
   w1_w2_color: number | null;
   default_checked: boolean;
   epoch_positions: KnownObjectEpochPosition[];
+  motion_vector?: MotionVector | null;
+  data_source?: string | null;
+}
+
+export interface GlobalKnownObjectEntry extends KnownCelestialObject {
+  target_slug?: string;
+  target_name?: string;
+  constellation?: string;
+  patch_ra?: number;
+  patch_dec?: number;
+  match_score?: number;
 }
 
 export interface GaiaDr3OverlayItem {
@@ -169,6 +252,7 @@ export interface CatalogOverlays {
   gaia_dr3: GaiaDr3OverlayItem[];
   wise_sources: WiseOverlayItem[];
   most_solar_system: MostOverlayItem[];
+  source_status?: Record<string, string> | null;
 }
 
 export interface SkyPatchManifest {
@@ -334,10 +418,16 @@ export interface SkyExplorerContextValue {
   resetViewportZoomPan: () => void;
   // Known celestial objects checkbox selection controls
   knownObjects: KnownCelestialObject[];
+  objectHighlighterColors?: Record<string, string>;
+  globalKnownObjects?: GlobalKnownObjectEntry[];
   toggleKnownObject: (objectId: string) => void;
   checkAllKnownObjects: () => void;
   uncheckAllKnownObjects: () => void;
   resetDefaultKnownObjects: () => void;
+  focusAndTrackKnownObject?: (
+    obj: KnownCelestialObject | GlobalKnownObjectEntry,
+    targetSlug?: string,
+  ) => void;
   // Playback transport
   playback: {
     isPlaying: boolean;

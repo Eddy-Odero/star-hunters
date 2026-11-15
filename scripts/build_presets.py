@@ -10,7 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from generate_synthetic_presets import generate_all_presets  # noqa: E402
+from generate_synthetic_presets import generate_all_presets
 
 
 def main() -> int:

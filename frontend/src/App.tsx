@@ -1,33 +1,70 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SkyExplorerProvider, useSkyExplorer } from './context/SkyExplorerContext';
 import { computeViewportViewBox, screenToImageCoordinates } from './types/contracts';
 import { TargetTourBar } from './components/TargetTourBar';
 import { ViewportControlsBar } from './components/ViewportControlsBar';
 import { KnownObjectsCheckboxMenu } from './components/KnownObjectsCheckboxMenu';
 import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
+import {
+  catalogBadgeLabel,
+  inferObjectClass,
+  isMovingSolarSystemObject,
+  objectClassBadgeLabel,
+  renderEpochBuffersToRgba,
+} from './utils/knownObjectSelection';
 
 const StarHuntersWorkspace: React.FC = () => {
   const {
     activePresetSlug,
     manifest,
+    epochBuffers,
+    flagsBuffers,
     loadingState,
     renderSettings,
     knownObjects,
+    objectHighlighterColors,
     selectedObject,
     trackedTargets,
     lastClickDiagnostic,
+    removeTrackedTarget,
     clearTrackedTargets,
     selectPreset,
     inspectPixelOrCoord,
   } = useSkyExplorer();
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [showLabels, setShowLabels] = useState<boolean>(true);
 
   useEffect(() => {
     if (activePresetSlug && !manifest && loadingState.stage === 'idle') {
       selectPreset(activePresetSlug);
     }
   }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const rgba = renderEpochBuffersToRgba({
+      epochBuffers,
+      flagsBuffers,
+      activeEpochIndex: renderSettings.activeEpochIndex,
+      comparisonMode: renderSettings.mode,
+      contrastStretch: renderSettings.contrastStretch,
+      wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+    });
+    const imageData = new ImageData(new Uint8ClampedArray(rgba), 256, 256);
+    ctx.putImageData(imageData, 0, 0);
+  }, [
+    epochBuffers,
+    flagsBuffers,
+    renderSettings.activeEpochIndex,
+    renderSettings.mode,
+    renderSettings.contrastStretch,
+    renderSettings.wavelengthRangeUm,
+  ]);
 
   const viewBox = useMemo(
     () => computeViewportViewBox(renderSettings.zoom, renderSettings.panX, renderSettings.panY),
@@ -113,6 +150,13 @@ const StarHuntersWorkspace: React.FC = () => {
             >
               Track Target (124, 126)
             </button>
+            <button
+              type="button"
+              className={showLabels ? 'mode-btn active' : 'mode-btn'}
+              onClick={() => setShowLabels((prev) => !prev)}
+            >
+              Labels: {showLabels ? 'ON' : 'OFF'}
+            </button>
             {trackedTargets.length > 0 && (
               <button type="button" className="mode-btn" onClick={clearTrackedTargets}>
                 Clear Tracks ({trackedTargets.length})
@@ -135,6 +179,7 @@ const StarHuntersWorkspace: React.FC = () => {
             }}
           >
             <canvas
+              ref={canvasRef}
               width={256}
               height={256}
               style={{
@@ -157,19 +202,77 @@ const StarHuntersWorkspace: React.FC = () => {
             >
               {checkedKnownObjects.map((obj) => {
                 const epPos = obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
+                const highlighterColor = objectHighlighterColors?.[obj.object_id] ?? '#00F5D4';
+                const objClass = inferObjectClass(obj);
+                const isMover = isMovingSolarSystemObject(obj);
+                const trailPoints =
+                  isMover && obj.epoch_positions.length >= 2
+                    ? obj.epoch_positions.map((p) => `${p.x},${p.y}`).join(' ')
+                    : '';
                 return (
                   <g key={obj.object_id}>
-                    <circle
-                      cx={epPos.x}
-                      cy={epPos.y}
-                      r={4.5}
-                      fill="none"
-                      stroke="#38bdf8"
-                      strokeWidth={1.1}
-                    />
-                    <text x={epPos.x + 6} y={epPos.y - 4} fill="#e2e8f0" fontSize={7}>
-                      {obj.label}
-                    </text>
+                    {trailPoints && (
+                      <polyline
+                        points={trailPoints}
+                        fill="none"
+                        stroke={highlighterColor}
+                        strokeWidth={1.1}
+                        strokeDasharray="3 2"
+                        opacity={0.85}
+                      />
+                    )}
+                    {objClass === 'brown_dwarf' ? (
+                      <polygon
+                        points={`${epPos.x},${epPos.y - 5.5} ${epPos.x + 5.5},${epPos.y} ${epPos.x},${epPos.y + 5.5} ${epPos.x - 5.5},${epPos.y}`}
+                        fill="none"
+                        stroke={highlighterColor}
+                        strokeWidth={1.3}
+                      />
+                    ) : objClass === 'galaxy' || objClass === 'nebula' ? (
+                      <ellipse
+                        cx={epPos.x}
+                        cy={epPos.y}
+                        rx={6}
+                        ry={3.5}
+                        fill="none"
+                        stroke={highlighterColor}
+                        strokeWidth={1.3}
+                      />
+                    ) : isMover ? (
+                      <>
+                        <circle
+                          cx={epPos.x}
+                          cy={epPos.y}
+                          r={6}
+                          fill="none"
+                          stroke={highlighterColor}
+                          strokeWidth={1.3}
+                          strokeDasharray="2 1.5"
+                        />
+                        <circle
+                          cx={epPos.x}
+                          cy={epPos.y}
+                          r={2.5}
+                          fill="none"
+                          stroke={highlighterColor}
+                          strokeWidth={1.2}
+                        />
+                      </>
+                    ) : (
+                      <circle
+                        cx={epPos.x}
+                        cy={epPos.y}
+                        r={4.5}
+                        fill="none"
+                        stroke={highlighterColor}
+                        strokeWidth={1.3}
+                      />
+                    )}
+                    {showLabels && (
+                      <text x={epPos.x + 6} y={epPos.y - 4} fill={highlighterColor} fontSize={7}>
+                        {obj.label}
+                      </text>
+                    )}
                   </g>
                 );
               })}
@@ -216,31 +319,72 @@ const StarHuntersWorkspace: React.FC = () => {
             </div>
           )}
 
-          {selectedObject && (
+          {selectedObject &&
+            (() => {
+              const matchedKnown = selectedObject.matchedObjectId
+                ? knownObjects.find((o) => o.object_id === selectedObject.matchedObjectId)
+                : undefined;
+              const matchedClass = matchedKnown ? inferObjectClass(matchedKnown) : null;
+              return (
+                <div className="traced-card">
+                  <h3>
+                    Focused Track ({selectedObject.trackId}) — Clicked Frame #
+                    {selectedObject.originEpochIndex + 1}
+                  </h3>
+                  <p>
+                    <span
+                      style={{
+                        display: 'inline-block',
+                        width: 12,
+                        height: 12,
+                        border: `2px solid ${selectedObject.color}`,
+                        marginRight: 6,
+                      }}
+                    />
+                    Origin Centroid: ({selectedObject.originCentroidX},{' '}
+                    {selectedObject.originCentroidY}) &bull; Proper Motion:{' '}
+                    {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull; Match:{' '}
+                    {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
+                    {selectedObject.isOverlappedAtOrigin ? ' • Overlapped Body Branch' : ''}
+                  </p>
+                  {matchedKnown && (
+                    <p className="obj-meta">
+                      Class: {matchedClass ? objectClassBadgeLabel(matchedClass) : 'Object'}
+                      {matchedKnown.otype ? ` (${matchedKnown.otype})` : ''} &bull; Catalog:{' '}
+                      {catalogBadgeLabel(matchedKnown.catalog)}
+                      {matchedKnown.canonical_name
+                        ? ` • Canonical ID: ${matchedKnown.canonical_name}`
+                        : ''}
+                      {matchedKnown.parallax_mas !== null && matchedKnown.parallax_mas !== undefined
+                        ? ` • Parallax: ${matchedKnown.parallax_mas.toFixed(2)} mas`
+                        : ''}
+                      {matchedKnown.data_source ? ` • Source: ${matchedKnown.data_source}` : ''}
+                    </p>
+                  )}
+                  <ul>
+                    {selectedObject.waypoints.map((wp) => (
+                      <li key={wp.epoch_id}>
+                        {wp.epoch_id} (MJD {wp.mjd}): pixel ({wp.x}, {wp.y}) &bull; SNR {wp.snr}{' '}
+                        &bull; status: {wp.status}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
+
+          {trackedTargets.length > 1 && (
             <div className="traced-card">
-              <h3>
-                Focused Track ({selectedObject.trackId}) — Clicked Frame #
-                {selectedObject.originEpochIndex + 1}
-              </h3>
-              <p>
-                <span
-                  style={{
-                    display: 'inline-block',
-                    width: 12,
-                    height: 12,
-                    border: `2px solid ${selectedObject.color}`,
-                    marginRight: 6,
-                  }}
-                />
-                Origin Centroid: ({selectedObject.originCentroidX}, {selectedObject.originCentroidY}
-                ) &bull; Proper Motion: {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull;
-                Match: {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
-              </p>
+              <h4>All Tracked Targets ({trackedTargets.length})</h4>
               <ul>
-                {selectedObject.waypoints.map((wp) => (
-                  <li key={wp.epoch_id}>
-                    {wp.epoch_id} (MJD {wp.mjd}): pixel ({wp.x}, {wp.y}) &bull; SNR {wp.snr} &bull;{' '}
-                    status: {wp.status}
+                {trackedTargets.map((t) => (
+                  <li key={t.trackId}>
+                    <span style={{ color: t.color, fontWeight: 700 }}>■</span> {t.trackId}: (
+                    {t.originCentroidX}, {t.originCentroidY}) &rarr; ({t.xN}, {t.yN}) [
+                    {t.statusMessage}]{' '}
+                    <button type="button" onClick={() => removeTrackedTarget(t.trackId)}>
+                      Remove
+                    </button>
                   </li>
                 ))}
               </ul>
