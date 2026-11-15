@@ -114,3 +114,9 @@ Detailed architecture, data contracts, and phase-by-phase implementation notes l
 - [Phase 2: Core Parallel Workstreams](plans/phase_2_core_parallel_workstreams.md)
 - [Phase 3: End-to-End Integration, Scale-to-Zero Deployment & Verification](plans/phase_3_integration_deployment_and_verification.md)
 - [Links, APIs & Technical References](plans/links.md)
+
+---
+
+## Disclaimer
+
+This project was built with AI assistance, and the code was verified by human authors.
