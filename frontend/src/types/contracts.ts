@@ -467,12 +467,29 @@ export function decodeFloat16Word(bits: number): number {
   const exp = (bits >> 10) & 0x1f;
   const frac = bits & 0x03ff;
   if (exp === 0) {
-    return frac === 0 ? 0 : sign * Math.pow(2, -14) * (frac / 1024);
+    // Subnormals (and signed zero). `sign * 0` preserves IEEE-754 negative zero.
+    return frac === 0 ? sign * 0 : sign * Math.pow(2, -14) * (frac / 1024);
   }
   if (exp === 0x1f) {
     return frac === 0 ? sign * Infinity : NaN;
   }
   return sign * Math.pow(2, exp - 15) * (1 + frac / 1024);
+}
+
+/**
+ * Lazily-built 65,536-entry lookup table so decoding a 786,432-byte float16
+ * frame is a tight array lookup loop rather than 393,216 branch-heavy calls.
+ */
+let float16LookupTable: Float32Array | null = null;
+
+function getFloat16LookupTable(): Float32Array {
+  if (float16LookupTable) return float16LookupTable;
+  const table = new Float32Array(0x10000);
+  for (let bits = 0; bits < 0x10000; bits += 1) {
+    table[bits] = decodeFloat16Word(bits);
+  }
+  float16LookupTable = table;
+  return table;
 }
 
 /**
@@ -491,9 +508,10 @@ export function decodeDetectorBinaryBuffer(
       );
     }
     const words = new Uint16Array(buffer);
+    const table = getFloat16LookupTable();
     fullArray = new Float32Array(TOTAL_DETECTOR_VALUES);
     for (let i = 0; i < TOTAL_DETECTOR_VALUES; i += 1) {
-      fullArray[i] = decodeFloat16Word(words[i]);
+      fullArray[i] = table[words[i]];
     }
   } else {
     if (buffer.byteLength !== BINARY_DETECTOR_FLOAT32_BYTES) {
