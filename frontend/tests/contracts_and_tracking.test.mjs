@@ -29,6 +29,10 @@ import {
   gridCacheKey,
   presetCacheKey,
 } from '../src/services/clientPatchCache.ts';
+import {
+  loadLiveCoordinatesFlow,
+  loadPresetPatchFlow,
+} from '../src/services/progressivePatchLoader.ts';
 import { formatSpectrumCsv } from '../src/utils/csvExport.ts';
 import {
   WAVELENGTH_PRESETS,
@@ -1695,4 +1699,240 @@ test('ISS-14: replaceUrlState mirrors the view into history.replaceState without
     '/explore?ra=269.4521&dec=4.6934&fov=5&mode=subtract&wlMin=3.8&wlMax=5&utm_source=share#sky',
   );
   assert.equal(calls[0].url, url);
+});
+
+test('ISS-21: Stage A catalogs populate knownObjects before Stage B cutouts complete and use ?precision=float16', async () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const liveManifest = {
+    ...manifest,
+    epochs: manifest.epochs.map((ep, idx) => ({
+      ...ep,
+      binary_dtype: 'float16',
+      detectors_data_url: `/api/v1/frames/test_grid/ep_${idx}_detectors.bin`,
+      flags_mask_url: `/api/v1/frames/test_grid/ep_${idx}_flags.bin`,
+    })),
+    default_spectrum_url: null,
+  };
+
+  const float16Frame = new Uint16Array(6 * 256 * 256);
+  const flagsFrame = new Uint8Array(256 * 256);
+  const fetchedUrls = [];
+  const timeline = [];
+
+  let releaseStageB;
+  const stageBGate = new Promise((resolve) => {
+    releaseStageB = resolve;
+  });
+
+  const mockFetch = async (url) => {
+    fetchedUrls.push(url);
+    if (url.startsWith('/api/v1/catalogs')) {
+      return new Response(
+        JSON.stringify({
+          grid_key: 'test_grid',
+          catalog_overlays: manifest.catalog_overlays,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.startsWith('/api/v1/sky-patch')) {
+      await stageBGate;
+      return new Response(JSON.stringify(liveManifest), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('detectors.bin')) {
+      return new Response(float16Frame.buffer, {
+        status: 200,
+        headers: { 'X-Binary-Dtype': 'float16' },
+      });
+    }
+    if (url.includes('flags.bin')) {
+      return new Response(flagsFrame.buffer, { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const cache = new ClientPatchCache(10, 10, null);
+  let readyResult = null;
+  const flowPromise = loadLiveCoordinatesFlow(133.8, -7.25, 5.0, {
+    cache,
+    fetchImpl: mockFetch,
+    onStageChange: (st) => timeline.push(`stage:${st.stage}`),
+    onCatalogsReady: (cat) => {
+      timeline.push(`catalogs:${cat.catalog_overlays.known_objects.length}`);
+      assert.equal(readyResult, null, 'Stage A must resolve before Stage B finishes');
+      releaseStageB();
+    },
+    onReady: (res) => {
+      readyResult = res;
+      timeline.push(`ready:cache=${res.fromClientCache}`);
+    },
+  });
+
+  const outcome = await flowPromise;
+  assert.equal(outcome.aborted, false);
+  assert.equal(outcome.fromClientCache, false);
+  assert.ok(readyResult);
+  assert.ok(
+    timeline.some((entry) => entry.startsWith('catalogs:')),
+    'Expected Stage A callback to fire',
+  );
+  assert.ok(
+    timeline.findIndex((e) => e.startsWith('catalogs:')) <
+      timeline.findIndex((e) => e.startsWith('ready:')),
+  );
+  assert.ok(
+    fetchedUrls.some((u) => u.includes('detectors.bin?precision=float16')),
+    'Expected live detector frames to request ?precision=float16',
+  );
+
+  // Second call for the same coordinates must hit ClientPatchCache with 0 HTTP requests
+  const beforeCount = fetchedUrls.length;
+  let cachedReady = null;
+  const cachedOutcome = await loadLiveCoordinatesFlow(133.8, -7.25, 5.0, {
+    cache,
+    fetchImpl: mockFetch,
+    onReady: (res) => {
+      cachedReady = res;
+    },
+  });
+  assert.equal(cachedOutcome.fromClientCache, true);
+  assert.equal(cachedReady.fromClientCache, true);
+  assert.equal(fetchedUrls.length, beforeCount, 'Cache hit must issue 0 HTTP requests');
+});
+
+test('ISS-21: Rapid navigation cancels stale AbortController so stale responses never overwrite active patch', async () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const float32Frame = new Float32Array(6 * 256 * 256);
+  const flagsFrame = new Uint8Array(256 * 256);
+
+  let releaseStale;
+  const staleGate = new Promise((resolve) => {
+    releaseStale = resolve;
+  });
+
+  const mockFetch = async (url, init) => {
+    if (url.includes('wise_0855')) {
+      await staleGate;
+      if (init?.signal?.aborted) {
+        const err = new Error('Aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
+    }
+    if (url.endsWith('manifest.json')) {
+      return new Response(JSON.stringify(manifest), { status: 200 });
+    }
+    if (url.endsWith('_flags.bin')) {
+      return new Response(flagsFrame.buffer, { status: 200 });
+    }
+    if (url.endsWith('.bin')) {
+      return new Response(float32Frame.buffer, {
+        status: 200,
+        headers: { 'X-Binary-Dtype': 'float32' },
+      });
+    }
+    if (url.endsWith('spectrum.json')) {
+      return new Response(JSON.stringify({ flux_jy: [], wavelength_um: [] }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const cache = new ClientPatchCache(10, 10, null);
+  const readySlugs = [];
+
+  const ctrl1 = new AbortController();
+  const p1 = loadPresetPatchFlow('wise_0855', {
+    cache,
+    fetchImpl: mockFetch,
+    signal: ctrl1.signal,
+    onReady: () => readySlugs.push('wise_0855'),
+  });
+
+  // Immediately abort first navigation and switch to barnards_star
+  ctrl1.abort();
+  const ctrl2 = new AbortController();
+  const p2 = loadPresetPatchFlow('barnards_star', {
+    cache,
+    fetchImpl: mockFetch,
+    signal: ctrl2.signal,
+    onReady: () => readySlugs.push('barnards_star'),
+  });
+
+  releaseStale();
+  const [out1, out2] = await Promise.all([
+    p1.catch((e) => ({ aborted: e.name === 'AbortError' })),
+    p2,
+  ]);
+  assert.equal(out1.aborted, true);
+  assert.equal(out2.aborted, false);
+  assert.deepEqual(readySlugs, ['barnards_star']);
+});
+
+test('ISS-21: Changing render options, pan/zoom, known object selection, and tracking makes 0 HTTP requests', () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const epochBuffers = manifest.epochs.map((ep) => {
+    const buf = fs.readFileSync(
+      path.join(PRESETS_DIR, 'wise_0855', path.basename(ep.detectors_data_url)),
+    );
+    return decodeDetectorBinaryBuffer(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+      ep.binary_dtype,
+    );
+  });
+  const flagsBuffers = manifest.epochs.map((ep) => {
+    const buf = fs.readFileSync(
+      path.join(PRESETS_DIR, 'wise_0855', path.basename(ep.flags_mask_url)),
+    );
+    return decodeFlagsBinaryBuffer(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+    );
+  });
+
+  const origFetch = globalThis.fetch;
+  let httpCalls = 0;
+  globalThis.fetch = async () => {
+    httpCalls += 1;
+    throw new Error('Zero HTTP requests allowed during client-side interactions');
+  };
+
+  try {
+    for (const mode of ['blink', 'subtract', 'coadd']) {
+      renderEpochBuffersToRgba({
+        epochBuffers,
+        flagsBuffers,
+        mode,
+        activeEpochIndex: 0,
+        passAIndex: 0,
+        passBIndex: 1,
+        coaddIndices: [0, 1],
+        wavelengthRangeUm: [3.8, 5.0],
+        contrastStretch: 'asinh',
+        showFlagsOverlay: true,
+      });
+    }
+    clampViewportPanZoom(4.0, 0.25, -0.25);
+    selectAllObjectIds(manifest.catalog_overlays.known_objects);
+    clearCheckedObjectIds();
+    toggleObjectId([], manifest.catalog_overlays.known_objects[0].object_id);
+    detectAndTrackBodiesAtClick({
+      clickX: 128,
+      clickY: 128,
+      originEpochIndex: 0,
+      epochBuffers,
+      manifest,
+      wavelengthRangeUm: [0.75, 5.0],
+    });
+    assert.equal(httpCalls, 0);
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
