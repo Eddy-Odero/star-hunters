@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   clampViewportPanZoom,
   GRID_HEIGHT,
@@ -11,9 +11,14 @@ import {
 import { HOVER_DETAILS_DELAY_MS } from '../../utils/calloutPlacement';
 import { observatoryLogger } from '../../utils/observatoryLogger';
 import { decodeHygieneFlagMask, getMarkerShapeKind } from '../../utils/observatoryMath';
-import { computeLocalPixelReadout, renderEpochBuffersToImageData } from '../../utils/pixelEngine';
+import {
+  computeLocalPixelReadout,
+  renderEpochBuffersToRgba,
+  type LocalPixelReadout,
+} from '../../utils/pixelEngine';
 import { isImagePointInBounds, type CalloutRef, type CanvasFrameRect } from './calloutBuilder';
 
+/** Local hover tooltip payload for pixels with non-zero hygiene flags. */
 interface HoverFlagTooltipState {
   stageX: number;
   stageY: number;
@@ -24,6 +29,19 @@ interface HoverFlagTooltipState {
   flagByte: number;
 }
 
+/** Cached pointer readout keyed by integer pixel coordinates and active buffer state. */
+interface CachedPixelReadout {
+  pxInt: number;
+  pyInt: number;
+  activeEpochIndex: number;
+  wlMin: number;
+  wlMax: number;
+  epochBuffers: Float32Array[][] | null;
+  flagsBuffers: Uint8Array[] | null;
+  readout: LocalPixelReadout;
+}
+
+/** Props for {@link BlinkerCanvasViewport}. */
 interface BlinkerCanvasViewportProps {
   stageRef: React.RefObject<HTMLDivElement>;
   canvasFrameRef: React.RefObject<HTMLDivElement>;
@@ -49,7 +67,11 @@ interface BlinkerCanvasViewportProps {
 
 /**
  * Aligned 256x256 scientific pixel viewport with hollow 3-shape overlays,
- * non-blocking loading throbber, and isolated pixel hygiene tooltip state.
+ * non-blocking loading throbber, offscreen pixel-synthesis caching, and
+ * isolated pixel hygiene tooltip state.
+ *
+ * @param props - Viewport refs, render settings, catalog/tracking overlays, and handlers.
+ * @returns Rendered scientific canvas stage, SVG marker overlay, and hygiene tooltip.
  */
 export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
   stageRef,
@@ -75,6 +97,10 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
 }) => {
   const visibleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const offscreenImageDataRef = useRef<ImageData | null>(null);
+  const hasOffscreenFrameRef = useRef<boolean>(false);
+  const viewBoxRef = useRef(viewBox);
+  const lastPixelReadoutRef = useRef<CachedPixelReadout | null>(null);
   const hoverTimerRef = useRef<number | null>(null);
   const hoverCandidateKeyRef = useRef<string | null>(null);
   const panDragRef = useRef({
@@ -99,15 +125,50 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
 
   useEffect(() => () => clearHoverTimer(), []);
 
-  useEffect(() => {
-    const canvas = visibleCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  const blitOffscreenToVisible = useCallback(
+    (vb: { minX: number; minY: number; viewWidth: number; viewHeight: number }) => {
+      const canvas = visibleCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
 
+      const offscreen = offscreenCanvasRef.current;
+      if (!hasOffscreenFrameRef.current || !offscreen) {
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, GRID_WIDTH, GRID_HEIGHT);
+        return;
+      }
+
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, GRID_WIDTH, GRID_HEIGHT);
+      ctx.drawImage(
+        offscreen,
+        vb.minX,
+        vb.minY,
+        vb.viewWidth,
+        vb.viewHeight,
+        0,
+        0,
+        GRID_WIDTH,
+        GRID_HEIGHT,
+      );
+    },
+    [],
+  );
+
+  // Effect A: Crop & blit from the cached offscreen frame onto the visible canvas
+  // whenever pan/zoom (`viewBox`) changes, avoiding any 65,536-pixel re-synthesis.
+  useEffect(() => {
+    viewBoxRef.current = viewBox;
+    blitOffscreenToVisible(viewBox);
+  }, [viewBox, blitOffscreenToVisible]);
+
+  // Effect B: Synthesize 256x256 scientific RGBA pixels into the offscreen canvas
+  // only when epoch data, comparison mode, wavelength slice, or stretch changes.
+  useEffect(() => {
     if (!epochBuffers || epochBuffers.length === 0) {
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, GRID_WIDTH, GRID_HEIGHT);
+      hasOffscreenFrameRef.current = false;
+      blitOffscreenToVisible(viewBoxRef.current);
       return;
     }
 
@@ -121,7 +182,13 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
     const offCtx = offscreen.getContext('2d');
     if (!offCtx) return;
 
-    const imageData = renderEpochBuffersToImageData({
+    let imageData = offscreenImageDataRef.current;
+    if (!imageData) {
+      imageData = offCtx.createImageData(GRID_WIDTH, GRID_HEIGHT);
+      offscreenImageDataRef.current = imageData;
+    }
+
+    renderEpochBuffersToRgba({
       epochBuffers,
       flagsBuffers: flagsBuffers ?? undefined,
       activeEpochIndex: renderSettings.activeEpochIndex,
@@ -132,23 +199,14 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
       passBIndex: renderSettings.passBIndex,
       coaddIndices: renderSettings.coaddIndices,
       showFlagsOverlay: false,
+      outBuffer: imageData.data,
     });
 
     offCtx.putImageData(imageData, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, GRID_WIDTH, GRID_HEIGHT);
-    ctx.drawImage(
-      offscreen,
-      viewBox.minX,
-      viewBox.minY,
-      viewBox.viewWidth,
-      viewBox.viewHeight,
-      0,
-      0,
-      GRID_WIDTH,
-      GRID_HEIGHT,
-    );
+    hasOffscreenFrameRef.current = true;
+    blitOffscreenToVisible(viewBoxRef.current);
   }, [
+    blitOffscreenToVisible,
     epochBuffers,
     flagsBuffers,
     renderSettings.activeEpochIndex,
@@ -158,7 +216,6 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
     renderSettings.passAIndex,
     renderSettings.passBIndex,
     renderSettings.wavelengthRangeUm,
-    viewBox,
   ]);
 
   const imageToScreen = (imgX: number, imgY: number) => ({
@@ -242,13 +299,13 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
           drag.startPanY + deltaImgY,
         );
         onSetViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
-        setHoverFlagTooltip(null);
+        setHoverFlagTooltip((prev) => (prev === null ? prev : null));
         return;
       }
     }
 
     if (localX < 0 || localY < 0 || localX > fRect.width || localY > fRect.height) {
-      setHoverFlagTooltip(null);
+      setHoverFlagTooltip((prev) => (prev === null ? prev : null));
       clearHoverTimer();
       onSetHoverCallout(null);
       return;
@@ -283,14 +340,45 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
       renderSettings.panX,
       renderSettings.panY,
     );
-    const readout = computeLocalPixelReadout({
-      epochBuffers,
-      flagsBuffers,
-      activeEpochIndex: renderSettings.activeEpochIndex,
-      wavelengthRangeUm: renderSettings.wavelengthRangeUm,
-      px: ix,
-      py: iy,
-    });
+    const pxInt = Math.max(0, Math.min(GRID_WIDTH - 1, Math.floor(ix)));
+    const pyInt = Math.max(0, Math.min(GRID_HEIGHT - 1, Math.floor(iy)));
+    const wlMin = renderSettings.wavelengthRangeUm[0];
+    const wlMax = renderSettings.wavelengthRangeUm[1];
+
+    const cached = lastPixelReadoutRef.current;
+    const isSamePixelAndState =
+      cached !== null &&
+      cached.pxInt === pxInt &&
+      cached.pyInt === pyInt &&
+      cached.activeEpochIndex === renderSettings.activeEpochIndex &&
+      cached.wlMin === wlMin &&
+      cached.wlMax === wlMax &&
+      cached.epochBuffers === epochBuffers &&
+      cached.flagsBuffers === flagsBuffers;
+
+    const readout = isSamePixelAndState
+      ? cached.readout
+      : computeLocalPixelReadout({
+          epochBuffers,
+          flagsBuffers,
+          activeEpochIndex: renderSettings.activeEpochIndex,
+          wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+          px: ix,
+          py: iy,
+        });
+
+    if (!isSamePixelAndState) {
+      lastPixelReadoutRef.current = {
+        pxInt,
+        pyInt,
+        activeEpochIndex: renderSettings.activeEpochIndex,
+        wlMin,
+        wlMax,
+        epochBuffers,
+        flagsBuffers,
+        readout,
+      };
+    }
 
     if (readout.flagByte > 0) {
       setHoverFlagTooltip({
@@ -303,7 +391,7 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
         flagByte: readout.flagByte,
       });
     } else {
-      setHoverFlagTooltip(null);
+      setHoverFlagTooltip((prev) => (prev === null ? prev : null));
     }
   };
 
@@ -384,7 +472,8 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
         onPointerUp={handlePointerUp}
         onPointerLeave={() => {
           panDragRef.current.active = false;
-          setHoverFlagTooltip(null);
+          lastPixelReadoutRef.current = null;
+          setHoverFlagTooltip((prev) => (prev === null ? prev : null));
           clearHoverTimer();
           onSetHoverCallout(null);
         }}

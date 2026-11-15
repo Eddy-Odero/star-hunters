@@ -12,7 +12,6 @@ import {
   detectAndTrackBodiesAtClick,
   getDefaultCheckedObjectIds,
   mergeTrackedTargets,
-  pickDistinctHighlighterColors,
   type CatalogsResponse,
   type ClickDiagnosticInfo,
   type GlobalKnownObjectEntry,
@@ -32,6 +31,7 @@ import {
   type LoadedPatchResult,
 } from '../services/progressivePatchLoader';
 import {
+  assignDeterministicHighlighterColors,
   clearCheckedObjectIds,
   extractAvailableMissions,
   pickNearestAllowedEpoch,
@@ -75,6 +75,14 @@ const ALL_MISSIONS: MissionName[] = [
 
 const SkyExplorerContext = createContext<SkyExplorerContextValue | null>(null);
 
+/**
+ * Root React context provider coordinating 3D sky globe state, progressive
+ * two-stage patch loading, client-side pixel rendering parameters, click-to-track
+ * targets, and 102-band SPHEREx spectrum inspection.
+ *
+ * @param props - Provider props containing descendant React nodes.
+ * @returns Context provider element wrapping the application tree.
+ */
 export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const notifications = useOptionalNotifications();
   const notificationsRef = useRef(notifications);
@@ -121,6 +129,9 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isSpectrumLoading, setIsSpectrumLoading] = useState<boolean>(false);
   const [globalKnownObjects, setGlobalKnownObjects] = useState<GlobalKnownObjectEntry[]>([]);
   const [stageAKnownObjects, setStageAKnownObjects] = useState<KnownCelestialObject[] | null>(null);
+  const [objectHighlighterColors, setObjectHighlighterColors] = useState<Record<string, string>>(
+    {},
+  );
 
   const [isBlinkerModalOpen, setIsBlinkerModalOpen] = useState<boolean>(false);
   const [isSpectraModalOpen, setIsSpectraModalOpen] = useState<boolean>(false);
@@ -132,17 +143,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     () => stageAKnownObjects ?? manifest?.catalog_overlays?.known_objects ?? [],
     [stageAKnownObjects, manifest],
   );
-
-  // Assign distinct highlighter colors from the palette for every object in the active patch
-  const objectHighlighterColors: Record<string, string> = useMemo(() => {
-    if (knownObjects.length === 0) return {};
-    const palette = pickDistinctHighlighterColors(knownObjects.length);
-    const map: Record<string, string> = {};
-    knownObjects.forEach((obj, idx) => {
-      map[obj.object_id] = palette[idx];
-    });
-    return map;
-  }, [knownObjects]);
 
   useObservatoryWarmup(setGlobalKnownObjects);
 
@@ -318,26 +318,33 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return resolveFilteredEpochIndices(manifest.epochs, activeMissions);
   }, [manifest, activeMissions]);
 
-  const {
-    isPlaying,
-    setIsPlaying,
-    isLooping,
-    fps,
-    setFps,
-    play,
-    pause,
-    stepForward,
-    stepBackward,
-    toggleLoop,
-  } = useBlinkerPlayback({
-    manifest,
-    filteredEpochIndices,
-    setRenderSettings,
-  });
+  const { isPlaying, isLooping, fps, setFps, play, pause, stepForward, stepBackward, toggleLoop } =
+    useBlinkerPlayback({
+      manifest,
+      activeEpochIndex: renderSettings.activeEpochIndex,
+      filteredEpochIndices,
+      setRenderSettings,
+    });
 
+  /**
+   * Apply a decoded Stage B patch bundle (manifest, detector planes, hygiene flags,
+   * and optional spectrum) to context state and reset viewport/tracking overlays.
+   *
+   * @param result - Decoded sky patch payload from {@link loadPresetPatchFlow} or {@link loadLiveCoordinatesFlow}.
+   * @param syncCoordinatesFromManifest - Whether to overwrite active sky coordinates from the manifest.
+   * @param preserveStageAColors - Whether to retain existing Stage A `object_id -> color` mappings.
+   */
   const applyLoadedPatch = useCallback(
-    (result: LoadedPatchResult, syncCoordinatesFromManifest: boolean) => {
+    (
+      result: LoadedPatchResult,
+      syncCoordinatesFromManifest: boolean,
+      preserveStageAColors: boolean,
+    ) => {
+      const nextKnownObjects = result.manifest.catalog_overlays.known_objects ?? [];
       setStageAKnownObjects(null);
+      setObjectHighlighterColors((prev) =>
+        assignDeterministicHighlighterColors(nextKnownObjects, preserveStageAColors ? prev : {}),
+      );
       setManifest(result.manifest);
       setEpochBuffers(result.epochBuffers);
       setFlagsBuffers(result.flagsBuffers);
@@ -359,9 +366,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         zoom: 1.0,
         panX: 0.0,
         panY: 0.0,
-        checkedObjectIds: getDefaultCheckedObjectIds(
-          result.manifest.catalog_overlays.known_objects ?? [],
-        ),
+        checkedObjectIds: getDefaultCheckedObjectIds(nextKnownObjects),
       }));
       setSelectedObject(null);
       setTrackedTargets([]);
@@ -378,137 +383,159 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [],
   );
 
-  const loadPresetBundle = useCallback(
-    async (slug: string) => {
+  /**
+   * Shared abortable patch-load runner coordinating `AbortController` cancellation,
+   * task indicator lifecycle, optional state reset, and non-abort error reporting.
+   *
+   * @param options - Task labels, logging callbacks, reset flag, and abortable execution body.
+   * @returns Promise that settles once the load completes, aborts, or reports an error.
+   */
+  const runPatchLoad = useCallback(
+    async (options: {
+      taskMessage: string;
+      errorTitle: string;
+      fallbackErrorMessage: string;
+      resetCurrentPatch?: boolean;
+      logStart: () => void;
+      logError: (errorMessage: string) => void;
+      execute: (signal: AbortSignal) => Promise<void>;
+    }) => {
       abortControllerRef.current?.abort();
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
-      observatoryLogger.info('patch', 'Loading benchmark preset bundle', { slug });
-      notificationsRef.current?.startAsyncTask(
-        'sky-patch-load',
-        'Loading target frames...',
-        'progress',
-      );
+      if (options.resetCurrentPatch) {
+        setObjectHighlighterColors({});
+        setManifest(null);
+        setEpochBuffers(null);
+        setFlagsBuffers(null);
+        setSelectedObject(null);
+        setTrackedTargets([]);
+        setLastClickDiagnostic(null);
+      }
+      options.logStart();
+      notificationsRef.current?.startAsyncTask('sky-patch-load', options.taskMessage, 'progress');
 
       try {
-        await loadPresetPatchFlow(slug, {
-          cache: defaultClientPatchCache,
-          signal: controller.signal,
-          onStageChange: setLoadingState,
-          onReady: (result) => applyLoadedPatch(result, true),
-        });
+        await options.execute(controller.signal);
       } catch (err) {
+        if ((err as { name?: string } | null)?.name === 'AbortError' || controller.signal.aborted) {
+          return;
+        }
         notificationsRef.current?.finishAsyncTask('sky-patch-load');
-        if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
-        const msg = err instanceof Error ? err.message : 'Unknown error loading preset';
-        observatoryLogger.error('patch', 'Preset bundle load failed', { slug, error: msg });
+        const msg = err instanceof Error ? err.message : options.fallbackErrorMessage;
+        options.logError(msg);
         setLoadingState({ stage: 'error', message: msg });
         notificationsRef.current?.pushWarning({
           id: 'patch-load-error',
-          title: 'Failed to load preset patch',
+          title: options.errorTitle,
           detail: msg,
           level: 'error',
         });
       }
     },
-    [applyLoadedPatch],
+    [],
+  );
+
+  const loadPresetBundle = useCallback(
+    async (slug: string) => {
+      await runPatchLoad({
+        taskMessage: 'Loading target frames...',
+        errorTitle: 'Failed to load preset patch',
+        fallbackErrorMessage: 'Unknown error loading preset',
+        logStart: () =>
+          observatoryLogger.info('patch', 'Loading benchmark preset bundle', { slug }),
+        logError: (error) =>
+          observatoryLogger.error('patch', 'Preset bundle load failed', { slug, error }),
+        execute: async (signal) => {
+          await loadPresetPatchFlow(slug, {
+            cache: defaultClientPatchCache,
+            signal,
+            onStageChange: setLoadingState,
+            onReady: (result) => applyLoadedPatch(result, true, false),
+          });
+        },
+      });
+    },
+    [applyLoadedPatch, runPatchLoad],
   );
 
   const selectPreset = useCallback(
     (slug: string) => {
-      setIsPlaying(false);
+      pause();
       setActivePresetSlug(slug);
       setIsSpectraModalOpen(false);
       void loadPresetBundle(slug);
     },
-    [loadPresetBundle],
+    [loadPresetBundle, pause],
   );
 
   const loadLiveCoordinates = useCallback(
     async (ra: number, dec: number, fovArcmin: number) => {
-      abortControllerRef.current?.abort();
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-      setStageAKnownObjects(null);
-      setManifest(null);
-      setEpochBuffers(null);
-      setFlagsBuffers(null);
-      setSelectedObject(null);
-      setTrackedTargets([]);
-      setLastClickDiagnostic(null);
-      observatoryLogger.info('patch', 'Loading live sky patch', { ra, dec, fovArcmin });
-      notificationsRef.current?.startAsyncTask(
-        'sky-patch-load',
-        'Streaming epoch frames...',
-        'progress',
-      );
-
-      try {
-        await loadLiveCoordinatesFlow(ra, dec, fovArcmin, {
-          cache: defaultClientPatchCache,
-          signal: controller.signal,
-          onStageChange: setLoadingState,
-          onCatalogsReady: (catData: CatalogsResponse) => {
-            const stageAObjects = catData.catalog_overlays.known_objects ?? [];
-            observatoryLogger.info('catalogs', 'Known objects loaded for patch', {
-              count: stageAObjects.length,
-              ra,
-              dec,
-            });
-            setStageAKnownObjects(stageAObjects);
-            setRenderSettings((prev) => ({
-              ...prev,
-              checkedObjectIds: getDefaultCheckedObjectIds(stageAObjects),
-            }));
-            notificationsRef.current?.startAsyncTask(
-              'sky-patch-catalogs',
-              'Known objects loaded',
-              'success',
-              2600,
-            );
-            notificationsRef.current?.startAsyncTask(
-              'sky-patch-load',
-              'Streaming epoch frames...',
-              'progress',
-            );
-            setLoadingState({
-              stage: 'loading_cutouts',
-              message: 'Streaming epoch frames...',
-            });
-          },
-          onReady: (result) => applyLoadedPatch(result, false),
-        });
-      } catch (err) {
-        notificationsRef.current?.finishAsyncTask('sky-patch-load');
-        if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
-        const msg = err instanceof Error ? err.message : 'Unknown error loading sky patch';
-        observatoryLogger.error('patch', 'Live sky patch stream interrupted', {
-          ra,
-          dec,
-          error: msg,
-        });
-        setLoadingState({ stage: 'error', message: msg });
-        notificationsRef.current?.pushWarning({
-          id: 'patch-load-error',
-          title: 'Sky patch stream interrupted',
-          detail: msg,
-          level: 'error',
-        });
-      }
+      await runPatchLoad({
+        taskMessage: 'Streaming epoch frames...',
+        errorTitle: 'Sky patch stream interrupted',
+        fallbackErrorMessage: 'Unknown error loading sky patch',
+        resetCurrentPatch: true,
+        logStart: () =>
+          observatoryLogger.info('patch', 'Loading live sky patch', { ra, dec, fovArcmin }),
+        logError: (error) =>
+          observatoryLogger.error('patch', 'Live sky patch stream interrupted', {
+            ra,
+            dec,
+            error,
+          }),
+        execute: async (signal) => {
+          await loadLiveCoordinatesFlow(ra, dec, fovArcmin, {
+            cache: defaultClientPatchCache,
+            signal,
+            onStageChange: setLoadingState,
+            onCatalogsReady: (catData: CatalogsResponse) => {
+              const stageAObjects = catData.catalog_overlays.known_objects ?? [];
+              observatoryLogger.info('catalogs', 'Known objects loaded for patch', {
+                count: stageAObjects.length,
+                ra,
+                dec,
+              });
+              setStageAKnownObjects(stageAObjects);
+              setObjectHighlighterColors(assignDeterministicHighlighterColors(stageAObjects, {}));
+              setRenderSettings((prev) => ({
+                ...prev,
+                checkedObjectIds: getDefaultCheckedObjectIds(stageAObjects),
+              }));
+              notificationsRef.current?.startAsyncTask(
+                'sky-patch-catalogs',
+                'Known objects loaded',
+                'success',
+                2600,
+              );
+              notificationsRef.current?.startAsyncTask(
+                'sky-patch-load',
+                'Streaming epoch frames...',
+                'progress',
+              );
+              setLoadingState({
+                stage: 'loading_cutouts',
+                message: 'Streaming epoch frames...',
+              });
+            },
+            onReady: (result) => applyLoadedPatch(result, false, true),
+          });
+        },
+      });
     },
-    [applyLoadedPatch],
+    [applyLoadedPatch, runPatchLoad],
   );
 
   const navigateToCoordinates = useCallback(
     (ra: number, dec: number, fovArcmin = 5.0) => {
-      setIsPlaying(false);
+      pause();
       setActivePresetSlug(null);
       setIsSpectraModalOpen(false);
       setCoordinates({ ra, dec, fovArcmin });
       void loadLiveCoordinates(ra, dec, fovArcmin);
     },
-    [loadLiveCoordinates],
+    [loadLiveCoordinates, pause],
   );
 
   const openBlinkerModal = useCallback(
@@ -525,11 +552,11 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   );
 
   const closeBlinkerModal = useCallback(() => {
-    setIsPlaying(false);
+    pause();
     setIsSpectraModalOpen(false);
     setIsBlinkerModalOpen(false);
     observatoryLogger.info('blinker', 'Blinker modal closed');
-  }, []);
+  }, [pause]);
 
   const openSelectedSpectrum = useCallback(
     async (coords?: { ra: number; dec: number; label?: string }) => {
@@ -825,6 +852,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       stepForward,
       stepBackward,
       toggleLoop,
+      setFps,
       selectedObject,
       trackedTargets,
       lastClickDiagnostic,
@@ -854,6 +882,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   return <SkyExplorerContext.Provider value={value}>{children}</SkyExplorerContext.Provider>;
 };
 
+/**
+ * Access the nearest {@link SkyExplorerProvider} context value.
+ *
+ * @returns Active {@link SkyExplorerContextValue}.
+ * @throws {Error} When invoked outside a {@link SkyExplorerProvider}.
+ */
 export function useSkyExplorer(): SkyExplorerContextValue {
   const ctx = useContext(SkyExplorerContext);
   if (!ctx) {

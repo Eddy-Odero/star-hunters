@@ -132,6 +132,36 @@ class TestFlagHygieneMapping(unittest.TestCase):
             np.array([4, 0, 4], dtype=np.uint8),
         )
 
+    def test_combined_multi_group_bits_or_together(self) -> None:
+        combined = (
+            (1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"])
+            | (1 << ingest.SPHEREX_FLAG_BITS["BLOOM"])
+            | (1 << ingest.SPHEREX_FLAG_BITS["PERSIST"])
+            | (1 << ingest.SPHEREX_FLAG_BITS["SATELLITE_HALO"])
+        )
+        flags = np.array([combined, 0], dtype=np.uint32)
+        np.testing.assert_array_equal(
+            ingest.map_flags_to_hygiene(flags),
+            np.array([1 | 2 | 4 | 8, 0], dtype=np.uint8),
+        )
+
+    def test_scalar_and_empty_flag_inputs(self) -> None:
+        for scalar_input, expected in (
+            (0, 0),
+            (1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"], 1),
+            (np.uint32(1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"]), 1),
+            (float("nan"), 4),
+        ):
+            mapped = ingest.map_flags_to_hygiene(scalar_input)
+            self.assertIsInstance(mapped, np.ndarray)
+            self.assertEqual(mapped.shape, ())
+            self.assertEqual(mapped.dtype, np.uint8)
+            self.assertEqual(int(mapped), expected)
+
+        empty = ingest.map_flags_to_hygiene(np.array([], dtype=np.uint32))
+        self.assertEqual(empty.shape, (0,))
+        self.assertEqual(empty.dtype, np.uint8)
+
 
 class TestFitsProcessing(unittest.TestCase):
     def setUp(self) -> None:

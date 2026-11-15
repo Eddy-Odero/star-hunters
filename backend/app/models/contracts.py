@@ -1,7 +1,8 @@
-"""Immutable shared contracts for Star Hunters (Phase 0).
+"""Immutable shared contracts for Star Hunters.
 
-Supports both Pydantic v2 (when installed) and stdlib dataclasses + jsonschema so contract
-validation, unit tests, and preset generators run cleanly in any Python 3.11+ environment.
+Provides stdlib dataclass models, JSON Schema validation (via cached
+``jsonschema`` validators), and vectorized NumPy binary buffer utilities for
+SPHEREx detector cubes and hygiene masks.
 """
 
 from __future__ import annotations
@@ -9,26 +10,13 @@ from __future__ import annotations
 import csv
 import math
 import re
-import struct
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-import jsonschema
-
-try:
-    from pydantic import BaseModel as _PydanticBaseModel
-    from pydantic import ConfigDict
-    from pydantic import Field as _PydanticField
-
-    HAS_PYDANTIC = True
-except ImportError:  # pragma: no cover
-    _PydanticBaseModel = object  # type: ignore[assignment,misc]
-    _PydanticField = None  # type: ignore[assignment]
-    ConfigDict = None  # type: ignore[assignment]
-    HAS_PYDANTIC = False
-
+import numpy as np
+from jsonschema.validators import validator_for
 
 # ---------------------------------------------------------------------------
 # Constants: Detector Wavelength Bands, Binary Frame Sizes & Hygiene Flags
@@ -92,13 +80,25 @@ TRACKING_SQUARE_COLORS: tuple[str, ...] = (
 
 
 def _slugify_capital(city_name: str) -> str:
-    """Convert a capital city name to an ASCII snake_case slug."""
+    """Convert a capital city name to an ASCII snake_case slug.
+
+    Args:
+        city_name: Human-readable capital city name.
+
+    Returns:
+        Lowercase ASCII slug separated by underscores.
+    """
     ascii_text = unicodedata.normalize("NFKD", city_name).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9]+", "_", ascii_text.lower()).strip("_")
 
 
 def _load_world_capital_cities() -> list[dict[str, Any]]:
-    """Load the full list of world capital cities from world_capital_cities.csv."""
+    """Load the full list of world capital cities from ``world_capital_cities.csv``.
+
+    Returns:
+        List of city metadata dictionaries containing ``slug``, ``city_name``,
+        ``country``, ``lat``, and ``lon``.
+    """
     csv_path = Path(__file__).with_name("world_capital_cities.csv")
     cities: list[dict[str, Any]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as fh:
@@ -707,26 +707,56 @@ EARTH_TO_SKY_JSON_SCHEMA: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
-# Contract Model Classes (Dataclass + Pydantic v2 API compatibility)
+# Contract Model Classes (Dataclass + Cached JSON Schema Validation)
 # ---------------------------------------------------------------------------
 
 
 class _ContractModelMixin:
-    """Provides Pydantic v2-compatible `.model_dump()` and `.model_validate()`."""
+    """Mixin providing ``.model_dump()`` and cached JSON Schema ``.model_validate()``."""
 
     SCHEMA: dict[str, Any] = {}
+    _VALIDATOR: Any = None
 
     def model_dump(self) -> dict[str, Any]:
+        """Serialize this dataclass contract instance to a plain dictionary.
+
+        Returns:
+            Dictionary representation of all dataclass fields.
+        """
         return asdict(self)  # type: ignore[arg-type]
 
     @classmethod
+    def _get_validator(cls) -> Any:
+        """Compile and cache a ``jsonschema`` validator for ``cls.SCHEMA``."""
+        validator = cls.__dict__.get("_VALIDATOR")
+        if validator is None and cls.SCHEMA:
+            validator_cls = validator_for(cls.SCHEMA)
+            validator_cls.check_schema(cls.SCHEMA)
+            validator = validator_cls(cls.SCHEMA)
+            cls._VALIDATOR = validator
+        return validator
+
+    @classmethod
     def model_validate(cls, data: dict[str, Any]) -> Any:
-        if cls.SCHEMA:
-            jsonschema.validate(instance=data, schema=cls.SCHEMA)
+        """Validate ``data`` against ``cls.SCHEMA`` and construct a contract instance.
+
+        Args:
+            data: Raw dictionary payload to validate and hydrate.
+
+        Returns:
+            Validated instance of ``cls``.
+
+        Raises:
+            jsonschema.ValidationError: If ``data`` fails schema validation.
+        """
+        validator = cls._get_validator()
+        if validator is not None:
+            validator.validate(data)
         return cls._from_dict(data)
 
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> Any:
+        """Instantiate ``cls`` directly from a pre-validated dictionary."""
         return cls(**data)
 
 
@@ -1059,7 +1089,18 @@ class EarthToSkyResponse(_ContractModelMixin):
 
 
 def validate_sky_patch_manifest(payload: dict[str, Any]) -> SkyPatchManifest:
-    """Validate a SkyPatchManifest dictionary against the Phase 0 schema."""
+    """Validate a ``SkyPatchManifest`` dictionary against the schema.
+
+    Args:
+        payload: Raw sky-patch manifest dictionary.
+
+    Returns:
+        Validated ``SkyPatchManifest`` dataclass instance.
+
+    Raises:
+        jsonschema.ValidationError: If schema validation fails.
+        ValueError: If any epoch contains a non-finite MJD.
+    """
     manifest = SkyPatchManifest.model_validate(payload)
     for ep in manifest.epochs:
         if not math.isfinite(ep.mjd):
@@ -1068,12 +1109,34 @@ def validate_sky_patch_manifest(payload: dict[str, Any]) -> SkyPatchManifest:
 
 
 def validate_catalogs_response(payload: dict[str, Any]) -> CatalogsResponse:
-    """Validate a GET /api/v1/catalogs response payload."""
+    """Validate a ``GET /api/v1/catalogs`` response payload.
+
+    Args:
+        payload: Raw catalogs response dictionary.
+
+    Returns:
+        Validated ``CatalogsResponse`` dataclass instance.
+
+    Raises:
+        jsonschema.ValidationError: If schema validation fails.
+    """
     return CatalogsResponse.model_validate(payload)
 
 
 def validate_spectrum_payload(payload: dict[str, Any]) -> SpectrumPayload:
-    """Validate a SpectrumPayload dictionary and check monotonic wavelength ordering."""
+    """Validate a ``SpectrumPayload`` dictionary and verify channel invariants.
+
+    Args:
+        payload: Raw 102-channel spectrum dictionary.
+
+    Returns:
+        Validated ``SpectrumPayload`` dataclass instance.
+
+    Raises:
+        jsonschema.ValidationError: If schema validation fails.
+        ValueError: If channel count, wavelength monotonicity/bounds, or
+            flux/variance finiteness invariants are violated.
+    """
     spectrum = SpectrumPayload.model_validate(payload)
     wavelengths = [ch.wavelength_um for ch in spectrum.channels]
     if len(wavelengths) != 102:
@@ -1097,7 +1160,17 @@ def validate_spectrum_payload(payload: dict[str, Any]) -> SpectrumPayload:
 
 
 def validate_earth_to_sky_response(payload: dict[str, Any]) -> EarthToSkyResponse:
-    """Validate an EarthToSkyResponse dictionary."""
+    """Validate an ``EarthToSkyResponse`` dictionary.
+
+    Args:
+        payload: Raw zenith bridge response dictionary.
+
+    Returns:
+        Validated ``EarthToSkyResponse`` dataclass instance.
+
+    Raises:
+        jsonschema.ValidationError: If schema validation fails.
+    """
     return EarthToSkyResponse.model_validate(payload)
 
 
@@ -1105,62 +1178,97 @@ def validate_detector_binary_buffer(
     raw_bytes: bytes,
     precision: Literal["float32", "float16"] = "float32",
 ) -> tuple[int, float, float]:
-    """Validate raw pass_{N}.bin bytes for exact byte length and finite values.
+    """Validate raw ``pass_{N}.bin`` bytes for exact byte length and finite values.
 
-    Returns (num_values, min_value, max_value).
+    Args:
+        raw_bytes: Packed little-endian ``(6, 256, 256)`` detector cube buffer.
+        precision: Numeric storage format, either ``"float32"`` or ``"float16"``.
+
+    Returns:
+        Tuple of ``(num_values, min_value, max_value)``.
+
+    Raises:
+        ValueError: If ``precision`` is unsupported, byte length does not match,
+            or any value is NaN/Inf.
     """
-    expected = (
-        BINARY_DETECTOR_FLOAT32_BYTES if precision == "float32" else BINARY_DETECTOR_FLOAT16_BYTES
-    )
+    if precision == "float32":
+        expected = BINARY_DETECTOR_FLOAT32_BYTES
+        dtype = np.dtype("<f4")
+    elif precision == "float16":
+        expected = BINARY_DETECTOR_FLOAT16_BYTES
+        dtype = np.dtype("<f2")
+    else:
+        raise ValueError(f"Unsupported detector buffer precision: {precision!r}")
+
     if len(raw_bytes) != expected:
         raise ValueError(
             f"Invalid detector binary buffer size for {precision}: "
             f"expected {expected} bytes, got {len(raw_bytes)} bytes"
         )
-    fmt = f"<{TOTAL_DETECTOR_VALUES}f" if precision == "float32" else f"<{TOTAL_DETECTOR_VALUES}e"
-    values = struct.unpack(fmt, raw_bytes)
-    min_val = float("inf")
-    max_val = float("-inf")
-    for val in values:
-        if not math.isfinite(val):
-            raise ValueError("Detector binary buffer contains NaN or Inf values")
-        if val < min_val:
-            min_val = val
-        if val > max_val:
-            max_val = val
-    return len(values), min_val, max_val
+
+    values = np.frombuffer(raw_bytes, dtype=dtype)
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Detector binary buffer contains NaN or Inf values")
+    return int(values.size), float(np.min(values)), float(np.max(values))
 
 
 def validate_flags_binary_buffer(raw_bytes: bytes) -> tuple[int, int]:
-    """Validate raw pass_{N}_flags.bin bytes for exact 65,536-byte length.
+    """Validate raw ``pass_{N}_flags.bin`` bytes for exact 65,536-byte length.
 
-    Returns (num_pixels, nonzero_count).
+    Args:
+        raw_bytes: Packed ``(256, 256)`` ``uint8`` hygiene mask buffer.
+
+    Returns:
+        Tuple of ``(num_pixels, nonzero_count)``.
+
+    Raises:
+        ValueError: If ``raw_bytes`` does not contain exactly 65,536 bytes.
     """
     if len(raw_bytes) != BINARY_FLAGS_UINT8_BYTES:
         raise ValueError(
             f"Invalid flags binary buffer size: expected {BINARY_FLAGS_UINT8_BYTES} bytes, "
             f"got {len(raw_bytes)} bytes"
         )
-    nonzero = sum(1 for b in raw_bytes if b != 0)
-    return len(raw_bytes), nonzero
+    flags = np.frombuffer(raw_bytes, dtype=np.uint8)
+    return int(flags.size), int(np.count_nonzero(flags))
 
 
 def convert_float32_bytes_to_float16_bytes(float32_bytes: bytes) -> bytes:
-    """Convert a (6, 256, 256) float32 buffer to float16 (786,432 B) for 3G transfer."""
+    """Convert a ``(6, 256, 256)`` ``float32`` buffer to ``float16`` (786,432 B).
+
+    Args:
+        float32_bytes: Little-endian ``float32`` buffer of length 1,572,864 bytes.
+
+    Returns:
+        Clamped little-endian ``float16`` buffer of length 786,432 bytes.
+
+    Raises:
+        ValueError: If ``float32_bytes`` has an unexpected byte length.
+    """
     if len(float32_bytes) != BINARY_DETECTOR_FLOAT32_BYTES:
         raise ValueError(
             f"Expected {BINARY_DETECTOR_FLOAT32_BYTES} bytes, got {len(float32_bytes)}"
         )
-    values = struct.unpack(f"<{TOTAL_DETECTOR_VALUES}f", float32_bytes)
-    clamped = [max(-65504.0, min(65504.0, v)) for v in values]
-    return struct.pack(f"<{TOTAL_DETECTOR_VALUES}e", *clamped)
+    values = np.frombuffer(float32_bytes, dtype="<f4")
+    clamped = np.clip(values, np.float32(-65504.0), np.float32(65504.0)).astype("<f2")
+    return clamped.tobytes()
 
 
 def convert_float16_bytes_to_float32_bytes(float16_bytes: bytes) -> bytes:
-    """Convert a (6, 256, 256) float16 buffer (786,432 B) back to float32 (1,572,864 B)."""
+    """Convert a ``(6, 256, 256)`` ``float16`` buffer (786,432 B) back to ``float32``.
+
+    Args:
+        float16_bytes: Little-endian ``float16`` buffer of length 786,432 bytes.
+
+    Returns:
+        Little-endian ``float32`` buffer of length 1,572,864 bytes.
+
+    Raises:
+        ValueError: If ``float16_bytes`` has an unexpected byte length.
+    """
     if len(float16_bytes) != BINARY_DETECTOR_FLOAT16_BYTES:
         raise ValueError(
             f"Expected {BINARY_DETECTOR_FLOAT16_BYTES} bytes, got {len(float16_bytes)}"
         )
-    values = struct.unpack(f"<{TOTAL_DETECTOR_VALUES}e", float16_bytes)
-    return struct.pack(f"<{TOTAL_DETECTOR_VALUES}f", *values)
+    values = np.frombuffer(float16_bytes, dtype="<f2").astype("<f4")
+    return values.tobytes()

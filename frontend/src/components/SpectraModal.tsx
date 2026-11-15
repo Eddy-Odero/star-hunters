@@ -5,6 +5,10 @@ import { downloadSpectrumCsv } from '../utils/csvExport';
 import { formatRaDecCompact } from '../utils/observatoryMath';
 import { ChevronIcon, CloseIcon, DownloadIcon, SpinnerIcon } from './icons/ObservatoryIcons';
 
+/**
+ * Default molecular absorption bands (micrometers) overlaid on the 102-band
+ * SPHEREx spectrum plot when the payload omits `molecular_features`.
+ */
 const DEFAULT_MOLECULAR_BANDS = [
   { key: 'h2o', label: 'H2O Ice/Vapor', min_um: 2.95, max_um: 3.3 },
   { key: 'ch4', label: 'CH4 Methane', min_um: 3.2, max_um: 3.55 },
@@ -12,6 +16,13 @@ const DEFAULT_MOLECULAR_BANDS = [
   { key: 'co', label: 'CO', min_um: 4.55, max_um: 4.8 },
 ];
 
+/**
+ * Format a molecular band identifier into a compact chemical formula label.
+ *
+ * @param key - Canonical molecule key (e.g., `"h2o"`, `"ch4"`, `"co2"`, `"co"`).
+ * @param label - Human-readable band label fallback.
+ * @returns Compact subscripted chemical formula string for SVG column labels.
+ */
 function shortFormulaLabel(key: string, label: string): string {
   const k = key.toLowerCase();
   const l = label.toLowerCase();
@@ -22,6 +33,14 @@ function shortFormulaLabel(key: string, label: string): string {
   return label.split(' ')[0];
 }
 
+/**
+ * Interactive 102-band SPHEREx spectral energy distribution (SED) inspector modal.
+ *
+ * Displays continuum flux across Detectors 1–6 (0.75–5.0 µm), molecular absorption
+ * columns, active wavelength Dim & Pop slice, hover band readout, and CSV export.
+ *
+ * @returns The rendered spectra modal section, or `null` when closed.
+ */
 export const SpectraModal: React.FC = () => {
   const {
     activePresetSlug,
@@ -347,7 +366,7 @@ export const SpectraModal: React.FC = () => {
               <div className="spectra-hover-readout" data-testid="spectra-hover-readout">
                 {hoverChannel ? (
                   <span className="mono" style={{ color: 'var(--accent-amber-bright)' }}>
-                    Band #{hoverChannel.band_index + 1} (Detector {hoverChannel.detector}) ·{' '}
+                    Band #{hoverChannel.band_index} (Detector {hoverChannel.detector}) ·{' '}
                     {hoverChannel.wavelength_um.toFixed(3)} µm · Flux{' '}
                     {hoverChannel.flux.toExponential(2)} {activeSpectrum?.units?.flux ?? 'MJy/sr'}
                     {hoverChannel.flagged ? ' · FLAGGED' : ''}

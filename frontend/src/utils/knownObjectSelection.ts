@@ -5,20 +5,23 @@
  * tested with `node --test` and reused identically by the UI and SkyExplorerContext.
  */
 
-import type {
-  CatalogSourceType,
-  CelestialObjectClass,
-  GlobalKnownObjectEntry,
-  KnownCelestialObject,
-  MissionName,
+import {
+  TRACKING_SQUARE_COLORS,
+  type CatalogSourceType,
+  type CelestialObjectClass,
+  type GlobalKnownObjectEntry,
+  type KnownCelestialObject,
+  type MissionName,
 } from '../types/contracts.ts';
 
+/** Preset wavelength slice option shown in the Blinker sidebar quick-filter pills. */
 export interface WavelengthPreset {
   id: string;
   label: string;
   range: [number, number];
 }
 
+/** Standard SPHEREx infrared Dim & Pop quick-filter wavelength presets. */
 export const WAVELENGTH_PRESETS: ReadonlyArray<WavelengthPreset> = [
   { id: 'all', label: 'All Bands (0.75–5.0 µm)', range: [0.75, 5.0] },
   { id: 'cold', label: 'Cold Objects / Planet X (3.8–5.0 µm)', range: [3.8, 5.0] },
@@ -28,6 +31,13 @@ export const WAVELENGTH_PRESETS: ReadonlyArray<WavelengthPreset> = [
 
 const PRESET_MATCH_TOLERANCE_UM = 0.05;
 
+/**
+ * Determine whether the active wavelength slider range matches a given preset pill.
+ *
+ * @param current - Active `[minUm, maxUm]` wavelength slice.
+ * @param range - Preset `[minUm, maxUm]` bounds.
+ * @returns `true` when both bounds match within `0.05 µm`.
+ */
 export function isWavelengthPresetActive(
   current: readonly [number, number],
   range: readonly [number, number],
@@ -46,6 +56,12 @@ const CATALOG_BADGE_LABELS: Record<CatalogSourceType, string> = {
   jpl_horizons: 'JPL Horizons',
 };
 
+/**
+ * Format a catalog source identifier into a human-readable badge label.
+ *
+ * @param catalog - Canonical catalog source identifier.
+ * @returns Display badge string (e.g., `'Gaia DR3'`).
+ */
 export function catalogBadgeLabel(catalog: CatalogSourceType): string {
   return CATALOG_BADGE_LABELS[catalog] ?? catalog;
 }
@@ -63,6 +79,12 @@ const OBJECT_CLASS_LABELS: Record<CelestialObjectClass, string> = {
   infrared_source: 'IR Source',
 };
 
+/**
+ * Infer a normalized {@link CelestialObjectClass} from object metadata and label hints.
+ *
+ * @param obj - Partial object record containing class, type, and label.
+ * @returns Resolved celestial object classification.
+ */
 export function inferObjectClass(
   obj: Pick<KnownCelestialObject, 'object_class' | 'object_type' | 'label'>,
 ): CelestialObjectClass {
@@ -91,10 +113,23 @@ export function inferObjectClass(
   return 'star';
 }
 
+/**
+ * Format a {@link CelestialObjectClass} enum value into a display badge label.
+ *
+ * @param objClass - Celestial object classification.
+ * @returns Human-readable class label.
+ */
 export function objectClassBadgeLabel(objClass: CelestialObjectClass): string {
   return OBJECT_CLASS_LABELS[objClass] ?? objClass;
 }
 
+/**
+ * Determine whether a known object is a moving Solar System body or exhibits
+ * measurable multi-epoch pixel motion (`>= 0.5 px`).
+ *
+ * @param obj - Known celestial object entry.
+ * @returns `true` if the object is classified or observed as moving across epochs.
+ */
 export function isMovingSolarSystemObject(obj: KnownCelestialObject): boolean {
   const cls = inferObjectClass(obj);
   if (cls === 'planet' || cls === 'moon' || cls === 'comet' || cls === 'asteroid') {
@@ -117,37 +152,74 @@ export function isMovingSolarSystemObject(obj: KnownCelestialObject): boolean {
   return false;
 }
 
+/**
+ * Format an apparent magnitude into a compact UI label.
+ *
+ * @param magnitude - Apparent magnitude, or `null` when unavailable.
+ * @returns Formatted magnitude string (`'mag 12.3'` or `'mag n/a'`).
+ */
 export function formatMagnitude(magnitude: number | null): string {
   return magnitude === null || !Number.isFinite(magnitude)
     ? 'mag n/a'
     : `mag ${magnitude.toFixed(1)}`;
 }
 
-/** Proper motion in arcsec/yr; small values keep 3 decimals so Gaia field stars stay readable. */
+/**
+ * Format total proper motion in arcseconds per year; sub-arcsecond values retain
+ * 3 decimals so Gaia field stars remain readable.
+ *
+ * @param arcsecPerYr - Total proper motion in arcsec/yr, or `null` when unavailable.
+ * @returns Formatted proper-motion label.
+ */
 export function formatProperMotion(arcsecPerYr: number | null): string {
   if (arcsecPerYr === null || !Number.isFinite(arcsecPerYr)) return 'μ n/a';
   return `μ ${arcsecPerYr.toFixed(arcsecPerYr < 1 ? 3 : 2)}″/yr`;
 }
 
+/**
+ * Return all `object_id` strings from a known-object list for "Check All".
+ *
+ * @param knownObjects - Known objects in the active patch.
+ * @returns Array of all object IDs.
+ */
 export function selectAllObjectIds(knownObjects: ReadonlyArray<{ object_id: string }>): string[] {
   return knownObjects.map((obj) => obj.object_id);
 }
 
+/**
+ * Return an empty checked-object ID list for "Uncheck All".
+ *
+ * @returns Empty string array.
+ */
 export function clearCheckedObjectIds(): string[] {
   return [];
 }
 
+/**
+ * Immutably toggle membership of `objectId` in `checkedIds`.
+ *
+ * @param checkedIds - Currently checked object IDs.
+ * @param objectId - Object ID to toggle.
+ * @returns New array with `objectId` added or removed.
+ */
 export function toggleObjectId(checkedIds: readonly string[], objectId: string): string[] {
   return checkedIds.includes(objectId)
     ? checkedIds.filter((id) => id !== objectId)
     : [...checkedIds, objectId];
 }
 
+/** Per-mission epoch count summary extracted from a patch manifest. */
 export interface MissionSourceCount {
   mission: MissionName;
   count: number;
 }
 
+/**
+ * Summarize distinct missions present in `epochs` alongside their frame counts.
+ *
+ * @param epochs - Epoch entries from a patch manifest.
+ * @returns Ordered list of `{ mission, count }` summaries.
+ */
 export function extractAvailableMissions(
   epochs: ReadonlyArray<{ mission: MissionName }>,
 ): MissionSourceCount[] {
@@ -158,6 +230,14 @@ export function extractAvailableMissions(
   return Array.from(counts.entries()).map(([mission, count]) => ({ mission, count }));
 }
 
+/**
+ * Resolve epoch indices belonging to `activeMissions`, falling back to all
+ * epochs if the filter would otherwise hide every frame.
+ *
+ * @param epochs - Epoch entries from a patch manifest.
+ * @param activeMissions - Currently enabled mission names.
+ * @returns Non-empty list of permitted epoch indices.
+ */
 export function resolveFilteredEpochIndices(
   epochs: ReadonlyArray<{ mission: MissionName }>,
   activeMissions: ReadonlyArray<MissionName>,
@@ -172,6 +252,13 @@ export function resolveFilteredEpochIndices(
   return indices.length > 0 ? indices : epochs.map((_, idx) => idx);
 }
 
+/**
+ * Pick `currentIndex` if allowed, otherwise the closest index in `allowedIndices`.
+ *
+ * @param currentIndex - Current active epoch index.
+ * @param allowedIndices - Permitted epoch indices.
+ * @returns Nearest allowed epoch index (or `0` when `allowedIndices` is empty).
+ */
 export function pickNearestAllowedEpoch(
   currentIndex: number,
   allowedIndices: readonly number[],
@@ -191,9 +278,13 @@ export function pickNearestAllowedEpoch(
 }
 
 /**
- * Compute a normalized [0.0, 1.0] fuzzy match score between a user query and a candidate string.
+ * Compute a normalized `[0.0, 1.0]` fuzzy match score between a user query and a candidate string.
  * Supports exact/prefix/substring match, multi-word token prefix match, ordered subsequence
- * ("w0855" -> "WISE 0855-0714"), and bounded Levenshtein edit distance ("barnrd" -> "Barnard's Star").
+ * (`"w0855"` -> `"WISE 0855-0714"`), and bounded Levenshtein edit distance (`"barnrd"` -> `"Barnard's Star"`).
+ *
+ * @param query - User search string.
+ * @param candidate - Candidate object name or identifier.
+ * @returns Match score in `[0.0, 1.0]`.
  */
 export function fuzzyScoreText(query: string, candidate: string): number {
   const q = query.trim().toLowerCase();
@@ -257,7 +348,12 @@ export function fuzzyScoreText(query: string, candidate: string): number {
 }
 
 /**
- * Filter and rank KnownCelestialObject / GlobalKnownObjectEntry items using fuzzy search.
+ * Filter and rank {@link KnownCelestialObject} / {@link GlobalKnownObjectEntry} items
+ * using {@link fuzzyScoreText}.
+ *
+ * @param objects - Candidate objects to search.
+ * @param query - User search string (empty returns all objects in input order).
+ * @returns Ranked matching objects sorted by relevance, default-checked status, and brightness.
  */
 export function fuzzySearchKnownObjects<T extends KnownCelestialObject | GlobalKnownObjectEntry>(
   objects: readonly T[],
@@ -302,14 +398,64 @@ export function fuzzySearchKnownObjects<T extends KnownCelestialObject | GlobalK
   return scored.map((s) => s.item);
 }
 
-// ---------------------------------------------------------------------------
-// Pixel rendering lives in the dedicated 60 FPS engine (ISS-11). Re-exported
-// here for backwards compatibility with existing viewport imports.
-// ---------------------------------------------------------------------------
-export {
-  applyContrastStretch,
-  renderEpochBuffersToImageData,
-  renderEpochBuffersToRgba,
-  renderPixelFrame,
-} from './pixelEngine.ts';
-export type { PixelEngineRenderParams } from './pixelEngine.ts';
+/**
+ * Compute a deterministic 32-bit FNV-1a hash for an object identifier.
+ *
+ * @param value - Object identifier string.
+ * @returns Unsigned 32-bit integer hash.
+ */
+function hashObjectId(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Deterministically assign distinct highlighter palette colors to known objects,
+ * preserving any already-assigned `object_id -> color` entries from `existingColors`
+ * across progressive Stage A catalog -> Stage B cutout updates.
+ *
+ * @param knownObjects - Known celestial objects in the active sky patch.
+ * @param existingColors - Previously assigned `object_id -> color` map to preserve.
+ * @returns Deterministic `object_id -> hexColor` map with zero randomness.
+ */
+export function assignDeterministicHighlighterColors(
+  knownObjects: ReadonlyArray<Pick<KnownCelestialObject, 'object_id'>>,
+  existingColors: Readonly<Record<string, string>> = {},
+): Record<string, string> {
+  if (knownObjects.length === 0) return {};
+
+  const palette = TRACKING_SQUARE_COLORS;
+  const paletteSize = palette.length;
+  const result: Record<string, string> = {};
+  const usedColors = new Set<string>();
+
+  for (const obj of knownObjects) {
+    const preserved = existingColors[obj.object_id];
+    if (preserved) {
+      result[obj.object_id] = preserved;
+      usedColors.add(preserved);
+    }
+  }
+
+  for (const obj of knownObjects) {
+    if (result[obj.object_id]) continue;
+    const baseIdx = hashObjectId(obj.object_id) % paletteSize;
+    let chosen: string | null = null;
+    for (let offset = 0; offset < paletteSize; offset += 1) {
+      const candidate = palette[(baseIdx + offset) % paletteSize];
+      if (!usedColors.has(candidate)) {
+        chosen = candidate;
+        break;
+      }
+    }
+    const finalColor = chosen ?? palette[baseIdx];
+    result[obj.object_id] = finalColor;
+    usedColors.add(finalColor);
+  }
+
+  return result;
+}

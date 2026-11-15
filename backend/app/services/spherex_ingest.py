@@ -227,12 +227,16 @@ def validate_coordinates(
     dec: float,
     fov_arcmin: float,
 ) -> None:
-    """
-    Validate sky coordinates and field of view.
+    """Validate sky coordinates and field of view.
 
-    RA: 0 <= RA < 360 degrees
-    Dec: -90 <= Dec <= 90 degrees
-    FOV: positive arcminutes
+    Args:
+        ra: Right Ascension in degrees (``0 <= ra < 360``).
+        dec: Declination in degrees (``-90 <= dec <= 90``).
+        fov_arcmin: Field of view in arcminutes (``fov_arcmin > 0``).
+
+    Raises:
+        SpherexValidationError: If any coordinate or FOV is non-finite or out
+            of bounds.
     """
 
     values = np.asarray(
@@ -259,13 +263,19 @@ def build_adql_query(
     fov_arcmin: float,
     bandpasses: tuple[str, ...] = SPHEREX_BANDPASSES,
 ) -> str:
-    """
-    Build an IRSA ADQL query for SPHEREx cutouts.
+    """Build an IRSA ADQL query for SPHEREx cutouts.
 
-    The query returns:
-    - Cutout download URI
-    - Bandpass
-    - Observation start time
+    Args:
+        ra: Right Ascension in degrees.
+        dec: Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        bandpasses: Tuple of SPHEREx bandpass names to filter on.
+
+    Returns:
+        ADQL query string selecting cutout URI, bandpass, and observation start time.
+
+    Raises:
+        SpherexValidationError: If coordinates or bandpasses are invalid.
     """
 
     validate_coordinates(ra, dec, fov_arcmin)
@@ -326,11 +336,20 @@ def query_observations(
     fov_arcmin: float,
     bandpasses: tuple[str, ...] = SPHEREX_BANDPASSES,
 ) -> list[SpherexObservation]:
-    """
-    Query IRSA TAP for SPHEREx observations covering a sky position.
+    """Query IRSA TAP for SPHEREx observations covering a sky position.
 
-    Returns observation metadata including the cutout URL,
-    bandpass, and observation start time.
+    Args:
+        ra: Right Ascension in degrees.
+        dec: Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        bandpasses: Tuple of SPHEREx bandpass names to query.
+
+    Returns:
+        List of :class:`SpherexObservation` metadata records.
+
+    Raises:
+        SpherexValidationError: If query parameters are invalid.
+        SpherexIngestError: If IRSA TAP query execution fails.
     """
 
     query = build_adql_query(
@@ -409,7 +428,20 @@ def build_cutout_url(
     dec: float,
     fov_arcmin: float,
 ) -> str:
-    """Build an IRSA cutout URL for an artifact URI."""
+    """Build an IRSA cutout URL for an artifact URI.
+
+    Args:
+        uri: Relative or absolute IRSA artifact URI.
+        ra: Right Ascension in degrees.
+        dec: Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+
+    Returns:
+        Fully qualified IRSA cutout URL with ``center`` and ``size`` params.
+
+    Raises:
+        SpherexValidationError: If ``uri`` is empty or coordinates are invalid.
+    """
 
     validate_coordinates(ra, dec, fov_arcmin)
 
@@ -565,15 +597,29 @@ async def download_cutouts_async(
     return [None if isinstance(result, BaseException) else result for result in results]
 
 
-download_cutouts = download_cutouts_async
-
-
 # ---------------------------------------------------------
 # Flag hygiene mapping
 # ---------------------------------------------------------
 
 
+def _build_group_bitmask(flag_names: tuple[str, ...]) -> np.uint32:
+    """Combine native SPHEREx flag bit positions into a single ``uint32`` bitmask."""
+    bitmask = 0
+    for name in flag_names:
+        bitmask |= 1 << SPHEREX_FLAG_BITS[name]
+    return np.uint32(bitmask)
+
+
+_HYGIENE_GROUP_BITMASKS: tuple[tuple[np.uint32, np.uint8], ...] = (
+    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["TRANSIENT_OR_COSMIC_RAY"]), FLAG_TRANSIENT),
+    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["SATURATED_PIXEL"]), FLAG_SATURATED),
+    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["DEAD_OR_BAD_REFERENCE"]), FLAG_BAD_REFERENCE),
+    (_build_group_bitmask(SPHEREX_FLAG_GROUPS["STRAY_LIGHT_OR_BORDER"]), FLAG_STRAY_LIGHT),
+)
+
+
 def _as_uint32_bitmap(flags: Any) -> tuple[np.ndarray, np.ndarray]:
+    """Normalize arbitrary flag array values into a ``uint32`` bitmap and invalid mask."""
     flag_array = np.asarray(flags)
 
     if np.issubdtype(flag_array.dtype, np.floating):
@@ -598,45 +644,30 @@ def _as_uint32_bitmap(flags: Any) -> tuple[np.ndarray, np.ndarray]:
 
 
 def map_flags_to_hygiene(flags: Any) -> np.ndarray:
-    """
-    Map the 32-bit SPHEREx FLAGS bitmap to the 8-bit web hygiene mask.
+    """Map the 32-bit SPHEREx ``FLAGS`` bitmap to the 8-bit web hygiene mask.
 
-    Output bits:
-    - 1: transient / cosmic ray
-    - 2: saturated
-    - 4: dead / bad reference / corrupted
-    - 8: stray light / border / ghost
-    """
+    Output bit meanings:
+        - ``1``: Transient / cosmic ray
+        - ``2``: Saturated pixel
+        - ``4``: Dead / bad reference / corrupted
+        - ``8``: Stray light / border / ghost
 
+    Args:
+        flags: Array-like SPHEREx 32-bit flag bitmap.
+
+    Returns:
+        ``uint8`` hygiene mask array matching ``flags`` shape.
+    """
     raw, invalid = _as_uint32_bitmap(flags)
-    mask = np.zeros(raw.shape, dtype=np.uint8)
+    mask = np.array(raw & np.uint32(0x0F), dtype=np.uint8, copy=True)
 
-    bit_values = {
-        "TRANSIENT_OR_COSMIC_RAY": FLAG_TRANSIENT,
-        "SATURATED_PIXEL": FLAG_SATURATED,
-        "DEAD_OR_BAD_REFERENCE": FLAG_BAD_REFERENCE,
-        "STRAY_LIGHT_OR_BORDER": FLAG_STRAY_LIGHT,
-    }
-
-    for group, names in SPHEREX_FLAG_GROUPS.items():
-        value = bit_values[group]
-        for name in names:
-            bit = np.uint32(SPHEREX_FLAG_BITS[name])
-            selected = ((raw >> bit) & np.uint32(1)).astype(bool)
-            mask[selected] |= value
-
-    low_byte = (raw & np.uint32(0x0F)).astype(np.uint8)
-    mask |= low_byte
+    for group_mask, hygiene_bit in _HYGIENE_GROUP_BITMASKS:
+        mask[(raw & group_mask) != 0] |= hygiene_bit
 
     if invalid.any():
         mask[invalid] |= FLAG_BAD_REFERENCE
 
     return mask
-
-
-map_flags_mask = map_flags_to_hygiene
-extract_hygiene_mask = map_flags_to_hygiene
-hygiene_mask_from_flags = map_flags_to_hygiene
 
 
 # ---------------------------------------------------------
@@ -900,14 +931,24 @@ def process_spherex_fits(
     uri: str | None = None,
     source_name: str = "fits",
 ) -> SpherexCutout:
-    """
-    Clean one SPHEREx MEF cutout and extract its hygiene information.
+    """Clean one SPHEREx MEF cutout and extract its hygiene information.
 
-    ``source`` may be a path, raw FITS bytes, a seekable binary file, or an
-    already-open ``fits.HDUList``.  Files opened by this function are always
-    closed before returning.
-    """
+    Args:
+        source: File path, raw FITS bytes, seekable binary stream, or open
+            ``fits.HDUList``. Files opened by this function are always closed
+            before returning.
+        bandpass: Optional bandpass override (e.g. ``"SPHEREx-D1"``).
+        uri: Optional source artifact URI for provenance tracking.
+        source_name: Provenance label assigned to the returned cutout.
 
+    Returns:
+        Cleaned :class:`SpherexCutout` with ``IMAGE - ZODI`` subtraction,
+        inverse-variance weight map, and 8-bit hygiene mask.
+
+    Raises:
+        SpherexProcessingError: If required FITS extensions or metadata are
+            missing or malformed.
+    """
     with _open_fits(source) as hdulist:
         image_hdu = _find_hdu(hdulist, "IMAGE", fallback_indices=(1,))
         zodi_hdu = _find_hdu(hdulist, "ZODI", fallback_indices=(4,))
@@ -950,26 +991,6 @@ def process_spherex_fits(
         header=header,
         flags_invalid=flags_invalid,
     )
-
-
-def read_spherex_cutout(
-    source: FITS_SOURCE,
-    bandpass: str | None = None,
-    uri: str | None = None,
-    source_name: str = "fits",
-) -> SpherexCutout:
-    """Alias for :func:`process_spherex_fits`."""
-
-    return process_spherex_fits(
-        source,
-        bandpass=bandpass,
-        uri=uri,
-        source_name=source_name,
-    )
-
-
-process_cutout = process_spherex_fits
-load_spherex_cutout = process_spherex_fits
 
 
 # ---------------------------------------------------------
@@ -1460,12 +1481,3 @@ async def ingest_spherex_cutouts_async(
         cutouts.append(cutout)
 
     return cutouts
-
-
-process_spherex_cutout = process_spherex_fits
-clean_spherex_cutout = process_spherex_fits
-map_spherex_flags = map_flags_to_hygiene
-flags_to_hygiene_mask = map_flags_to_hygiene
-download_spherex_cutout = download_cutout
-query_spherex_observations = query_observations
-ingest_spherex = ingest_spherex_cutouts

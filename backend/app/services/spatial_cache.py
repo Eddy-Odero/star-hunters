@@ -6,11 +6,14 @@ import json
 import math
 import os
 import sqlite3
+import threading
 import time
+import weakref
 import zlib
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
@@ -21,7 +24,17 @@ _MJD_EPOCH = datetime(1858, 11, 17, 0, 0, 0, tzinfo=UTC)
 def quantize_bucket(
     value: float, step: float = DEFAULT_GRID_STEP_DEG, wrap_360: bool = False
 ) -> float:
-    """Quantize a celestial coordinate to a spatial bucket step in degrees."""
+    """Quantize a celestial coordinate to a spatial bucket step in degrees.
+
+    Args:
+        value: Input coordinate in degrees.
+        step: Quantization grid step in degrees.
+        wrap_360: If True, wrap coordinate modulo 360 (Right Ascension);
+            otherwise clamp to ``[-90, 90]`` (Declination).
+
+    Returns:
+        Quantized coordinate value in degrees.
+    """
     val = float(value)
     if wrap_360:
         val = val % 360.0
@@ -32,13 +45,30 @@ def quantize_bucket(
 
 
 def mjd_to_date_bucket(mjd: float) -> str:
-    """Convert Modified Julian Date (MJD) to ISO UTC date bucket YYYY-MM-DD."""
+    """Convert Modified Julian Date (MJD) to an ISO UTC date bucket ``YYYY-MM-DD``.
+
+    Args:
+        mjd: Modified Julian Date.
+
+    Returns:
+        ISO-8601 UTC date string (``YYYY-MM-DD``).
+    """
     dt = _MJD_EPOCH + timedelta(days=float(mjd))
     return dt.date().isoformat()
 
 
 def angular_separation_deg(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    """Great-circle angular separation between two ICRS coordinates in degrees."""
+    """Compute great-circle angular separation between two ICRS coordinates.
+
+    Args:
+        ra1: First Right Ascension in degrees.
+        dec1: First Declination in degrees.
+        ra2: Second Right Ascension in degrees.
+        dec2: Second Declination in degrees.
+
+    Returns:
+        Angular separation in degrees using the haversine formula.
+    """
     ra1_r = math.radians(ra1)
     dec1_r = math.radians(dec1)
     ra2_r = math.radians(ra2)
@@ -57,7 +87,17 @@ def compute_grid_key(
     fov_arcmin: float = 5.0,
     grid_step_deg: float = DEFAULT_GRID_STEP_DEG,
 ) -> tuple[str, float, float]:
-    """Quantize (ra, dec) to a 0.05-deg spatial grid and return (grid_key, ra_q, dec_q)."""
+    """Quantize ``(ra, dec)`` to a 0.05-deg spatial grid and build its cache key.
+
+    Args:
+        ra: Right Ascension in degrees.
+        dec: Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        grid_step_deg: Quantization step in degrees.
+
+    Returns:
+        Tuple of ``(grid_key, ra_quantized, dec_quantized)``.
+    """
     normalized_ra = ra % 360.0
     clamped_dec = max(-90.0, min(90.0, dec))
     ra_q = round(round(normalized_ra / grid_step_deg) * grid_step_deg, 2) % 360.0
@@ -68,7 +108,7 @@ def compute_grid_key(
 
 
 class SpatialSqliteCache:
-    """Two-Tier Backend Cache: SQLite in WAL mode with automatic LRU byte-cap pruning."""
+    """Two-tier SQLite spatial cache with per-thread connection pooling and LRU pruning."""
 
     def __init__(
         self,
@@ -76,28 +116,103 @@ class SpatialSqliteCache:
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
         pinned_grid_keys: set[str] | None = None,
     ) -> None:
+        """Initialize the SQLite spatial cache and schema.
+
+        Args:
+            db_path: Path to the SQLite database file. Defaults to
+                ``SQLITE_DB_PATH`` or ``/tmp/star_hunters_cache.db``.
+            max_cache_bytes: Maximum combined byte budget for cached sky patches
+                and catalog regions before LRU eviction triggers.
+            pinned_grid_keys: Optional set of showcase ``grid_key`` values that
+                LRU eviction should preserve unless pinned entries alone exceed
+                ``max_cache_bytes``.
+        """
         self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
         self.max_cache_bytes = max_cache_bytes
         self.pinned_grid_keys: set[str] = set(pinned_grid_keys or ())
+        self._local = threading.local()
+        self._pool_lock = threading.Lock()
+        self._connections: list[sqlite3.Connection] = []
+        self._finalizer = weakref.finalize(
+            self,
+            self._close_connections,
+            self._connections,
+            self._pool_lock,
+        )
         self._init_db()
 
+    @staticmethod
+    def _close_connections(
+        connections: list[sqlite3.Connection],
+        lock: threading.Lock,
+    ) -> None:
+        """Close every pooled SQLite connection without holding a reference to ``self``."""
+        with lock:
+            conns = list(connections)
+            connections.clear()
+        for conn in conns:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
+    def close(self) -> None:
+        """Close all pooled SQLite connections across threads."""
+        with self._pool_lock:
+            self._local = threading.local()
+            conns = list(self._connections)
+            self._connections.clear()
+        for conn in conns:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+
     def pin_grid_key(self, grid_key: str) -> None:
-        """Pin a known showcase grid_key so LRU eviction prefers evicting non-pinned patches."""
+        """Pin a showcase ``grid_key`` so LRU eviction prefers evicting non-pinned patches.
+
+        Args:
+            grid_key: Quantized spatial grid identifier to pin.
+        """
         self.pinned_grid_keys.add(grid_key)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _get_thread_connection(self) -> sqlite3.Connection:
+        """Return or open the current thread's pooled SQLite connection."""
+        local = self._local
+        conn: sqlite3.Connection | None = getattr(local, "conn", None)
+        if conn is not None:
+            return conn
+
         parent = os.path.dirname(os.path.abspath(self.db_path))
         if parent and not os.path.exists(parent):
             os.makedirs(parent, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
+        with self._pool_lock:
+            self._connections.append(conn)
+        local.conn = conn
         return conn
 
+    @contextmanager
+    def connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield the current thread's pooled SQLite connection inside a transaction.
+
+        Commits on normal exit and rolls back on exception without closing the
+        pooled connection.
+
+        Yields:
+            Active thread-local :class:`sqlite3.Connection`.
+        """
+        conn = self._get_thread_connection()
+        with conn:
+            yield conn
+
     def _init_db(self) -> None:
-        with closing(self._connect()) as conn, conn:
+        """Enable persistent WAL mode and create required tables and indices."""
+        with self.connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sky_patches (
@@ -177,43 +292,78 @@ class SpatialSqliteCache:
                 """
             )
 
-    def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
+    def _get_json_row(
+        self,
+        table: Literal["sky_patches", "spectra_cache", "capital_zenith_cache"],
+        json_column: Literal["manifest_json", "catalogs_json", "payload_json"],
+        key_column: Literal["grid_key", "spectrum_key", "cache_key"],
+        key_value: str,
+    ) -> dict[str, Any] | None:
+        """Fetch a JSON payload from a cache table and update ``last_accessed``.
+
+        Args:
+            table: Target SQLite cache table name.
+            json_column: Column holding serialized JSON text.
+            key_column: Primary key column name to filter on.
+            key_value: Lookup key value.
+
+        Returns:
+            Deserialized JSON dictionary, or ``None`` on cache miss.
+        """
         now = time.time()
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             row = conn.execute(
-                "SELECT manifest_json FROM sky_patches WHERE grid_key = ?",
-                (grid_key,),
+                f"SELECT {json_column} FROM {table} WHERE {key_column} = ?",
+                (key_value,),
             ).fetchone()
             if not row:
                 return None
             conn.execute(
-                "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
-                (now, grid_key),
+                f"UPDATE {table} SET last_accessed = ? WHERE {key_column} = ?",
+                (now, key_value),
             )
-            manifest = json.loads(row["manifest_json"])
+            return json.loads(row[json_column])
+
+    def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
+        """Fetch a cached sky-patch manifest and mark it as a cache hit.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+
+        Returns:
+            Manifest dictionary with ``query.cached = True``, or ``None``.
+        """
+        manifest = self._get_json_row("sky_patches", "manifest_json", "grid_key", grid_key)
+        if manifest is not None:
             manifest["query"]["cached"] = True
-            return manifest
+        return manifest
 
     def get_catalogs(self, grid_key: str) -> dict[str, Any] | None:
-        now = time.time()
-        with closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                "SELECT catalogs_json FROM sky_patches WHERE grid_key = ?",
-                (grid_key,),
-            ).fetchone()
-            if not row:
-                return None
-            conn.execute(
-                "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
-                (now, grid_key),
-            )
-            payload = json.loads(row["catalogs_json"])
+        """Fetch cached catalog overlays for a sky patch and mark as cached.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+
+        Returns:
+            Catalogs dictionary with ``query.cached = True``, or ``None``.
+        """
+        payload = self._get_json_row("sky_patches", "catalogs_json", "grid_key", grid_key)
+        if payload is not None:
             payload["query"]["cached"] = True
-            return payload
+        return payload
 
     def get_frame(self, grid_key: str, filename: str) -> bytes | None:
+        """Fetch and decompress a cached binary frame buffer.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+            filename: Frame filename (e.g. ``"pass_1.bin"``).
+
+        Returns:
+            Decompressed binary frame bytes, or ``None`` if missing.
+        """
         now = time.time()
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             row = conn.execute(
                 "SELECT compressed_blob FROM binary_frames WHERE grid_key = ? AND filename = ?",
                 (grid_key, filename),
@@ -235,6 +385,16 @@ class SpatialSqliteCache:
         manifest: dict[str, Any],
         frames: dict[str, bytes],
     ) -> None:
+        """Persist a sky-patch manifest, catalog overlays, and compressed frames.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+            ra_center: Quantized Right Ascension center in degrees.
+            dec_center: Quantized Declination center in degrees.
+            fov_arcmin: Field of view in arcminutes.
+            manifest: Validated sky-patch manifest dictionary.
+            frames: Mapping of frame filename to raw little-endian bytes.
+        """
         now = time.time()
         manifest_str = json.dumps(manifest)
         catalogs_payload = {
@@ -244,14 +404,14 @@ class SpatialSqliteCache:
         }
         catalogs_str = json.dumps(catalogs_payload)
 
-        compressed_frames: dict[str, tuple[bytes, int]] = {}
+        frame_rows: list[tuple[str, str, bytes, int]] = []
         total_bytes = len(manifest_str.encode("utf-8")) + len(catalogs_str.encode("utf-8"))
         for fname, raw_bytes in frames.items():
             comp = zlib.compress(raw_bytes, level=6)
-            compressed_frames[fname] = (comp, len(raw_bytes))
+            frame_rows.append((grid_key, fname, comp, len(raw_bytes)))
             total_bytes += len(comp)
 
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             conn.execute(
                 "DELETE FROM sky_patches WHERE grid_key = ?",
                 (grid_key,),
@@ -275,18 +435,26 @@ class SpatialSqliteCache:
                     now,
                 ),
             )
-            for fname, (comp_blob, raw_len) in compressed_frames.items():
-                conn.execute(
+            if frame_rows:
+                conn.executemany(
                     """
                     INSERT INTO binary_frames (grid_key, filename, compressed_blob, raw_byte_size)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (grid_key, fname, comp_blob, raw_len),
+                    frame_rows,
                 )
             self._prune_if_needed(conn, preserve_grid_key=grid_key)
 
     def get_patch_byte_size(self, grid_key: str) -> int:
-        with closing(self._connect()) as conn:
+        """Return the stored compressed byte size of a cached sky patch.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+
+        Returns:
+            Stored byte size, or ``0`` if the patch is not cached.
+        """
+        with self.connection() as conn:
             row = conn.execute(
                 "SELECT byte_size FROM sky_patches WHERE grid_key = ?",
                 (grid_key,),
@@ -294,19 +462,15 @@ class SpatialSqliteCache:
             return int(row["byte_size"]) if row else 0
 
     def get_spectrum(self, spectrum_key: str) -> dict[str, Any] | None:
-        now = time.time()
-        with closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                "SELECT payload_json FROM spectra_cache WHERE spectrum_key = ?",
-                (spectrum_key,),
-            ).fetchone()
-            if not row:
-                return None
-            conn.execute(
-                "UPDATE spectra_cache SET last_accessed = ? WHERE spectrum_key = ?",
-                (now, spectrum_key),
-            )
-            return json.loads(row["payload_json"])
+        """Fetch a cached 102-band spectrum payload.
+
+        Args:
+            spectrum_key: Cache key for the sky position's spectrum.
+
+        Returns:
+            Cached spectrum payload dictionary, or ``None``.
+        """
+        return self._get_json_row("spectra_cache", "payload_json", "spectrum_key", spectrum_key)
 
     def put_spectrum(
         self,
@@ -315,9 +479,17 @@ class SpatialSqliteCache:
         dec: float,
         payload: dict[str, Any],
     ) -> None:
+        """Persist a 102-band spectrum payload in SQLite.
+
+        Args:
+            spectrum_key: Cache key for the sky position's spectrum.
+            ra: Right Ascension in degrees.
+            dec: Declination in degrees.
+            payload: Spectrum payload dictionary.
+        """
         now = time.time()
         payload_str = json.dumps(payload)
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO spectra_cache (
@@ -328,21 +500,18 @@ class SpatialSqliteCache:
             )
 
     def get_zenith_response(self, cache_key: str) -> dict[str, Any] | None:
-        now = time.time()
-        with closing(self._connect()) as conn, conn:
-            row = conn.execute(
-                "SELECT payload_json FROM capital_zenith_cache WHERE cache_key = ?",
-                (cache_key,),
-            ).fetchone()
-            if not row:
-                return None
-            conn.execute(
-                "UPDATE capital_zenith_cache SET last_accessed = ? WHERE cache_key = ?",
-                (now, cache_key),
-            )
-            payload = json.loads(row["payload_json"])
+        """Fetch a cached Earth-to-Sky zenith lookup and mark it as cached.
+
+        Args:
+            cache_key: Quantized location/time zenith cache key.
+
+        Returns:
+            Zenith response dictionary with ``earth.cached = True``, or ``None``.
+        """
+        payload = self._get_json_row("capital_zenith_cache", "payload_json", "cache_key", cache_key)
+        if payload is not None:
             payload["earth"]["cached"] = True
-            return payload
+        return payload
 
     def put_zenith_response(
         self,
@@ -352,9 +521,18 @@ class SpatialSqliteCache:
         payload: dict[str, Any],
         city_slug: str | None = None,
     ) -> None:
+        """Persist an Earth-to-Sky zenith response in SQLite.
+
+        Args:
+            cache_key: Quantized location/time zenith cache key.
+            lat: Observer latitude in degrees.
+            lon: Observer longitude in degrees.
+            payload: Validated Earth-to-Sky response dictionary.
+            city_slug: Optional matching capital city slug.
+        """
         now = time.time()
         payload_str = json.dumps(payload)
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO capital_zenith_cache (
@@ -371,6 +549,7 @@ class SpatialSqliteCache:
         dec: float,
         radius_deg: float,
     ) -> tuple[str, float, float, float]:
+        """Build a quantized cache key and bucket tuple for a catalog region query."""
         ra_b = quantize_bucket(ra, DEFAULT_GRID_STEP_DEG, wrap_360=True)
         dec_b = quantize_bucket(dec, DEFAULT_GRID_STEP_DEG, wrap_360=False)
         rad_b = round(max(0.01, float(radius_deg)), 3)
@@ -385,10 +564,21 @@ class SpatialSqliteCache:
         radius_deg: float,
         allow_stale: bool = False,
     ) -> dict[str, Any] | None:
-        """Fetch cached SIMBAD/Gaia/MOST region payload if present (unless stale/missing)."""
+        """Fetch cached SIMBAD/Gaia/MOST region payload if present and valid.
+
+        Args:
+            source: Catalog source identifier (e.g. ``"simbad"``, ``"gaia_dr3"``).
+            ra: Right Ascension center in degrees.
+            dec: Declination center in degrees.
+            radius_deg: Search radius in degrees.
+            allow_stale: If True, return expired rows marked with ``stale=True``.
+
+        Returns:
+            Cached catalog region dictionary, or ``None`` if absent or expired.
+        """
         now = time.time()
         region_key, _, _, _ = self._catalog_region_key(source, ra, dec, radius_deg)
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             row = conn.execute(
                 """
                 SELECT payload_json, expires_at
@@ -420,13 +610,22 @@ class SpatialSqliteCache:
         payload: dict[str, Any],
         ttl_seconds: float = DEFAULT_CATALOG_TTL_SECONDS,
     ) -> None:
-        """Persist a quantized catalog query response in SQLite with TTL + LRU pruning."""
+        """Persist a quantized catalog query response in SQLite with TTL + LRU pruning.
+
+        Args:
+            source: Catalog source identifier.
+            ra: Right Ascension center in degrees.
+            dec: Declination center in degrees.
+            radius_deg: Search radius in degrees.
+            payload: JSON-serializable catalog response payload.
+            ttl_seconds: Cache time-to-live in seconds (minimum 60s).
+        """
         now = time.time()
         expires_at = now + max(60.0, float(ttl_seconds))
         region_key, ra_b, dec_b, rad_b = self._catalog_region_key(source, ra, dec, radius_deg)
         payload_str = json.dumps(payload, separators=(",", ":"))
         byte_size = len(payload_str.encode("utf-8"))
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO catalog_region_cache (
@@ -450,7 +649,15 @@ class SpatialSqliteCache:
             self._prune_if_needed(conn)
 
     def upsert_ephemeris_points(self, points: list[dict[str, Any]]) -> int:
-        """Upsert JPL Horizons / MOST rows indexed by (date_bucket, ra_bucket, dec_bucket)."""
+        """Upsert JPL Horizons / MOST rows indexed by ``(date_bucket, ra_bucket, dec_bucket)``.
+
+        Args:
+            points: List of ephemeris point dictionaries containing ``naif_id``,
+                ``body_name``, ``mjd``, ``ra``, and ``dec``.
+
+        Returns:
+            Number of rows upserted.
+        """
         if not points:
             return 0
         now = time.time()
@@ -479,7 +686,7 @@ class SpatialSqliteCache:
                     float(pt.get("fetched_at", now)),
                 )
             )
-        with closing(self._connect()) as conn, conn:
+        with self.connection() as conn:
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO solar_system_ephemeris (
@@ -496,14 +703,22 @@ class SpatialSqliteCache:
         naif_id: str,
         mjd: float,
     ) -> dict[str, Any] | None:
-        """Return interpolated cached ephemeris for ``naif_id`` near ``mjd``, or ``None``."""
+        """Return interpolated cached ephemeris for ``naif_id`` near ``mjd``.
+
+        Args:
+            naif_id: NAIF / Horizons body identifier.
+            mjd: Target Modified Julian Date.
+
+        Returns:
+            Interpolated ephemeris dictionary, or ``None`` if unavailable.
+        """
         target_mjd = float(mjd)
         buckets = (
             mjd_to_date_bucket(target_mjd - 1.0),
             mjd_to_date_bucket(target_mjd),
             mjd_to_date_bucket(target_mjd + 1.0),
         )
-        with closing(self._connect()) as conn:
+        with self.connection() as conn:
             rows = conn.execute(
                 """
                 SELECT naif_id, body_name, body_class, date_bucket, mjd, ra, dec, vmag, source
@@ -536,10 +751,20 @@ class SpatialSqliteCache:
         dec: float,
         radius_deg: float,
     ) -> list[dict[str, Any]]:
-        """Query Solar System bodies in or traversing the FOV around `mjd` via index lookup.
+        """Query Solar System bodies in or traversing the FOV around ``mjd``.
 
-        Linearly interpolates daily ephemeris positions around `mjd` (covering +/- 1 day so
-        fast movers near day boundaries are caught accurately).
+        Linearly interpolates daily ephemeris positions around ``mjd`` (covering
+        +/- 1 day so fast movers near day boundaries are caught accurately).
+
+        Args:
+            mjd: Target Modified Julian Date.
+            ra: Field center Right Ascension in degrees.
+            dec: Field center Declination in degrees.
+            radius_deg: Search radius in degrees.
+
+        Returns:
+            List of matching Solar System body dictionaries sorted by angular
+            separation.
         """
         norm_ra = float(ra) % 360.0
         clamped_dec = max(-90.0, min(90.0, float(dec)))
@@ -577,7 +802,7 @@ class SpatialSqliteCache:
             ORDER BY naif_id ASC, mjd ASC
         """
         params: tuple[Any, ...] = (date_prev, date_curr, date_next, dec_min, dec_max, *ra_params)
-        with closing(self._connect()) as conn:
+        with self.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
 
         grouped: dict[str, list[sqlite3.Row]] = {}
@@ -614,6 +839,7 @@ class SpatialSqliteCache:
         rows: list[sqlite3.Row],
         target_mjd: float,
     ) -> tuple[float, float, float | None]:
+        """Linearly interpolate ``(ra, dec, vmag)`` across sorted ephemeris rows."""
         if len(rows) == 1:
             r0 = rows[0]
             vmag = float(r0["vmag"]) if r0["vmag"] is not None else None
@@ -660,8 +886,12 @@ class SpatialSqliteCache:
         return interp_ra, interp_dec, interp_vmag
 
     def get_ephemeris_stats(self) -> dict[str, Any]:
-        """Return count of stored ephemeris rows and distinct Solar System bodies."""
-        with closing(self._connect()) as conn:
+        """Return count of stored ephemeris rows, bodies, and cached catalog regions.
+
+        Returns:
+            Summary statistics dictionary for ephemeris and catalog caches.
+        """
+        with self.connection() as conn:
             row = conn.execute(
                 """
                 SELECT COUNT(*) AS row_count,
@@ -692,6 +922,7 @@ class SpatialSqliteCache:
         conn: sqlite3.Connection,
         preserve_grid_key: str | None = None,
     ) -> int:
+        """Evict expired catalog entries and LRU patches until within ``max_cache_bytes``."""
         row = conn.execute(
             "SELECT COALESCE(SUM(byte_size), 0) AS total_bytes FROM sky_patches"
         ).fetchone()
@@ -767,7 +998,8 @@ class SpatialSqliteCache:
         return evicted
 
     def clear(self) -> None:
-        with closing(self._connect()) as conn, conn:
+        """Delete all cached entries across every SQLite cache table."""
+        with self.connection() as conn:
             conn.execute("DELETE FROM binary_frames")
             conn.execute("DELETE FROM sky_patches")
             conn.execute("DELETE FROM spectra_cache")

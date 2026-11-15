@@ -37,6 +37,7 @@ import {
 import { formatSpectrumCsv } from '../src/utils/csvExport.ts';
 import {
   WAVELENGTH_PRESETS,
+  assignDeterministicHighlighterColors,
   catalogBadgeLabel,
   clearCheckedObjectIds,
   extractAvailableMissions,
@@ -49,7 +50,6 @@ import {
   isWavelengthPresetActive,
   objectClassBadgeLabel,
   pickNearestAllowedEpoch,
-  renderEpochBuffersToRgba,
   resolveFilteredEpochIndices,
   selectAllObjectIds,
   toggleObjectId,
@@ -63,7 +63,7 @@ import {
 import {
   applyContrastStretch,
   computeLocalPixelReadout,
-  renderPixelFrame,
+  renderEpochBuffersToRgba,
 } from '../src/utils/pixelEngine.ts';
 import {
   angularSeparationDeg,
@@ -290,7 +290,7 @@ test('Wavelength Dim & Pop detector weights isolate cold IR detectors (3.8 - 5.0
 
 test('ISS-11: subtracting an epoch from itself produces a uniform neutral background', () => {
   const epoch = makeGaussianEpochPlanes([{ x: 72, y: 88, peak: 9.0, sigma: 1.7 }]);
-  const rgba = renderPixelFrame({
+  const rgba = renderEpochBuffersToRgba({
     epochBuffers: [epoch],
     comparisonMode: 'subtract',
     passAIndex: 0,
@@ -339,7 +339,7 @@ test('ISS-11: cold wavelength window dims D1-D3 by >=90% and preserves D5-D6 at 
   addSpot(epoch[5], 192, 192, 8.0);
 
   const renderAt = (wavelengthRangeUm, contrastStretch) =>
-    renderPixelFrame({
+    renderEpochBuffersToRgba({
       epochBuffers: [epoch],
       activeEpochIndex: 0,
       comparisonMode: 'blink',
@@ -372,13 +372,13 @@ test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint
   const passA = makeGaussianEpochPlanes([{ x: 60, y: 60, peak: 7.0 }], 0.005);
   const passB = makeGaussianEpochPlanes([{ x: 180, y: 180, peak: 7.0 }], 0.005);
 
-  const blinkA = renderPixelFrame({
+  const blinkA = renderEpochBuffersToRgba({
     epochBuffers: [passA, passB],
     activeEpochIndex: 0,
     comparisonMode: 'blink',
     wavelengthRangeUm: [0.75, 5.0],
   });
-  const blinkB = renderPixelFrame({
+  const blinkB = renderEpochBuffersToRgba({
     epochBuffers: [passA, passB],
     activeEpochIndex: 1,
     comparisonMode: 'blink',
@@ -389,7 +389,7 @@ test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint
 
   // Pass B - Pass A: the source at (180,180) is a positive (warm) residual,
   // the source at (60,60) is a negative (cool) residual.
-  const positive = renderPixelFrame({
+  const positive = renderEpochBuffersToRgba({
     epochBuffers: [passA, passB],
     comparisonMode: 'subtract',
     passAIndex: 0,
@@ -404,7 +404,7 @@ test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint
   assert.ok(positive[negativeIdx + 2] > positive[negativeIdx]);
 
   // Co-add averages both passes, so both sources remain visible.
-  const coadd = renderPixelFrame({
+  const coadd = renderEpochBuffersToRgba({
     epochBuffers: [passA, passB],
     comparisonMode: 'coadd',
     coaddIndices: [0, 1],
@@ -417,7 +417,7 @@ test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint
   const flags = new Uint8Array(256 * 256);
   flags[60 * 256 + 60] = 0x01;
   flags[60 * 256 + 61] = 0x02;
-  const noFlags = renderPixelFrame({
+  const noFlags = renderEpochBuffersToRgba({
     epochBuffers: [passA],
     activeEpochIndex: 0,
     comparisonMode: 'blink',
@@ -425,7 +425,7 @@ test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint
     flagsBuffers: [flags],
     showFlagsOverlay: false,
   });
-  const withFlags = renderPixelFrame({
+  const withFlags = renderEpochBuffersToRgba({
     epochBuffers: [passA],
     activeEpochIndex: 0,
     comparisonMode: 'blink',
@@ -458,13 +458,13 @@ test('ISS-11: rendering a 256x256 RGBA frame completes in <5 ms', () => {
 
   // Warm the JIT so the measurement reflects steady-state per-frame cost.
   for (let i = 0; i < 30; i += 1) {
-    renderPixelFrame(params);
+    renderEpochBuffersToRgba(params);
   }
   const iterations = 50;
   const startedAt = performance.now();
   let last;
   for (let i = 0; i < iterations; i += 1) {
-    last = renderPixelFrame(params);
+    last = renderEpochBuffersToRgba(params);
   }
   const averageMs = (performance.now() - startedAt) / iterations;
   assert.equal(last.length, 256 * 256 * 4);
@@ -1588,7 +1588,7 @@ test('Automated pipeline UI helpers: catalog/class badges, mover detection, and 
 
 test('ISS-17: formatSpectrumCsv produces 103-line CSV with header and 102 spectral channels', () => {
   const channels = Array.from({ length: 102 }, (_, idx) => ({
-    band_index: idx,
+    band_index: idx + 1,
     detector: Math.floor(idx / 17) + 1,
     wavelength_um: 0.75 + (idx / 101) * (5.0 - 0.75),
     flux: 12.5 + idx * 0.1,
@@ -1607,7 +1607,7 @@ test('ISS-17: formatSpectrumCsv produces 103-line CSV with header and 102 spectr
   const lines = csv.trimEnd().split('\n');
   assert.equal(lines.length, 103);
   assert.equal(lines[0], 'band_index,detector,wavelength_um,flux,variance,flagged');
-  assert.ok(lines[1].startsWith('0,1,0.7500,'));
+  assert.ok(lines[1].startsWith('1,1,0.7500,'));
   assert.ok(lines[11].endsWith(',true'));
   assert.ok(lines[12].endsWith(',false'));
 });
@@ -1795,7 +1795,7 @@ test('ISS-21: Stage A catalogs populate knownObjects before Stage B cutouts comp
     throw new Error(`Unexpected URL: ${url}`);
   };
 
-  const cache = new ClientPatchCache(10, 10, null);
+  const cache = new ClientPatchCache(10);
   let readyResult = null;
   const flowPromise = loadLiveCoordinatesFlow(133.8, -7.25, 5.0, {
     cache,
@@ -1883,7 +1883,7 @@ test('ISS-21: Rapid navigation cancels stale AbortController so stale responses 
     throw new Error(`Unexpected URL: ${url}`);
   };
 
-  const cache = new ClientPatchCache(10, 10, null);
+  const cache = new ClientPatchCache(10);
   const readySlugs = [];
 
   const ctrl1 = new AbortController();
@@ -1944,11 +1944,11 @@ test('ISS-21: Changing render options, pan/zoom, known object selection, and tra
   };
 
   try {
-    for (const mode of ['blink', 'subtract', 'coadd']) {
+    for (const comparisonMode of ['blink', 'subtract', 'coadd']) {
       renderEpochBuffersToRgba({
         epochBuffers,
         flagsBuffers,
-        mode,
+        comparisonMode,
         activeEpochIndex: 0,
         passAIndex: 0,
         passBIndex: 1,
@@ -2258,4 +2258,397 @@ test('Resilient HiPS hierarchy, LoD tiers, projections, and mission epoch filter
   assert.deepEqual(onlyWise, [1]);
   assert.equal(pickNearestAllowedEpoch(2, [0, 3]), 3);
   assert.equal(pickNearestAllowedEpoch(3, [0, 3]), 3);
+});
+
+test('Phase 1 pixelEngine: coadd ORs flagsBuffers across coaddIndices and reusable outBuffer matches fresh allocation', () => {
+  const epoch0 = makeGaussianEpochPlanes([{ x: 100, y: 100, peak: 5.0 }], 0.01);
+  const epoch1 = makeGaussianEpochPlanes([{ x: 140, y: 140, peak: 5.0 }], 0.01);
+  const flags0 = new Uint8Array(256 * 256);
+  const flags1 = new Uint8Array(256 * 256);
+  const p0 = 10 * 256 + 10;
+  const p1 = 20 * 256 + 20;
+  flags0[p0] = 0x01; // amber flag only in epoch 0
+  flags1[p1] = 0x02; // magenta flag only in epoch 1
+
+  const coaddNoFlags = renderEpochBuffersToRgba({
+    epochBuffers: [epoch0, epoch1],
+    flagsBuffers: [flags0, flags1],
+    comparisonMode: 'coadd',
+    coaddIndices: [0, 1],
+    showFlagsOverlay: false,
+  });
+  const coaddWithFlags = renderEpochBuffersToRgba({
+    epochBuffers: [epoch0, epoch1],
+    flagsBuffers: [flags0, flags1],
+    comparisonMode: 'coadd',
+    coaddIndices: [0, 1],
+    showFlagsOverlay: true,
+  });
+
+  // Both epoch 0's pixel (10,10) and epoch 1's pixel (20,20) must be tinted
+  assert.notDeepEqual(
+    Array.from(coaddWithFlags.slice(p0 * 4, p0 * 4 + 4)),
+    Array.from(coaddNoFlags.slice(p0 * 4, p0 * 4 + 4)),
+  );
+  assert.notDeepEqual(
+    Array.from(coaddWithFlags.slice(p1 * 4, p1 * 4 + 4)),
+    Array.from(coaddNoFlags.slice(p1 * 4, p1 * 4 + 4)),
+  );
+  // Unflagged pixel remains untouched
+  const cleanIdx = (30 * 256 + 30) * 4;
+  assert.deepEqual(
+    Array.from(coaddWithFlags.slice(cleanIdx, cleanIdx + 4)),
+    Array.from(coaddNoFlags.slice(cleanIdx, cleanIdx + 4)),
+  );
+
+  // Subset coaddIndices: [1] should only tint p1, not p0
+  const coaddOnlySecond = renderEpochBuffersToRgba({
+    epochBuffers: [epoch0, epoch1],
+    flagsBuffers: [flags0, flags1],
+    comparisonMode: 'coadd',
+    coaddIndices: [1],
+    showFlagsOverlay: true,
+  });
+  const coaddOnlySecondNoFlags = renderEpochBuffersToRgba({
+    epochBuffers: [epoch0, epoch1],
+    flagsBuffers: [flags0, flags1],
+    comparisonMode: 'coadd',
+    coaddIndices: [1],
+    showFlagsOverlay: false,
+  });
+  assert.deepEqual(
+    Array.from(coaddOnlySecond.slice(p0 * 4, p0 * 4 + 4)),
+    Array.from(coaddOnlySecondNoFlags.slice(p0 * 4, p0 * 4 + 4)),
+  );
+  assert.notDeepEqual(
+    Array.from(coaddOnlySecond.slice(p1 * 4, p1 * 4 + 4)),
+    Array.from(coaddOnlySecondNoFlags.slice(p1 * 4, p1 * 4 + 4)),
+  );
+
+  // Reusable outBuffer equivalence across blink, subtract, coadd, and empty buffers
+  const reusable = new Uint8ClampedArray(256 * 256 * 4);
+  for (const comparisonMode of ['blink', 'subtract', 'coadd']) {
+    const fresh = renderEpochBuffersToRgba({
+      epochBuffers: [epoch0, epoch1],
+      flagsBuffers: [flags0, flags1],
+      comparisonMode,
+      activeEpochIndex: 0,
+      passAIndex: 0,
+      passBIndex: 1,
+      coaddIndices: [0, 1],
+      showFlagsOverlay: true,
+    });
+    const inPlace = renderEpochBuffersToRgba({
+      epochBuffers: [epoch0, epoch1],
+      flagsBuffers: [flags0, flags1],
+      comparisonMode,
+      activeEpochIndex: 0,
+      passAIndex: 0,
+      passBIndex: 1,
+      coaddIndices: [0, 1],
+      showFlagsOverlay: true,
+      outBuffer: reusable,
+    });
+    assert.equal(inPlace, reusable);
+    assert.deepEqual(inPlace, fresh);
+  }
+
+  // Non-zero byteOffset sub-view works identically and invalid size throws RangeError
+  const padded = new Uint8ClampedArray(256 * 256 * 4 + 16);
+  const offsetView = padded.subarray(4, 4 + 256 * 256 * 4);
+  const freshBlink = renderEpochBuffersToRgba({ epochBuffers: [epoch0], comparisonMode: 'blink' });
+  const viewResult = renderEpochBuffersToRgba({
+    epochBuffers: [epoch0],
+    comparisonMode: 'blink',
+    outBuffer: offsetView,
+  });
+  assert.equal(viewResult, offsetView);
+  assert.deepEqual(viewResult, freshBlink);
+  assert.throws(
+    () =>
+      renderEpochBuffersToRgba({ epochBuffers: [epoch0], outBuffer: new Uint8ClampedArray(16) }),
+    RangeError,
+  );
+});
+
+test('Phase 1 computeLocalPixelReadout computes exact running variance and clamps boundaries', () => {
+  const uniformPlane = new Float32Array(256 * 256).fill(4.25);
+  const uniformEpoch = Array.from({ length: 6 }, () => uniformPlane);
+  const cornerReadout = computeLocalPixelReadout({
+    epochBuffers: [uniformEpoch],
+    px: -5,
+    py: 300,
+  });
+  assert.equal(cornerReadout.x, 0);
+  assert.equal(cornerReadout.y, 255);
+  assert.ok(Math.abs(cornerReadout.flux - 4.25) < 1e-5);
+  assert.equal(cornerReadout.variance, 0);
+
+  const spikePlane = new Float32Array(256 * 256).fill(10);
+  spikePlane[128 * 256 + 128] = 46;
+  const spikeEpoch = Array.from({ length: 6 }, () => spikePlane);
+  const spikeReadout = computeLocalPixelReadout({
+    epochBuffers: [spikeEpoch],
+    px: 128.9,
+    py: 128.1,
+  });
+  assert.equal(spikeReadout.x, 128);
+  assert.equal(spikeReadout.y, 128);
+  assert.ok(Math.abs(spikeReadout.flux - 46) < 1e-5);
+  // Exact 3x3 population variance: (8*10^2 + 46^2)/9 - 14^2 = 324 - 196 = 128
+  assert.ok(Math.abs(spikeReadout.variance - 128) < 1e-4);
+});
+
+test('Phase 1 assignDeterministicHighlighterColors is deterministic and preserves Stage A -> Stage B colors', () => {
+  const stageA = [{ object_id: 'gaia:101' }, { object_id: 'wise:202' }, { object_id: 'most:303' }];
+  const firstRun = assignDeterministicHighlighterColors(stageA);
+  const secondRun = assignDeterministicHighlighterColors(stageA);
+  assert.deepEqual(firstRun, secondRun);
+  assert.equal(new Set(Object.values(firstRun)).size, 3);
+
+  // Stage B reorders objects and adds new ones; Stage A object_id -> color mappings stay intact
+  const stageB = [
+    { object_id: 'simbad:999' },
+    { object_id: 'most:303' },
+    { object_id: 'gaia:101' },
+    { object_id: 'wise:202' },
+    { object_id: 'gaia:404' },
+  ];
+  const stageBColors = assignDeterministicHighlighterColors(stageB, firstRun);
+  assert.equal(stageBColors['gaia:101'], firstRun['gaia:101']);
+  assert.equal(stageBColors['wise:202'], firstRun['wise:202']);
+  assert.equal(stageBColors['most:303'], firstRun['most:303']);
+  assert.equal(new Set(Object.values(stageBColors)).size, 5);
+  assert.deepEqual(assignDeterministicHighlighterColors([]), {});
+});
+
+test('Phase 1 SpectraModal contract: preset spectrum channels use 1-based band_index 1..102', () => {
+  for (const slug of PRESET_SLUGS) {
+    const specPath = path.join(PRESETS_DIR, slug, 'spectrum.json');
+    const spectrum = JSON.parse(fs.readFileSync(specPath, 'utf-8'));
+    assert.equal(spectrum.channels.length, 102, `${slug}: expected 102 spectral channels`);
+    assert.equal(spectrum.channels[0].band_index, 1, `${slug}: first band_index must be 1`);
+    assert.equal(spectrum.channels[101].band_index, 102, `${slug}: last band_index must be 102`);
+  }
+});
+
+test('Phase 1 progressivePatchLoader fetches all epoch binary frames concurrently via Promise.all', async () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const float32Frame = new Float32Array(6 * 256 * 256);
+  const flagsFrame = new Uint8Array(256 * 256);
+
+  let inFlightDetectors = 0;
+  let peakInFlightDetectors = 0;
+  let releaseEpochs;
+  const epochGate = new Promise((resolve) => {
+    releaseEpochs = resolve;
+  });
+
+  const mockFetch = async (url) => {
+    if (url.endsWith('manifest.json')) {
+      return new Response(JSON.stringify(manifest), { status: 200 });
+    }
+    if (url.endsWith('_flags.bin')) {
+      return new Response(flagsFrame.buffer, { status: 200 });
+    }
+    if (url.endsWith('.bin')) {
+      inFlightDetectors += 1;
+      peakInFlightDetectors = Math.max(peakInFlightDetectors, inFlightDetectors);
+      if (inFlightDetectors === manifest.epochs.length) {
+        releaseEpochs();
+      }
+      await epochGate;
+      inFlightDetectors -= 1;
+      return new Response(float32Frame.buffer, {
+        status: 200,
+        headers: { 'X-Binary-Dtype': 'float32' },
+      });
+    }
+    if (url.endsWith('spectrum.json')) {
+      return new Response(JSON.stringify({ ra: 0, dec: 0, channels: [] }), { status: 200 });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  const cache = new ClientPatchCache(4);
+  let loaded = null;
+  const outcome = await loadPresetPatchFlow('wise_0855', {
+    cache,
+    fetchImpl: mockFetch,
+    onReady: (res) => {
+      loaded = res;
+    },
+  });
+
+  assert.equal(outcome.aborted, false);
+  assert.equal(peakInFlightDetectors, manifest.epochs.length);
+  assert.equal(loaded.epochBuffers.length, manifest.epochs.length);
+  assert.equal(loaded.flagsBuffers.length, manifest.epochs.length);
+});
+
+test('Phase 1 TieredLruStore persists to IndexedDB, restores after clearMemory, and prunes LRU entries', async () => {
+  const stores = new Map();
+  const makeRequest = (executor) => {
+    const req = { result: undefined, onsuccess: null, onerror: null };
+    queueMicrotask(() => {
+      try {
+        req.result = executor();
+        req.onsuccess?.({ target: req });
+      } catch {
+        req.onerror?.({ target: req });
+      }
+    });
+    return req;
+  };
+  const fakeDb = {
+    objectStoreNames: { contains: (name) => stores.has(name) },
+    createObjectStore: (name) => {
+      if (!stores.has(name)) stores.set(name, new Map());
+    },
+    transaction: (names) => {
+      const storeList = Array.isArray(names) ? names : [names];
+      const tx = { oncomplete: null, onerror: null, onabort: null };
+      let pending = 0;
+      const track = (fn) => {
+        pending += 1;
+        return makeRequest(() => {
+          const res = fn();
+          queueMicrotask(() => {
+            pending -= 1;
+            if (pending === 0) tx.oncomplete?.({ target: tx });
+          });
+          return res;
+        });
+      };
+      tx.objectStore = (name) => {
+        if (!storeList.includes(name) || !stores.has(name)) {
+          throw new Error(`Unknown store ${name}`);
+        }
+        const map = stores.get(name);
+        return {
+          get: (key) => track(() => map.get(key)),
+          put: (value, key) => track(() => map.set(key, value)),
+          delete: (key) => track(() => map.delete(key)),
+          clear: () => track(() => map.clear()),
+          openCursor: () => {
+            const entries = Array.from(map.entries());
+            let idx = 0;
+            const req = { result: null, onsuccess: null, onerror: null };
+            const advance = () => {
+              queueMicrotask(() => {
+                if (idx < entries.length) {
+                  const [key, value] = entries[idx];
+                  idx += 1;
+                  req.result = { key, value, continue: advance };
+                  req.onsuccess?.({ target: req });
+                } else {
+                  req.result = null;
+                  req.onsuccess?.({ target: req });
+                  queueMicrotask(() => {
+                    if (pending === 0) tx.oncomplete?.({ target: tx });
+                  });
+                }
+              });
+            };
+            advance();
+            return req;
+          },
+        };
+      };
+      return tx;
+    },
+  };
+
+  const origDesc = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
+  Object.defineProperty(globalThis, 'indexedDB', {
+    configurable: true,
+    value: {
+      open: () => {
+        const req = {
+          result: fakeDb,
+          onupgradeneeded: null,
+          onsuccess: null,
+          onerror: null,
+          onblocked: null,
+        };
+        queueMicrotask(() => {
+          req.onupgradeneeded?.({ target: req });
+          req.onsuccess?.({ target: req });
+        });
+        return req;
+      },
+    },
+  });
+
+  try {
+    const cache = new ClientPatchCache(2);
+    assert.equal(cache.isPersistentStorageAvailable(), true);
+
+    const mkBundle = (key) => ({
+      cacheKey: key,
+      manifest: {
+        query: { ra: 0, dec: 0, fov_arcmin: 5, grid_key: key },
+        epochs: [],
+        catalog_overlays: { known_objects: [] },
+      },
+      epochBuffers: [],
+      flagsBuffers: [],
+      spectrum: null,
+      storedAt: Date.now(),
+      lastAccessed: Date.now(),
+    });
+
+    await cache.putPatch(mkBundle('k1'));
+    await cache.putPatch(mkBundle('k2'));
+    // Touch k1 in memory so k2 becomes the least recently used entry
+    assert.ok(await cache.getPatch('k1'));
+    // Inserting k3 must evict k2 from both Tier 1 memory and Tier 2 IndexedDB
+    await cache.putPatch(mkBundle('k3'));
+
+    cache.clearMemory();
+    assert.equal(cache.size.patches, 0);
+    assert.equal(await cache.hasPatch('k2'), false);
+    assert.ok(await cache.getPatch('k1'), 'k1 must restore from IndexedDB after clearMemory');
+    assert.ok(await cache.getPatch('k3'), 'k3 must restore from IndexedDB after clearMemory');
+    assert.equal(cache.size.patches, 2);
+
+    await cache.clearAll();
+    assert.equal(await cache.hasPatch('k1'), false);
+  } finally {
+    if (origDesc) {
+      Object.defineProperty(globalThis, 'indexedDB', origDesc);
+    } else {
+      delete globalThis.indexedDB;
+    }
+  }
+});
+
+test('Phase 1 progressivePatchLoader treats aborted non-ok frame responses as AbortError', async () => {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'wise_0855', 'manifest.json'), 'utf-8'),
+  );
+  const controller = new AbortController();
+  const mockFetch = async (url) => {
+    if (url.endsWith('manifest.json')) {
+      return new Response(JSON.stringify(manifest), { status: 200 });
+    }
+    controller.abort();
+    return new Response(null, { status: 500 });
+  };
+
+  const cache = new ClientPatchCache(2);
+  await assert.rejects(
+    () =>
+      loadPresetPatchFlow('wise_0855', {
+        cache,
+        fetchImpl: mockFetch,
+        signal: controller.signal,
+        onReady: () => {
+          throw new Error('onReady must not run after abort');
+        },
+      }),
+    (err) => err instanceof Error && err.name === 'AbortError',
+  );
 });

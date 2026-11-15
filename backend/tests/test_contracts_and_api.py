@@ -87,6 +87,7 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.cache.close()
         self.temp_dir.cleanup()
 
     def test_health_endpoint_contract(self) -> None:
@@ -158,13 +159,32 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertEqual(f_len, BINARY_FLAGS_UINT8_BYTES)
         self.assertGreater(nonzero, 0)
 
+        # Verify float16 clamping bounds and NaN/Inf/length validation errors
+        extreme = np.zeros(6 * 256 * 256, dtype="<f4")
+        extreme[0] = 1e5
+        extreme[1] = -1e5
+        clamped_f16 = np.frombuffer(
+            convert_float32_bytes_to_float16_bytes(extreme.tobytes()),
+            dtype="<f2",
+        )
+        self.assertEqual(float(clamped_f16[0]), 65504.0)
+        self.assertEqual(float(clamped_f16[1]), -65504.0)
+
+        nan_buf = np.zeros(6 * 256 * 256, dtype="<f4")
+        nan_buf[10] = np.nan
+        with self.assertRaises(ValueError):
+            validate_detector_binary_buffer(nan_buf.tobytes(), precision="float32")
+        with self.assertRaises(ValueError):
+            validate_detector_binary_buffer(b"short", precision="float32")
+        with self.assertRaises(ValueError):
+            validate_flags_binary_buffer(b"short")
+
     def test_sqlite_spatial_cache_hit_and_lru_pruning(self) -> None:
         import time
         import warnings
-        from contextlib import closing
 
         # Verify WAL mode is active on SQLite connections
-        with closing(self.cache._connect()) as conn:
+        with self.cache.connection() as conn:
             journal_mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
             fk_enabled = conn.execute("PRAGMA foreign_keys;").fetchone()[0]
             self.assertEqual(str(journal_mode).lower(), "wal")
@@ -204,30 +224,67 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertEqual(headers16["X-Binary-Dtype"], "float16")
 
     def test_sqlite_lru_eviction_under_small_cap(self) -> None:
-        from contextlib import closing
-
         # Measure compressed size of one patch, then cap cache at 1.4x one patch
         tiny_db = str(Path(self.temp_dir.name) / "tiny.db")
         tiny_cache = SpatialSqliteCache(db_path=tiny_db, max_cache_bytes=10_000_000)
-        svc = StarHuntersBackendService(cache=tiny_cache)
+        try:
+            svc = StarHuntersBackendService(cache=tiny_cache)
 
-        m_a = svc.get_sky_patch(10.0, 10.0, 5.0)
-        grid_a = m_a["query"]["grid_key"]
-        one_patch_bytes = tiny_cache.get_patch_byte_size(grid_a)
-        self.assertGreater(one_patch_bytes, 0)
-        tiny_cache.max_cache_bytes = int(one_patch_bytes * 1.4)
+            m_a = svc.get_sky_patch(10.0, 10.0, 5.0)
+            grid_a = m_a["query"]["grid_key"]
+            one_patch_bytes = tiny_cache.get_patch_byte_size(grid_a)
+            self.assertGreater(one_patch_bytes, 0)
+            tiny_cache.max_cache_bytes = int(one_patch_bytes * 1.4)
 
-        m_b = svc.get_sky_patch(50.0, 20.0, 5.0)
-        # First patch should have been evicted by LRU pruning and cascade-deleted from binary_frames
-        self.assertIsNone(tiny_cache.get_manifest(grid_a))
-        self.assertIsNone(tiny_cache.get_frame(grid_a, "pass_1.bin"))
-        with closing(tiny_cache._connect()) as conn:
-            remaining_frames = conn.execute(
-                "SELECT COUNT(*) FROM binary_frames WHERE grid_key = ?",
-                (grid_a,),
-            ).fetchone()[0]
-        self.assertEqual(int(remaining_frames), 0)
-        self.assertIsNotNone(tiny_cache.get_manifest(m_b["query"]["grid_key"]))
+            m_b = svc.get_sky_patch(50.0, 20.0, 5.0)
+            # First patch should be evicted by LRU pruning and cascade-deleted from binary_frames
+            self.assertIsNone(tiny_cache.get_manifest(grid_a))
+            self.assertIsNone(tiny_cache.get_frame(grid_a, "pass_1.bin"))
+            with tiny_cache.connection() as conn:
+                remaining_frames = conn.execute(
+                    "SELECT COUNT(*) FROM binary_frames WHERE grid_key = ?",
+                    (grid_a,),
+                ).fetchone()[0]
+            self.assertEqual(int(remaining_frames), 0)
+            self.assertIsNotNone(tiny_cache.get_manifest(m_b["query"]["grid_key"]))
+        finally:
+            tiny_cache.close()
+
+    def test_sqlite_connection_pooling_and_zero_resource_warnings_on_gc(self) -> None:
+        import gc
+        import threading
+        import warnings
+
+        pool_db = str(Path(self.temp_dir.name) / "pool.db")
+
+        def _exercise_pool() -> None:
+            pooled_cache = SpatialSqliteCache(db_path=pool_db)
+            with pooled_cache.connection() as c1:
+                conn_main_1 = c1
+            with pooled_cache.connection() as c2:
+                conn_main_2 = c2
+            self.assertIs(conn_main_1, conn_main_2)
+
+            worker_conns: list[object] = []
+
+            def _worker() -> None:
+                with pooled_cache.connection() as wc:
+                    worker_conns.append(wc)
+                    wc.execute("SELECT 1").fetchone()
+
+            t = threading.Thread(target=_worker)
+            t.start()
+            t.join()
+            self.assertEqual(len(worker_conns), 1)
+            self.assertIsNot(worker_conns[0], conn_main_1)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", ResourceWarning)
+            _exercise_pool()
+            gc.collect()
+
+        resource_warnings = [w for w in caught if issubclass(w.category, ResourceWarning)]
+        self.assertEqual(resource_warnings, [])
 
     def test_forced_spectrum_extracts_102_wavelength_planes(self) -> None:
         ra, dec = 133.7951, -7.2451
@@ -310,13 +367,27 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             patch.object(main_module, "backend_service", self.service),
         ):
             service_payload = self.service.get_forced_spectrum(ra, dec)
-            response = TestClient(main_module.app).get(
+            client = TestClient(main_module.app)
+            response = client.get(
+                "/api/v1/spectrum",
+                params={"ra": ra, "dec": dec},
+            )
+            labeled_response = client.get(
+                "/api/v1/spectrum",
+                params={"ra": ra, "dec": dec, "label": "WISE J0855-0714"},
+            )
+            unlabeled_after_labeled = client.get(
                 "/api/v1/spectrum",
                 params={"ra": ra, "dec": dec},
             )
 
         self.assertEqual(response.status_code, 200)
-        for payload in (service_payload, response.json()):
+        self.assertEqual(response.json()["source_label"], "Selected sky position")
+        self.assertEqual(labeled_response.status_code, 200)
+        self.assertEqual(labeled_response.json()["source_label"], "WISE J0855-0714")
+        self.assertEqual(unlabeled_after_labeled.status_code, 200)
+        self.assertEqual(unlabeled_after_labeled.json()["source_label"], "Selected sky position")
+        for payload in (service_payload, response.json(), labeled_response.json()):
             parsed = validate_spectrum_payload(payload)
             self.assertEqual(len(parsed.channels), 102)
             self.assertEqual(len(parsed.molecular_features), 4)
@@ -483,6 +554,26 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             self.assertTrue(ok_payload["earth"]["is_fallback_capital"])
             self.assertTrue(ok_payload["earth"]["city_name"])
             self.assertTrue(ok_payload["earth"]["country"])
+
+            # Verify time alias fallback when iso_time is omitted, and iso_time precedence
+            alias_resp = client.get(
+                "/api/v1/earth-to-sky",
+                params={"lat": -0.0917, "lon": 34.7680, "time": "2026-11-14T16:21:00Z"},
+            )
+            self.assertEqual(alias_resp.status_code, 200)
+            self.assertEqual(alias_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
+
+            precedence_resp = client.get(
+                "/api/v1/earth-to-sky",
+                params={
+                    "lat": -0.0917,
+                    "lon": 34.7680,
+                    "iso_time": "2026-11-14T16:21:00Z",
+                    "time": "2026-01-01T00:00:00Z",
+                },
+            )
+            self.assertEqual(precedence_resp.status_code, 200)
+            self.assertEqual(precedence_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
 
     def test_highlighter_palette_fuzzy_search_and_pinned_cache(self) -> None:
         # At least 16 distinct highlighter colors

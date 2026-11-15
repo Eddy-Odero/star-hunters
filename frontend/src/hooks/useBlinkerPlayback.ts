@@ -2,15 +2,30 @@ import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import type { SkyPatchManifest, ViewportRenderSettings } from '../types/contracts';
 
+/** Options accepted by {@link useBlinkerPlayback}. */
 interface UseBlinkerPlaybackOptions {
+  /** Active patch manifest (`null` while loading or before any patch is selected). */
   manifest: SkyPatchManifest | null;
+  /** Current active epoch index from viewport render settings. */
+  activeEpochIndex: number;
+  /** Epoch indices permitted by the active mission filter. */
   filteredEpochIndices: readonly number[];
+  /** State setter for viewport render settings. */
   setRenderSettings: React.Dispatch<React.SetStateAction<ViewportRenderSettings>>;
 }
 
-/** Manage epoch playback state, loop mode, speed (FPS), and filtered step navigation. */
+/**
+ * Manage epoch playback state, loop mode, speed (FPS), and filtered step navigation.
+ *
+ * Uses a pure `setTimeout` effect keyed on `activeEpochIndex` so state updaters
+ * passed to `setRenderSettings` remain side-effect-free under React StrictMode.
+ *
+ * @param options - Playback configuration and render settings dispatcher.
+ * @returns Playback state flags and transport control callbacks.
+ */
 export function useBlinkerPlayback({
   manifest,
+  activeEpochIndex,
   filteredEpochIndices,
   setRenderSettings,
 }: UseBlinkerPlaybackOptions) {
@@ -23,24 +38,30 @@ export function useBlinkerPlayback({
       return undefined;
     }
     const intervalMs = Math.max(100, Math.round(1000 / Math.max(0.5, fps)));
-    const timer = window.setInterval(() => {
-      setRenderSettings((prev) => {
-        const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
-        if (pos >= 0 && pos < filteredEpochIndices.length - 1) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[pos + 1] };
-        }
-        if (pos === -1) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
-        }
-        if (isLooping) {
-          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
-        }
-        setIsPlaying(false);
-        return prev;
-      });
+    const timer = window.setTimeout(() => {
+      const pos = filteredEpochIndices.indexOf(activeEpochIndex);
+      if (pos >= 0 && pos < filteredEpochIndices.length - 1) {
+        const nextIdx = filteredEpochIndices[pos + 1];
+        setRenderSettings((prev) => ({ ...prev, activeEpochIndex: nextIdx }));
+        return;
+      }
+      if (pos === -1 || isLooping) {
+        const nextIdx = filteredEpochIndices[0];
+        setRenderSettings((prev) => ({ ...prev, activeEpochIndex: nextIdx }));
+        return;
+      }
+      setIsPlaying(false);
     }, intervalMs);
-    return () => window.clearInterval(timer);
-  }, [isPlaying, isLooping, fps, manifest, filteredEpochIndices, setRenderSettings]);
+    return () => window.clearTimeout(timer);
+  }, [
+    activeEpochIndex,
+    isPlaying,
+    isLooping,
+    fps,
+    manifest,
+    filteredEpochIndices,
+    setRenderSettings,
+  ]);
 
   const play = useCallback(() => {
     if (filteredEpochIndices.length === 0) return;

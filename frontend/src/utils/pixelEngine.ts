@@ -27,6 +27,7 @@ import {
   type ContrastStretch,
 } from '../types/contracts.ts';
 
+/** Input parameters for {@link renderEpochBuffersToRgba} and {@link renderEpochBuffersToImageData}. */
 export interface PixelEngineRenderParams {
   /** `epochBuffers[epochIndex][detectorIndex]` — each plane is 65,536 Float32 values. */
   epochBuffers: ReadonlyArray<ReadonlyArray<Float32Array>> | null;
@@ -48,11 +49,21 @@ export interface PixelEngineRenderParams {
   coaddIndices?: readonly number[];
   /** Tint pixels whose flag mask is non-zero (magenta/amber). Defaults to false. */
   showFlagsOverlay?: boolean;
+  /**
+   * Optional pre-allocated 256x256x4 RGBA output buffer to populate in-place,
+   * avoiding a 262,144-byte allocation on every animation frame.
+   */
+  outBuffer?: Uint8ClampedArray;
 }
 
 type DetectorWeights = readonly [number, number, number, number, number, number];
 
+const EXPECTED_RGBA_BYTES = PIXELS_PER_PLANE * 4;
 const ZERO_PLANE = new Float32Array(PIXELS_PER_PLANE);
+const COADD_FLAGS_SCRATCH = new Uint8Array(PIXELS_PER_PLANE);
+const ACC_BLUE_SCRATCH = new Float32Array(PIXELS_PER_PLANE);
+const ACC_GREEN_SCRATCH = new Float32Array(PIXELS_PER_PLANE);
+const ACC_RED_SCRATCH = new Float32Array(PIXELS_PER_PLANE);
 
 const STRETCH_LUT_STEP = 256; // 1/256 of a flux unit
 const STRETCH_LUT_SIZE = 4096; // covers raw flux 0..16
@@ -75,8 +86,12 @@ function clamp01(value: number): number {
 }
 
 /**
- * Map a single (already weighted) flux value into [0, 1] for the chosen stretch.
+ * Map a single (already weighted) flux value into `[0, 1]` for the chosen stretch.
  * Exposed for tests and for callers that need a scalar readout (e.g. hover probes).
+ *
+ * @param value - Weighted flux sample.
+ * @param stretch - Contrast stretch curve (`'asinh'`, `'linear'`, or `'zscale'`).
+ * @returns Normalized intensity in `[0, 1]`.
  */
 export function applyContrastStretch(value: number, stretch: ContrastStretch = 'asinh'): number {
   const flux = Number.isFinite(value) ? Math.max(0, value) : 0;
@@ -155,6 +170,59 @@ function planesAt(
   return epochBuffers[epochIndex] ?? [];
 }
 
+/**
+ * Resolve the target 256x256 RGBA output buffer, validating any caller-supplied buffer.
+ *
+ * @param outBuffer - Optional reusable `Uint8ClampedArray` of length `262,144`.
+ * @returns Either `outBuffer` or a newly allocated `Uint8ClampedArray`.
+ * @throws {RangeError} When `outBuffer` does not have exact length `262,144`.
+ */
+function resolveOutputBuffer(outBuffer?: Uint8ClampedArray): Uint8ClampedArray {
+  if (outBuffer) {
+    if (outBuffer.length !== EXPECTED_RGBA_BYTES) {
+      throw new RangeError(
+        `outBuffer must have length ${EXPECTED_RGBA_BYTES}, got ${outBuffer.length}`,
+      );
+    }
+    return outBuffer;
+  }
+  return new Uint8ClampedArray(EXPECTED_RGBA_BYTES);
+}
+
+/**
+ * Bitwise-OR hygiene flag masks across all selected co-add epochs so any pixel
+ * contaminated in any contributing pass remains flagged in `coadd` mode.
+ *
+ * @param flagsBuffers - Per-epoch 256x256 hygiene flag arrays.
+ * @param indices - Selected epoch indices participating in the co-add.
+ * @returns Combined 256x256 flag mask, or `null` if no flag buffers exist.
+ */
+function combineCoaddFlags(
+  flagsBuffers: ReadonlyArray<Uint8Array> | null | undefined,
+  indices: readonly number[],
+): Uint8Array | null {
+  if (!flagsBuffers || flagsBuffers.length === 0) return null;
+  let first: Uint8Array | null = null;
+  let merged = false;
+  for (const idx of indices) {
+    const buf = flagsBuffers[idx];
+    if (!buf) continue;
+    if (!first) {
+      first = buf;
+      continue;
+    }
+    if (!merged) {
+      COADD_FLAGS_SCRATCH.set(first);
+      merged = true;
+    }
+    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+      COADD_FLAGS_SCRATCH[i] |= buf[i];
+    }
+  }
+  if (!first) return null;
+  return merged ? COADD_FLAGS_SCRATCH : first;
+}
+
 function fillEmptyFrame(out: Uint8ClampedArray): Uint8ClampedArray {
   for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
     const outIdx = i * 4;
@@ -186,6 +254,57 @@ function applyFlagsOverlay(out: Uint8ClampedArray, flags: Uint8Array | null | un
   }
 }
 
+/**
+ * Accumulate one epoch's weighted RGB detector pairs into the module-level scratch planes.
+ * Keeping `d0..d5` as local `Float32Array` bindings avoids array-of-arrays indirection
+ * inside the 65,536-pixel loop for multi-epoch co-adds.
+ */
+function accumulateEpochChannels(
+  planes: ReadonlyArray<Float32Array>,
+  h0: number,
+  h1: number,
+  h2: number,
+  h3: number,
+  h4: number,
+  h5: number,
+  overwrite: boolean,
+): void {
+  const d0 = planes[0] ?? ZERO_PLANE;
+  const d1 = planes[1] ?? ZERO_PLANE;
+  const d2 = planes[2] ?? ZERO_PLANE;
+  const d3 = planes[3] ?? ZERO_PLANE;
+  const d4 = planes[4] ?? ZERO_PLANE;
+  const d5 = planes[5] ?? ZERO_PLANE;
+
+  if (overwrite) {
+    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+      ACC_BLUE_SCRATCH[i] = h0 * d0[i] + h1 * d1[i];
+      ACC_GREEN_SCRATCH[i] = h2 * d2[i] + h3 * d3[i];
+      ACC_RED_SCRATCH[i] = h4 * d4[i] + h5 * d5[i];
+    }
+    return;
+  }
+
+  for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+    ACC_BLUE_SCRATCH[i] += h0 * d0[i] + h1 * d1[i];
+    ACC_GREEN_SCRATCH[i] += h2 * d2[i] + h3 * d3[i];
+    ACC_RED_SCRATCH[i] += h4 * d4[i] + h5 * d5[i];
+  }
+}
+
+/**
+ * Synthesize a 256x256 RGB frame across 1 or more epochs using monomorphic
+ * typed-array loops and hoisted little-endian `Uint32Array` packing.
+ *
+ * @param epochBuffers - Cached multi-epoch detector planes.
+ * @param indices - Epoch indices to average (`[activeIdx]` for blink, or N indices for coadd).
+ * @param weights - Per-detector wavelength Dim & Pop weights.
+ * @param lut - Precomputed 8-bit contrast stretch lookup table.
+ * @param flags - Optional 256x256 hygiene flag mask for tinting.
+ * @param showFlagsOverlay - Whether to tint flagged pixels.
+ * @param out - Target 256x256x4 RGBA byte buffer.
+ * @returns Populated `out` buffer.
+ */
 function renderColorFrame(
   epochBuffers: ReadonlyArray<ReadonlyArray<Float32Array>>,
   indices: readonly number[],
@@ -193,9 +312,12 @@ function renderColorFrame(
   lut: Uint8Array,
   flags: Uint8Array | null | undefined,
   showFlagsOverlay: boolean,
+  out: Uint8ClampedArray,
 ): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(PIXELS_PER_PLANE * 4);
-  const out32 = IS_LITTLE_ENDIAN ? new Uint32Array(out.buffer) : null;
+  const out32 =
+    IS_LITTLE_ENDIAN && out.byteOffset % 4 === 0
+      ? new Uint32Array(out.buffer, out.byteOffset, PIXELS_PER_PLANE)
+      : null;
   const epochCount = Math.max(1, indices.length);
   // Half of each detector pair, averaged across the co-add stack.
   const scale = 0.5 / epochCount;
@@ -206,20 +328,26 @@ function renderColorFrame(
   const h4 = weights[4] * scale;
   const h5 = weights[5] * scale;
 
-  if (indices.length === 1) {
-    const planes = planesAt(epochBuffers, indices[0]);
-    const d0 = planes[0] ?? ZERO_PLANE;
-    const d1 = planes[1] ?? ZERO_PLANE;
-    const d2 = planes[2] ?? ZERO_PLANE;
-    const d3 = planes[3] ?? ZERO_PLANE;
-    const d4 = planes[4] ?? ZERO_PLANE;
-    const d5 = planes[5] ?? ZERO_PLANE;
+  const lastIdx = indices.length - 1;
+  for (let k = 0; k < lastIdx; k += 1) {
+    accumulateEpochChannels(planesAt(epochBuffers, indices[k]), h0, h1, h2, h3, h4, h5, k === 0);
+  }
 
-    if (out32) {
+  const lastPlanes = planesAt(epochBuffers, indices[lastIdx]);
+  const d0 = lastPlanes[0] ?? ZERO_PLANE;
+  const d1 = lastPlanes[1] ?? ZERO_PLANE;
+  const d2 = lastPlanes[2] ?? ZERO_PLANE;
+  const d3 = lastPlanes[3] ?? ZERO_PLANE;
+  const d4 = lastPlanes[4] ?? ZERO_PLANE;
+  const d5 = lastPlanes[5] ?? ZERO_PLANE;
+  const hasAccumulated = lastIdx > 0;
+
+  if (out32) {
+    if (hasAccumulated) {
       for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-        const blue = h0 * d0[i] + h1 * d1[i];
-        const green = h2 * d2[i] + h3 * d3[i];
-        const red = h4 * d4[i] + h5 * d5[i];
+        const blue = ACC_BLUE_SCRATCH[i] + h0 * d0[i] + h1 * d1[i];
+        const green = ACC_GREEN_SCRATCH[i] + h2 * d2[i] + h3 * d3[i];
+        const red = ACC_RED_SCRATCH[i] + h4 * d4[i] + h5 * d5[i];
         let ri = red * STRETCH_LUT_STEP;
         let gi = green * STRETCH_LUT_STEP;
         let bi = blue * STRETCH_LUT_STEP;
@@ -233,44 +361,6 @@ function renderColorFrame(
         const blue = h0 * d0[i] + h1 * d1[i];
         const green = h2 * d2[i] + h3 * d3[i];
         const red = h4 * d4[i] + h5 * d5[i];
-        const outIdx = i * 4;
-        let ri = red * STRETCH_LUT_STEP;
-        let gi = green * STRETCH_LUT_STEP;
-        let bi = blue * STRETCH_LUT_STEP;
-        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
-        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
-        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-        out[outIdx] = lut[ri];
-        out[outIdx + 1] = lut[gi];
-        out[outIdx + 2] = lut[bi];
-        out[outIdx + 3] = 255;
-      }
-    }
-    if (showFlagsOverlay) applyFlagsOverlay(out, flags);
-    return out;
-  }
-
-  if (indices.length === 2) {
-    const first = planesAt(epochBuffers, indices[0]);
-    const second = planesAt(epochBuffers, indices[1]);
-    const a0 = first[0] ?? ZERO_PLANE;
-    const a1 = first[1] ?? ZERO_PLANE;
-    const a2 = first[2] ?? ZERO_PLANE;
-    const a3 = first[3] ?? ZERO_PLANE;
-    const a4 = first[4] ?? ZERO_PLANE;
-    const a5 = first[5] ?? ZERO_PLANE;
-    const b0 = second[0] ?? ZERO_PLANE;
-    const b1 = second[1] ?? ZERO_PLANE;
-    const b2 = second[2] ?? ZERO_PLANE;
-    const b3 = second[3] ?? ZERO_PLANE;
-    const b4 = second[4] ?? ZERO_PLANE;
-    const b5 = second[5] ?? ZERO_PLANE;
-
-    if (out32) {
-      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-        const blue = h0 * (a0[i] + b0[i]) + h1 * (a1[i] + b1[i]);
-        const green = h2 * (a2[i] + b2[i]) + h3 * (a3[i] + b3[i]);
-        const red = h4 * (a4[i] + b4[i]) + h5 * (a5[i] + b5[i]);
         let ri = red * STRETCH_LUT_STEP;
         let gi = green * STRETCH_LUT_STEP;
         let bi = blue * STRETCH_LUT_STEP;
@@ -279,57 +369,18 @@ function renderColorFrame(
         bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
         out32[i] = 0xff000000 | (lut[bi] << 16) | (lut[gi] << 8) | lut[ri];
       }
-    } else {
-      for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-        const blue = h0 * (a0[i] + b0[i]) + h1 * (a1[i] + b1[i]);
-        const green = h2 * (a2[i] + b2[i]) + h3 * (a3[i] + b3[i]);
-        const red = h4 * (a4[i] + b4[i]) + h5 * (a5[i] + b5[i]);
-        const outIdx = i * 4;
-        let ri = red * STRETCH_LUT_STEP;
-        let gi = green * STRETCH_LUT_STEP;
-        let bi = blue * STRETCH_LUT_STEP;
-        ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
-        gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
-        bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-        out[outIdx] = lut[ri];
-        out[outIdx + 1] = lut[gi];
-        out[outIdx + 2] = lut[bi];
-        out[outIdx + 3] = 255;
-      }
     }
-    if (showFlagsOverlay) applyFlagsOverlay(out, flags);
-    return out;
-  }
-
-  // Hoist the six plane references per epoch so the inner pixel loop is a flat
-  // sequence of typed-array reads instead of chained array indexing.
-  const selectedPlanes = indices.map((index) => planesAt(epochBuffers, index));
-  const c0 = selectedPlanes.map((planes) => planes[0] ?? ZERO_PLANE);
-  const c1 = selectedPlanes.map((planes) => planes[1] ?? ZERO_PLANE);
-  const c2 = selectedPlanes.map((planes) => planes[2] ?? ZERO_PLANE);
-  const c3 = selectedPlanes.map((planes) => planes[3] ?? ZERO_PLANE);
-  const c4 = selectedPlanes.map((planes) => planes[4] ?? ZERO_PLANE);
-  const c5 = selectedPlanes.map((planes) => planes[5] ?? ZERO_PLANE);
-  const planeCount = selectedPlanes.length;
-
-  for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-    let blue = 0;
-    let green = 0;
-    let red = 0;
-    for (let k = 0; k < planeCount; k += 1) {
-      blue += h0 * c0[k][i] + h1 * c1[k][i];
-      green += h2 * c2[k][i] + h3 * c3[k][i];
-      red += h4 * c4[k][i] + h5 * c5[k][i];
-    }
-    let ri = red * STRETCH_LUT_STEP;
-    let gi = green * STRETCH_LUT_STEP;
-    let bi = blue * STRETCH_LUT_STEP;
-    ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
-    gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
-    bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
-    if (out32) {
-      out32[i] = 0xff000000 | (lut[bi] << 16) | (lut[gi] << 8) | lut[ri];
-    } else {
+  } else {
+    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
+      const blue = (hasAccumulated ? ACC_BLUE_SCRATCH[i] : 0) + h0 * d0[i] + h1 * d1[i];
+      const green = (hasAccumulated ? ACC_GREEN_SCRATCH[i] : 0) + h2 * d2[i] + h3 * d3[i];
+      const red = (hasAccumulated ? ACC_RED_SCRATCH[i] : 0) + h4 * d4[i] + h5 * d5[i];
+      let ri = red * STRETCH_LUT_STEP;
+      let gi = green * STRETCH_LUT_STEP;
+      let bi = blue * STRETCH_LUT_STEP;
+      ri = ri <= 0 ? 0 : ri >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : ri | 0;
+      gi = gi <= 0 ? 0 : gi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : gi | 0;
+      bi = bi <= 0 ? 0 : bi >= STRETCH_LUT_SIZE ? STRETCH_LUT_SIZE : bi | 0;
       const outIdx = i * 4;
       out[outIdx] = lut[ri];
       out[outIdx + 1] = lut[gi];
@@ -341,6 +392,19 @@ function renderColorFrame(
   return out;
 }
 
+/**
+ * Render a signed Pass B minus Pass A difference image into `out`.
+ *
+ * @param epochBuffers - Cached multi-epoch detector planes.
+ * @param passAIndex - Reference epoch index.
+ * @param passBIndex - Comparison epoch index.
+ * @param weights - Per-detector wavelength Dim & Pop weights.
+ * @param lut - Precomputed 8-bit contrast stretch lookup table.
+ * @param flags - Optional 256x256 hygiene flag mask for tinting.
+ * @param showFlagsOverlay - Whether to tint flagged pixels.
+ * @param out - Target 256x256x4 RGBA byte buffer.
+ * @returns Populated `out` buffer.
+ */
 function renderSubtractFrame(
   epochBuffers: ReadonlyArray<ReadonlyArray<Float32Array>>,
   passAIndex: number,
@@ -349,8 +413,8 @@ function renderSubtractFrame(
   lut: Uint8Array,
   flags: Uint8Array | null | undefined,
   showFlagsOverlay: boolean,
+  out: Uint8ClampedArray,
 ): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(PIXELS_PER_PLANE * 4);
   const planesA = planesAt(epochBuffers, passAIndex);
   const planesB = planesAt(epochBuffers, passBIndex);
   const a0 = planesA[0] ?? ZERO_PLANE;
@@ -416,8 +480,12 @@ function renderSubtractFrame(
 /**
  * Render cached multi-epoch detector planes into a 256x256 RGBA byte buffer.
  *
- * The returned array can be wrapped directly:
- *   `ctx.putImageData(new ImageData(rgba, 256, 256), 0, 0)`
+ * The returned array (or caller-provided `outBuffer`) can be wrapped directly:
+ * `ctx.putImageData(new ImageData(rgba, 256, 256), 0, 0)`
+ *
+ * @param params - Rendering parameters, epoch buffers, wavelength window, and optional `outBuffer`.
+ * @returns Populated 256x256x4 RGBA `Uint8ClampedArray`.
+ * @throws {RangeError} When `params.outBuffer` does not have length `262,144`.
  */
 export function renderEpochBuffersToRgba(params: PixelEngineRenderParams): Uint8ClampedArray {
   const {
@@ -431,10 +499,13 @@ export function renderEpochBuffersToRgba(params: PixelEngineRenderParams): Uint8
     passBIndex,
     coaddIndices,
     showFlagsOverlay = false,
+    outBuffer,
   } = params;
 
+  const out = resolveOutputBuffer(outBuffer);
+
   if (!epochBuffers || epochBuffers.length === 0) {
-    return fillEmptyFrame(new Uint8ClampedArray(PIXELS_PER_PLANE * 4));
+    return fillEmptyFrame(out);
   }
 
   const weights = normaliseWeights(wavelengthRangeUm);
@@ -448,26 +519,37 @@ export function renderEpochBuffersToRgba(params: PixelEngineRenderParams): Uint8
       epochBuffers.length,
     );
     const flags = flagsBuffers?.[passB] ?? flagsBuffers?.[passA];
-    return renderSubtractFrame(epochBuffers, passA, passB, weights, lut, flags, showFlagsOverlay);
+    return renderSubtractFrame(
+      epochBuffers,
+      passA,
+      passB,
+      weights,
+      lut,
+      flags,
+      showFlagsOverlay,
+      out,
+    );
   }
 
   if (comparisonMode === 'coadd') {
     const indices = selectedCoaddIndices(epochBuffers, coaddIndices);
-    const flags = flagsBuffers?.[indices[0]];
-    return renderColorFrame(epochBuffers, indices, weights, lut, flags, showFlagsOverlay);
+    const flags = showFlagsOverlay ? combineCoaddFlags(flagsBuffers, indices) : null;
+    return renderColorFrame(epochBuffers, indices, weights, lut, flags, showFlagsOverlay, out);
   }
 
   const flags = flagsBuffers?.[activeIdx];
-  return renderColorFrame(epochBuffers, [activeIdx], weights, lut, flags, showFlagsOverlay);
+  return renderColorFrame(epochBuffers, [activeIdx], weights, lut, flags, showFlagsOverlay, out);
 }
-
-/** Aliases used by the viewport / animation loop. */
-export const renderPixelFrame = renderEpochBuffersToRgba;
-export const renderFrameToRgba = renderEpochBuffersToRgba;
 
 export { computeDetectorWeights };
 
-/** Create a browser `ImageData` object directly. Throws outside a DOM-capable runtime. */
+/**
+ * Create a browser `ImageData` object directly from rendered epoch buffers.
+ *
+ * @param params - Rendering parameters passed to {@link renderEpochBuffersToRgba}.
+ * @returns A 256x256 `ImageData` instance.
+ * @throws {Error} Outside a DOM-capable runtime where `ImageData` is undefined.
+ */
 export function renderEpochBuffersToImageData(params: PixelEngineRenderParams): ImageData {
   if (typeof ImageData === 'undefined') {
     throw new Error('ImageData is not available in this runtime; use renderEpochBuffersToRgba.');
@@ -479,6 +561,7 @@ export function renderEpochBuffersToImageData(params: PixelEngineRenderParams): 
 /** Number of detector planes expected in a cached epoch. */
 export const PIXEL_ENGINE_DETECTOR_COUNT = NUM_DETECTORS;
 
+/** Wavelength-weighted flux, 3x3 spatial variance, and hygiene flag readout at a single pixel. */
 export interface LocalPixelReadout {
   x: number;
   y: number;
@@ -488,8 +571,11 @@ export interface LocalPixelReadout {
 }
 
 /**
- * Sample wavelength-weighted local flux and 3x3 spatial variance at pixel (px, py)
+ * Sample wavelength-weighted local flux and 3x3 spatial variance at pixel `(px, py)`
  * for hover inspection over the 256x256 SPHEREx scientific plane.
+ *
+ * @param params - Target buffers, active epoch, wavelength range, and pixel coordinates.
+ * @returns Clamped integer pixel coordinates, weighted center flux, 3x3 variance, and flag byte.
  */
 export function computeLocalPixelReadout(params: {
   epochBuffers: Float32Array[][] | null;
@@ -538,16 +624,21 @@ export function computeLocalPixelReadout(params: {
   };
 
   const centerFlux = sampleFluxAt(ix, iy);
-  const neighborhood: number[] = [];
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
   for (let dy = -1; dy <= 1; dy += 1) {
     const sy = Math.max(0, Math.min(GRID_HEIGHT - 1, iy + dy));
     for (let dx = -1; dx <= 1; dx += 1) {
       const sx = Math.max(0, Math.min(GRID_WIDTH - 1, ix + dx));
-      neighborhood.push(sampleFluxAt(sx, sy));
+      const v = sampleFluxAt(sx, sy);
+      sum += v;
+      sumSq += v * v;
+      count += 1;
     }
   }
-  const mean = neighborhood.reduce((acc, v) => acc + v, 0) / neighborhood.length;
-  const variance = neighborhood.reduce((acc, v) => acc + (v - mean) ** 2, 0) / neighborhood.length;
+  const mean = sum / count;
+  const variance = Math.max(0, sumSq / count - mean * mean);
   const flagByte = flags ? flags[iy * GRID_WIDTH + ix] : 0;
 
   return {

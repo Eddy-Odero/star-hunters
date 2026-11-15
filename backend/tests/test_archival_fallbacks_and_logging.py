@@ -297,3 +297,92 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
         self.assertAlmostEqual(float(saturn["ra"]), 8.48315, places=4)
         self.assertAlmostEqual(float(saturn["dec"]), 0.7848, places=4)
         self.assertEqual(saturn["data_source"], "jpl_horizons_live")
+
+    async def test_fast_spherex_hit_coadds_only_once_and_skips_fallbacks(self) -> None:
+        from app.services.spherex_coadd import SpherexCoaddResult, SpherexEpochCoadd
+
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
+        wise_calls = 0
+        skyview_calls = 0
+
+        def fail_wise(**_kwargs: object) -> None:
+            nonlocal wise_calls
+            wise_calls += 1
+            raise WiseFallbackError("should not be called")
+
+        def fail_skyview(**_kwargs: object) -> None:
+            nonlocal skyview_calls
+            skyview_calls += 1
+            raise SkyViewFallbackError("should not be called")
+
+        svc = StarHuntersBackendService(
+            cache=cache,
+            enable_archival_data=True,
+            wise_fallback_fetcher=fail_wise,
+            skyview_fallback_fetcher=fail_skyview,
+        )
+
+        det_buf = np.zeros((6, 256, 256), dtype="<f4").tobytes()
+        flag_buf = np.zeros((256, 256), dtype=np.uint8).tobytes()
+        coadd_result = SpherexCoaddResult(
+            epochs=[
+                SpherexEpochCoadd(
+                    epoch_id="pass_1",
+                    mjd=60800.0,
+                    mjd_start=60800.0,
+                    mjd_end=60800.0,
+                    detector_data=np.zeros((6, 256, 256), dtype="<f4"),
+                    flags_mask=np.zeros((256, 256), dtype=np.uint8),
+                    detector_buffer=det_buf,
+                    flags_buffer=flag_buf,
+                    wcs_header={},
+                    available_detectors=[1, 2],
+                    exposure_count=1,
+                ),
+                SpherexEpochCoadd(
+                    epoch_id="pass_2",
+                    mjd=60980.0,
+                    mjd_start=60980.0,
+                    mjd_end=60980.0,
+                    detector_data=np.zeros((6, 256, 256), dtype="<f4"),
+                    flags_mask=np.zeros((256, 256), dtype=np.uint8),
+                    detector_buffer=det_buf,
+                    flags_buffer=flag_buf,
+                    wcs_header={},
+                    available_detectors=[1, 2],
+                    exposure_count=1,
+                ),
+            ],
+            has_multi_epoch_spherex=True,
+            needs_wise_fallback=False,
+            baseline_days=180.0,
+        )
+
+        async def _empty_pipeline(**_kwargs: object) -> dict[str, object]:
+            return {
+                "simbad": [],
+                "gaia_proper_motion": [],
+                "solar_system_most": [],
+                "known_objects": [],
+            }
+
+        with (
+            patch("app.services.spherex_ingest.ingest_spherex_cutouts", return_value=["dummy"]),
+            patch(
+                "app.services.spherex_coadd.coadd_spherex_epochs", return_value=coadd_result
+            ) as mock_coadd,
+            patch.object(
+                svc.catalog_pipeline, "resolve_patch_objects", side_effect=_empty_pipeline
+            ),
+        ):
+            manifest = await svc.get_sky_patch_async(
+                ra=133.7951, dec=-7.2451, fov=5.0, live_catalogs=False
+            )
+
+        validate_sky_patch_manifest(manifest)
+        self.assertEqual(mock_coadd.call_count, 1)
+        self.assertEqual(wise_calls, 0)
+        self.assertEqual(skyview_calls, 0)
+        self.assertEqual(manifest["data_source_summary"]["primary_mission"], "SPHEREx")
+        self.assertTrue(manifest["data_source_summary"]["has_multi_epoch_spherex"])

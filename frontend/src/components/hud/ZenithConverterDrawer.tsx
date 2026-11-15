@@ -3,6 +3,15 @@ import { useOptionalNotifications } from '../../context/NotificationContext';
 import { WORLD_CAPITAL_CITIES, type EarthToSkyResponse } from '../../types/contracts';
 import { formatRaDecCompact, wrapRaDeg } from '../../utils/observatoryMath';
 
+/**
+ * Compute an offline Greenwich Mean Sidereal Time (GMST) approximation of the
+ * local zenith ICRS coordinates when `/api/v1/earth-to-sky` is unreachable.
+ *
+ * @param latDeg - Observer geodetic latitude in degrees `[-90, 90]`.
+ * @param lonDeg - Observer east longitude in degrees `[-180, 180]`.
+ * @param dateIso - Observation UTC timestamp in ISO-8601 format.
+ * @returns Approximate ICRS `{ ra, dec }` coordinates in degrees.
+ */
 function localApproximateZenith(latDeg: number, lonDeg: number, dateIso: string) {
   const dt = new Date(dateIso);
   const validMs = Number.isNaN(dt.getTime()) ? Date.now() : dt.getTime();
@@ -15,11 +24,36 @@ function localApproximateZenith(latDeg: number, lonDeg: number, dateIso: string)
   };
 }
 
+/**
+ * Normalize a `<input type="datetime-local">` value (which has no timezone suffix
+ * and represents UTC in this UI) into a canonical ISO-8601 UTC timestamp string.
+ *
+ * @param obsTimeInput - Raw input string from the UTC observation time field.
+ * @returns Normalized ISO-8601 UTC string, or `null` if the string is unparseable.
+ */
+function parseUtcObservationIso(obsTimeInput: string): string | null {
+  const trimmed = obsTimeInput.trim();
+  if (!trimmed) {
+    return new Date().toISOString();
+  }
+  const hasZone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed);
+  const parsed = new Date(hasZone ? trimmed : `${trimmed}Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+/** Props for {@link ZenithConverterDrawer}. */
 interface ZenithConverterDrawerProps {
+  /** Optional callback invoked to slew the 3D sky globe to the computed zenith. */
   onFocusCoordinates?: (ra: number, dec: number, fovDeg: number) => void;
 }
 
-/** Earth-to-Sky Zenith converter drawer mapping city coordinates & UTC time to ICRS sky overhead. */
+/**
+ * Earth-to-Sky zenith converter drawer mapping city coordinates and a user-selected
+ * UTC observation time to ICRS overhead sky coordinates via `/api/v1/earth-to-sky`.
+ *
+ * @param props - Component props containing {@link ZenithConverterDrawerProps.onFocusCoordinates}.
+ * @returns Rendered zenith conversion form.
+ */
 export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
   onFocusCoordinates,
 }) => {
@@ -66,14 +100,23 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
       return;
     }
 
-    const isoTime = new Date(obsTimeIso).toISOString();
+    const isoTime = parseUtcObservationIso(obsTimeIso);
+    if (!isoTime) {
+      notifications?.pushWarning({
+        id: 'zenith-invalid-time',
+        title: 'Invalid UTC observation time',
+        detail: 'Please enter a valid date and UTC time before converting.',
+        level: 'warning',
+      });
+      return;
+    }
     setIsConverting(true);
     notifications?.startAsyncTask('earth-to-sky', 'Computing zenith ICRS sky coordinates...');
     try {
       const params = new URLSearchParams({
         lat: lat.toFixed(5),
         lon: lon.toFixed(5),
-        time: isoTime,
+        iso_time: isoTime,
       });
       const res = await fetch(`/api/v1/earth-to-sky?${params.toString()}`);
       if (res.ok) {
