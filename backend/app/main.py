@@ -27,6 +27,7 @@ from .models.contracts import (
     validate_sky_patch_manifest,
     validate_spectrum_payload,
 )
+from .models.global_sky_reference_catalog import extend_global_known_objects_index
 from .services.celestial_catalog_pipeline import (
     AutomatedCelestialPipeline,
     fetch_most_spherex_matches,
@@ -993,6 +994,7 @@ def get_global_known_objects_index() -> list[dict[str, Any]]:
             entry["patch_ra"] = meta["ra"]
             entry["patch_dec"] = meta["dec"]
             _GLOBAL_KNOWN_OBJECTS_INDEX.append(entry)
+    _GLOBAL_KNOWN_OBJECTS_INDEX[:] = extend_global_known_objects_index(_GLOBAL_KNOWN_OBJECTS_INDEX)
     return _GLOBAL_KNOWN_OBJECTS_INDEX
 
 

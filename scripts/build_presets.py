@@ -28,21 +28,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from app.main import (
+from generate_synthetic_presets import generate_all_presets  # noqa: E402
+
+from app.main import (  # noqa: E402
     _merge_pipeline_overlays,
     build_catalog_overlays_for_patch,
     build_sky_patch_manifest_payload,
     build_spectrum_payload,
     mjd_to_iso,
 )
-from app.models.contracts import (
+from app.models.contracts import (  # noqa: E402
     SHOWCASE_TARGETS,
     validate_detector_binary_buffer,
     validate_flags_binary_buffer,
     validate_sky_patch_manifest,
     validate_spectrum_payload,
 )
-from app.services.celestial_catalog_pipeline import (
+from app.models.global_sky_reference_catalog import extend_global_known_objects_index  # noqa: E402
+from app.services.celestial_catalog_pipeline import (  # noqa: E402
     HORIZONS_FEATURED_BODIES,
     AutomatedCelestialPipeline,
     fetch_gaia_dr3_objects,
@@ -51,8 +54,7 @@ from app.services.celestial_catalog_pipeline import (
     fetch_simbad_objects,
     sky_to_pixel_tan,
 )
-from app.services.spatial_cache import SpatialSqliteCache
-from generate_synthetic_presets import generate_all_presets
+from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
 
 DEFAULT_FOV_ARCMIN = 5.0
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("PRESET_BUILD_TIMEOUT", "20"))
@@ -581,6 +583,7 @@ def _write_global_known_objects_index(
             entry["patch_ra"] = meta["ra"]
             entry["patch_dec"] = meta["dec"]
             index.append(entry)
+    index = extend_global_known_objects_index(index)
     (output_dir / "global_known_objects.json").write_text(
         json.dumps(index, indent=2) + "\n",
         encoding="utf-8",
