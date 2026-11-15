@@ -11,7 +11,7 @@ from ..models.contracts import WORLD_CAPITAL_CITIES, validate_earth_to_sky_respo
 
 try:
     import astropy.units as u
-    from astropy.coordinates import AltAz, EarthLocation, ICRS, SkyCoord, get_constellation
+    from astropy.coordinates import ICRS, AltAz, EarthLocation, SkyCoord, get_constellation
     from astropy.time import Time
 
     HAS_ASTROPY = True

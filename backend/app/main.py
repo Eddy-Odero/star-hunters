@@ -21,7 +21,6 @@ from .models.contracts import (
     PIXELS_PER_PLANE,
     SHOWCASE_TARGETS,
     TOTAL_DETECTOR_VALUES,
-    WORLD_CAPITAL_CITIES,
     convert_float32_bytes_to_float16_bytes,
     validate_catalogs_response,
     validate_earth_to_sky_response,
@@ -40,7 +39,6 @@ from .services.spatial_cache import (
 from .services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
 from .services.wise_fallback import fetch_wise_fallback
 from .services.zenith_bridge import (
-    CONSTELLATION_BANDS,
     compute_zenith_icrs,
     find_matching_capital_city,
     lookup_constellation,
