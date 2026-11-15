@@ -4,9 +4,9 @@ import { downloadSpectrumCsv } from '../utils/csvExport';
 
 const MOLECULAR_BANDS = [
   { name: 'H2O', min: 1.35, max: 1.45, color: 'rgba(56, 189, 248, 0.12)', stroke: '#38bdf8' },
-  { name: 'CH4', min: 1.60, max: 1.75, color: 'rgba(244, 114, 182, 0.12)', stroke: '#f472b6' },
+  { name: 'CH4', min: 1.6, max: 1.75, color: 'rgba(244, 114, 182, 0.12)', stroke: '#f472b6' },
   { name: 'CO2', min: 2.65, max: 2.78, color: 'rgba(251, 191, 36, 0.12)', stroke: '#fbbf24' },
-  { name: 'CO', min: 4.60, max: 4.80, color: 'rgba(167, 139, 250, 0.12)', stroke: '#a78bfa' },
+  { name: 'CO', min: 4.6, max: 4.8, color: 'rgba(167, 139, 250, 0.12)', stroke: '#a78bfa' },
 ];
 
 export const SpectrumDrawer: React.FC = () => {
@@ -53,7 +53,9 @@ export const SpectrumDrawer: React.FC = () => {
 
   const scaleX = (w: number) => {
     if (!chartData) return 0;
-    return padLeft + ((w - chartData.minWave) / (chartData.maxWave - chartData.minWave)) * plotWidth;
+    return (
+      padLeft + ((w - chartData.minWave) / (chartData.maxWave - chartData.minWave)) * plotWidth
+    );
   };
 
   const scaleY = (f: number) => {

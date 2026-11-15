@@ -8,10 +8,8 @@ import { WhatsAboveMeBar } from './components/WhatsAboveMeBar';
 import { SourceInspectorCard } from './components/SourceInspectorCard';
 import { SpectrumDrawer } from './components/SpectrumDrawer';
 import {
- 
   inferObjectClass,
   isMovingSolarSystemObject,
-  
   renderEpochBuffersToRgba,
 } from './utils/knownObjectSelection';
 
