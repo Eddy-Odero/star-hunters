@@ -51,6 +51,7 @@ import {
   replaceUrlState,
   serializeUrlState,
 } from '../src/utils/urlStateSync.ts';
+import { applyContrastStretch, renderPixelFrame } from '../src/utils/pixelEngine.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
@@ -207,6 +208,203 @@ test('Wavelength Dim & Pop detector weights isolate cold IR detectors (3.8 - 5.0
   assert.ok(Math.abs(coldWeights[2] - 0.05) < 1e-6);
   assert.ok(Math.abs(coldWeights[4] - 1.0) < 1e-6);
   assert.ok(Math.abs(coldWeights[5] - 1.0) < 1e-6);
+});
+
+test('ISS-11: subtracting an epoch from itself produces a uniform neutral background', () => {
+  const epoch = makeGaussianEpochPlanes([{ x: 72, y: 88, peak: 9.0, sigma: 1.7 }]);
+  const rgba = renderPixelFrame({
+    epochBuffers: [epoch],
+    comparisonMode: 'subtract',
+    passAIndex: 0,
+    passBIndex: 0,
+    contrastStretch: 'asinh',
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+
+  let nonNeutralPixels = 0;
+  for (let i = 0; i < 256 * 256; i += 1) {
+    const outIdx = i * 4;
+    if (
+      rgba[outIdx] !== 0 ||
+      rgba[outIdx + 1] !== 0 ||
+      rgba[outIdx + 2] !== 0 ||
+      rgba[outIdx + 3] !== 255
+    ) {
+      nonNeutralPixels += 1;
+    }
+  }
+  assert.equal(nonNeutralPixels, 0);
+});
+
+test('ISS-11: cold wavelength window dims D1-D3 by >=90% and preserves D5-D6 at full intensity', () => {
+  const epoch = Array.from({ length: 6 }, () => {
+    const plane = new Float32Array(256 * 256);
+    plane.fill(0.01);
+    return plane;
+  });
+  const addSpot = (plane, x, y, peak, sigma = 1.5) => {
+    const twoSigmaSq = 2 * sigma * sigma;
+    for (let py = Math.max(0, y - 6); py <= Math.min(255, y + 6); py += 1) {
+      for (let px = Math.max(0, x - 6); px <= Math.min(255, x + 6); px += 1) {
+        const r2 = (px - x) * (px - x) + (py - y) * (py - y);
+        plane[py * 256 + px] += peak * Math.exp(-r2 / twoSigmaSq);
+      }
+    }
+  };
+
+  // Hot short-wavelength star: detectors D1-D3 (indices 0..2).
+  addSpot(epoch[0], 64, 64, 8.0);
+  addSpot(epoch[1], 64, 64, 8.0);
+  addSpot(epoch[2], 64, 64, 8.0);
+  // Cold brown dwarf: detectors D5-D6 (indices 4..5).
+  addSpot(epoch[4], 192, 192, 8.0);
+  addSpot(epoch[5], 192, 192, 8.0);
+
+  const renderAt = (wavelengthRangeUm, contrastStretch) =>
+    renderPixelFrame({
+      epochBuffers: [epoch],
+      activeEpochIndex: 0,
+      comparisonMode: 'blink',
+      contrastStretch,
+      wavelengthRangeUm,
+    });
+
+  const hotIndex = (64 * 256 + 64) * 4;
+  const coldIndex = (192 * 256 + 192) * 4;
+
+  for (const contrastStretch of ['asinh', 'linear', 'zscale']) {
+    const fullRange = renderAt([0.75, 5.0], contrastStretch);
+    const coldRange = renderAt([3.8, 5.0], contrastStretch);
+
+    // Blue channel of the hot star must dim by at least 90%.
+    assert.ok(
+      coldRange[hotIndex + 2] <= fullRange[hotIndex + 2] * 0.1,
+      `Expected hot-star blue ${coldRange[hotIndex + 2]} <= 10% of ${fullRange[hotIndex + 2]} (${contrastStretch})`,
+    );
+    // Green channel (D3) dims as well.
+    assert.ok(coldRange[hotIndex + 1] <= fullRange[hotIndex + 1] * 0.1);
+
+    // The cold brown dwarf's red channel is untouched by the wavelength window.
+    assert.equal(coldRange[coldIndex], fullRange[coldIndex]);
+    assert.ok(coldRange[coldIndex] > 240);
+  }
+});
+
+test('ISS-11: blink, subtract and coadd combine cached epochs and flag bits tint the frame', () => {
+  const passA = makeGaussianEpochPlanes([{ x: 60, y: 60, peak: 7.0 }], 0.005);
+  const passB = makeGaussianEpochPlanes([{ x: 180, y: 180, peak: 7.0 }], 0.005);
+
+  const blinkA = renderPixelFrame({
+    epochBuffers: [passA, passB],
+    activeEpochIndex: 0,
+    comparisonMode: 'blink',
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  const blinkB = renderPixelFrame({
+    epochBuffers: [passA, passB],
+    activeEpochIndex: 1,
+    comparisonMode: 'blink',
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.ok(blinkA[(60 * 256 + 60) * 4] > 0);
+  assert.equal(blinkB[(60 * 256 + 60) * 4], 0);
+
+  // Pass B - Pass A: the source at (180,180) is a positive (warm) residual,
+  // the source at (60,60) is a negative (cool) residual.
+  const positive = renderPixelFrame({
+    epochBuffers: [passA, passB],
+    comparisonMode: 'subtract',
+    passAIndex: 0,
+    passBIndex: 1,
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  const positiveIdx = (180 * 256 + 180) * 4;
+  const negativeIdx = (60 * 256 + 60) * 4;
+  assert.ok(positive[positiveIdx] > positive[positiveIdx + 2]);
+  // The same Pass B - Pass A frame also exposes the source that disappeared
+  // from (60,60) as a cool cyan/blue residual.
+  assert.ok(positive[negativeIdx + 2] > positive[negativeIdx]);
+
+  // Co-add averages both passes, so both sources remain visible.
+  const coadd = renderPixelFrame({
+    epochBuffers: [passA, passB],
+    comparisonMode: 'coadd',
+    coaddIndices: [0, 1],
+    wavelengthRangeUm: [0.75, 5.0],
+  });
+  assert.ok(coadd[(60 * 256 + 60) * 4] > 0);
+  assert.ok(coadd[(180 * 256 + 180) * 4] > 0);
+
+  // Optional flags overlay tints masked pixels magenta/amber.
+  const flags = new Uint8Array(256 * 256);
+  flags[60 * 256 + 60] = 0x01;
+  flags[60 * 256 + 61] = 0x02;
+  const noFlags = renderPixelFrame({
+    epochBuffers: [passA],
+    activeEpochIndex: 0,
+    comparisonMode: 'blink',
+    wavelengthRangeUm: [0.75, 5.0],
+    flagsBuffers: [flags],
+    showFlagsOverlay: false,
+  });
+  const withFlags = renderPixelFrame({
+    epochBuffers: [passA],
+    activeEpochIndex: 0,
+    comparisonMode: 'blink',
+    wavelengthRangeUm: [0.75, 5.0],
+    flagsBuffers: [flags],
+    showFlagsOverlay: true,
+  });
+  assert.notDeepEqual(
+    Array.from(withFlags.slice(60 * 256 * 4, 62 * 256 * 4)),
+    Array.from(noFlags.slice(60 * 256 * 4, 62 * 256 * 4)),
+  );
+});
+
+test('ISS-11: rendering a 256x256 RGBA frame completes in <5 ms', () => {
+  const passA = makeGaussianEpochPlanes([
+    { x: 64, y: 64, peak: 8.0 },
+    { x: 190, y: 120, peak: 5.0 },
+  ]);
+  const passB = makeGaussianEpochPlanes([
+    { x: 74, y: 70, peak: 8.0 },
+    { x: 190, y: 120, peak: 5.0 },
+  ]);
+  const params = {
+    epochBuffers: [passA, passB],
+    comparisonMode: 'coadd',
+    coaddIndices: [0, 1],
+    contrastStretch: 'asinh',
+    wavelengthRangeUm: [0.75, 5.0],
+  };
+
+  // Warm the JIT so the measurement reflects steady-state per-frame cost.
+  for (let i = 0; i < 30; i += 1) {
+    renderPixelFrame(params);
+  }
+  const iterations = 50;
+  const startedAt = performance.now();
+  let last;
+  for (let i = 0; i < iterations; i += 1) {
+    last = renderPixelFrame(params);
+  }
+  const averageMs = (performance.now() - startedAt) / iterations;
+  assert.equal(last.length, 256 * 256 * 4);
+  assert.ok(averageMs < 5.0, `Expected <5 ms per frame, measured ${averageMs.toFixed(2)} ms`);
+});
+
+test('ISS-11: contrast stretches are monotonic and clamped to [0, 1]', () => {
+  for (const stretch of ['asinh', 'linear', 'zscale']) {
+    assert.equal(applyContrastStretch(-3, stretch), 0);
+    assert.equal(applyContrastStretch(1e6, stretch), 1);
+    let previous = -1;
+    for (let value = 0; value <= 12; value += 0.25) {
+      const stretched = applyContrastStretch(value, stretch);
+      assert.ok(stretched >= 0 && stretched <= 1);
+      assert.ok(stretched >= previous);
+      previous = stretched;
+    }
+  }
 });
 
 test('Click-to-Track detects bright body on origin frame and tracks both forward and backward across epochs', () => {

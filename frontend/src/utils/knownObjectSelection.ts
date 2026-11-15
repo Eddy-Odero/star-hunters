@@ -5,17 +5,11 @@
  * tested with `node --test` and reused identically by the UI and SkyExplorerContext.
  */
 
-import {
-  computeDetectorWeights,
-  GRID_HEIGHT,
-  GRID_WIDTH,
-  PIXELS_PER_PLANE,
-  type CatalogSourceType,
-  type CelestialObjectClass,
-  type ComparisonMode,
-  type ContrastStretch,
-  type GlobalKnownObjectEntry,
-  type KnownCelestialObject,
+import type {
+  CatalogSourceType,
+  CelestialObjectClass,
+  GlobalKnownObjectEntry,
+  KnownCelestialObject,
 } from '../types/contracts.ts';
 
 export interface WavelengthPreset {
@@ -260,130 +254,14 @@ export function fuzzySearchKnownObjects<T extends KnownCelestialObject | GlobalK
   return scored.map((s) => s.item);
 }
 
-function applyStretch(val: number, stretch: ContrastStretch): number {
-  const clamped = Math.max(0, val);
-  if (stretch === 'linear') {
-    return Math.min(1, clamped / 8.0);
-  }
-  if (stretch === 'zscale') {
-    return Math.min(1, Math.asinh(clamped * 6.0) / Math.asinh(18.0));
-  }
-  return Math.min(1, Math.asinh(clamped * 2.5) / Math.asinh(22.0));
-}
-
-/**
- * Render SPHEREx 6-detector `(256x256)` multi-epoch Float32 buffers into false-color RGBA bytes.
- * Supports wavelength "Dim & Pop" weights, `blink` / `subtract` / `coadd` modes, and stretch modes.
- */
-export function renderEpochBuffersToRgba(params: {
-  epochBuffers: ReadonlyArray<ReadonlyArray<Float32Array>> | null;
-  flagsBuffers?: ReadonlyArray<Uint8Array> | null;
-  activeEpochIndex: number;
-  comparisonMode: ComparisonMode;
-  contrastStretch: ContrastStretch;
-  wavelengthRangeUm: [number, number];
-}): Uint8ClampedArray {
-  const out = new Uint8ClampedArray(GRID_WIDTH * GRID_HEIGHT * 4);
-  const {
-    epochBuffers,
-    flagsBuffers,
-    activeEpochIndex,
-    comparisonMode,
-    contrastStretch,
-    wavelengthRangeUm,
-  } = params;
-
-  if (!epochBuffers || epochBuffers.length === 0) {
-    // Clean dark observatory backdrop when awaiting frames
-    for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-      const idx = i * 4;
-      out[idx] = 8;
-      out[idx + 1] = 12;
-      out[idx + 2] = 24;
-      out[idx + 3] = 255;
-    }
-    return out;
-  }
-
-  const weights = computeDetectorWeights(wavelengthRangeUm);
-  const activeIdx = Math.max(0, Math.min(epochBuffers.length - 1, activeEpochIndex));
-  const activeDetectors = epochBuffers[activeIdx];
-  const refDetectors =
-    epochBuffers.length >= 2 ? epochBuffers[activeIdx === 0 ? 1 : 0] : activeDetectors;
-  const activeFlags = flagsBuffers?.[activeIdx];
-
-  const redNorm = weights[4] + weights[5] || 1e-6;
-  const greenNorm = weights[2] + weights[3] || 1e-6;
-  const blueNorm = weights[0] + weights[1] || 1e-6;
-  const totalWeight = weights.reduce((acc, w) => acc + w, 0) || 1;
-
-  for (let i = 0; i < PIXELS_PER_PLANE; i += 1) {
-    const outIdx = i * 4;
-    if (comparisonMode === 'subtract' && epochBuffers.length >= 2) {
-      let fCurr = 0;
-      let fRef = 0;
-      for (let d = 0; d < 6; d += 1) {
-        fCurr += weights[d] * (activeDetectors[d]?.[i] ?? 0);
-        fRef += weights[d] * (refDetectors[d]?.[i] ?? 0);
-      }
-      const diff = (fCurr - fRef) / totalWeight;
-      if (diff >= 0) {
-        const s = applyStretch(diff, contrastStretch);
-        out[outIdx] = Math.round(10 + s * 100);
-        out[outIdx + 1] = Math.round(14 + s * 225);
-        out[outIdx + 2] = Math.round(28 + s * 227);
-      } else {
-        const s = applyStretch(-diff, contrastStretch);
-        out[outIdx] = Math.round(10 + s * 240);
-        out[outIdx + 1] = Math.round(14 + s * 80);
-        out[outIdx + 2] = Math.round(28 + s * 60);
-      }
-    } else if (comparisonMode === 'coadd' && epochBuffers.length >= 2) {
-      let rSum = 0;
-      let gSum = 0;
-      let bSum = 0;
-      const nEp = epochBuffers.length;
-      for (let e = 0; e < nEp; e += 1) {
-        const ep = epochBuffers[e];
-        bSum += weights[0] * (ep[0]?.[i] ?? 0) + weights[1] * (ep[1]?.[i] ?? 0);
-        gSum += weights[2] * (ep[2]?.[i] ?? 0) + weights[3] * (ep[3]?.[i] ?? 0);
-        rSum += weights[4] * (ep[4]?.[i] ?? 0) + weights[5] * (ep[5]?.[i] ?? 0);
-      }
-      const rVal = applyStretch(rSum / (nEp * redNorm), contrastStretch);
-      const gVal = applyStretch(gSum / (nEp * greenNorm), contrastStretch);
-      const bVal = applyStretch(bSum / (nEp * blueNorm), contrastStretch);
-      out[outIdx] = Math.round(8 + rVal * 247);
-      out[outIdx + 1] = Math.round(12 + gVal * 240);
-      out[outIdx + 2] = Math.round(22 + bVal * 233);
-    } else {
-      const bVal = applyStretch(
-        (weights[0] * (activeDetectors[0]?.[i] ?? 0) +
-          weights[1] * (activeDetectors[1]?.[i] ?? 0)) /
-          blueNorm,
-        contrastStretch,
-      );
-      const gVal = applyStretch(
-        (weights[2] * (activeDetectors[2]?.[i] ?? 0) +
-          weights[3] * (activeDetectors[3]?.[i] ?? 0)) /
-          greenNorm,
-        contrastStretch,
-      );
-      const rVal = applyStretch(
-        (weights[4] * (activeDetectors[4]?.[i] ?? 0) +
-          weights[5] * (activeDetectors[5]?.[i] ?? 0)) /
-          redNorm,
-        contrastStretch,
-      );
-      out[outIdx] = Math.round(8 + rVal * 247);
-      out[outIdx + 1] = Math.round(12 + gVal * 240);
-      out[outIdx + 2] = Math.round(22 + bVal * 233);
-    }
-
-    if (activeFlags && (activeFlags[i] ?? 0) > 0) {
-      out[outIdx] = Math.min(255, out[outIdx] + 45);
-      out[outIdx + 2] = Math.min(255, out[outIdx + 2] + 65);
-    }
-    out[outIdx + 3] = 255;
-  }
-  return out;
-}
+// ---------------------------------------------------------------------------
+// Pixel rendering lives in the dedicated 60 FPS engine (ISS-11). Re-exported
+// here for backwards compatibility with existing viewport imports.
+// ---------------------------------------------------------------------------
+export {
+  applyContrastStretch,
+  renderEpochBuffersToImageData,
+  renderEpochBuffersToRgba,
+  renderPixelFrame,
+} from './pixelEngine.ts';
+export type { PixelEngineRenderParams } from './pixelEngine.ts';
