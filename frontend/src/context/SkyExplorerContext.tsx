@@ -17,8 +17,10 @@ import {
   type ClickDiagnosticInfo,
   type GlobalKnownObjectEntry,
   type KnownCelestialObject,
+  type MissionName,
   type SkyExplorerContextValue,
   type SkyPatchManifest,
+  type SkyViewportFrustum,
   type SpectrumPayload,
   type TracedObjectSummary,
   type ViewportRenderSettings,
@@ -34,6 +36,8 @@ import {
   selectAllObjectIds,
   toggleObjectId,
 } from '../utils/knownObjectSelection';
+import { BENCHMARK_TARGET_OPTIONS } from '../utils/observatoryMath';
+import { useOptionalNotifications } from './NotificationContext';
 
 const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
   mode: 'blink',
@@ -53,15 +57,36 @@ const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
   panY: 0.0,
 };
 
+const ALL_MISSIONS: MissionName[] = ['SPHEREx', 'WISE', 'NEOSSat'];
+
 const SkyExplorerContext = createContext<SkyExplorerContextValue | null>(null);
 
 export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const notifications = useOptionalNotifications();
+
   const [activePresetSlug, setActivePresetSlug] = useState<string | null>('wise_0855');
-  const [coordinates, setCoordinates] = useState<{ ra: number; dec: number; fovArcmin: number }>({
+  const [coordinates, setCoordinates] = useState<{
+    ra: number;
+    dec: number;
+    fovArcmin: number;
+  }>({
     ra: 133.7951,
     dec: -7.2451,
     fovArcmin: 5.0,
   });
+  const [skyFrustum, setSkyFrustum] = useState<SkyViewportFrustum>({
+    ra: 133.7951,
+    dec: -7.2451,
+    fovDeg: 70,
+    aspect: 1.4,
+  });
+  const [globeFocusRequest, setGlobeFocusRequest] = useState<{
+    ra: number;
+    dec: number;
+    fovDeg: number;
+    seq: number;
+  } | null>(null);
+
   const [manifest, setManifest] = useState<SkyPatchManifest | null>(null);
   const [epochBuffers, setEpochBuffers] = useState<Float32Array[][] | null>(null);
   const [flagsBuffers, setFlagsBuffers] = useState<Uint8Array[] | null>(null);
@@ -70,6 +95,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   });
   const [renderSettings, setRenderSettings] =
     useState<ViewportRenderSettings>(INITIAL_RENDER_SETTINGS);
+  const [activeMissions, setActiveMissions] = useState<MissionName[]>(ALL_MISSIONS);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLooping, setIsLooping] = useState<boolean>(false); // MUST default to false
   const [fps, setFps] = useState<number>(2);
@@ -81,6 +107,9 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [globalKnownObjects, setGlobalKnownObjects] = useState<GlobalKnownObjectEntry[]>([]);
   const [stageAKnownObjects, setStageAKnownObjects] = useState<KnownCelestialObject[] | null>(null);
 
+  const [isBlinkerModalOpen, setIsBlinkerModalOpen] = useState<boolean>(false);
+  const [isSpectraModalOpen, setIsSpectraModalOpen] = useState<boolean>(false);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingFocusObjectIdRef = useRef<string | null>(null);
 
@@ -89,7 +118,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [stageAKnownObjects, manifest],
   );
 
-  // Randomly assign a distinct highlighter color from the 20-color palette to each object in the patch
+  // Assign distinct highlighter colors from the palette for every object in the active patch
   const objectHighlighterColors: Record<string, string> = useMemo(() => {
     if (knownObjects.length === 0) return {};
     const palette = pickDistinctHighlighterColors(knownObjects.length);
@@ -100,38 +129,81 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return map;
   }, [knownObjects]);
 
-  // Aggressively load and cache the global known celestial objects index on mount
+  // Pre-emptively wake up backend and warm global catalog index on mount
   useEffect(() => {
     let cancelled = false;
-    const loadGlobalIndex = async () => {
+
+    const wakeHealthAndGlobalCatalog = async () => {
+      // Wake scale-to-zero Fly.io backend quietly
+      fetch('/health').catch(() => undefined);
+
       try {
         const res = await fetch('/presets/global_known_objects.json');
         if (res.ok) {
-          const data = (await res.json()) as GlobalKnownObjectEntry[];
-          if (!cancelled && Array.isArray(data)) {
-            setGlobalKnownObjects(data);
+          const payload = (await res.json()) as GlobalKnownObjectEntry[];
+          if (!cancelled && Array.isArray(payload) && payload.length > 0) {
+            setGlobalKnownObjects(payload);
             return;
           }
         }
       } catch {
-        // Fall back to API endpoint if static bundle not served
+        // Fallback below
       }
+
       try {
         const apiRes = await fetch('/api/v1/catalogs/search?limit=200');
         if (apiRes.ok) {
-          const payload = (await apiRes.json()) as { results?: GlobalKnownObjectEntry[] };
-          if (!cancelled && Array.isArray(payload.results)) {
-            setGlobalKnownObjects(payload.results);
+          const apiData = (await apiRes.json()) as { results?: GlobalKnownObjectEntry[] };
+          if (!cancelled && Array.isArray(apiData.results)) {
+            setGlobalKnownObjects(apiData.results);
           }
         }
       } catch {
-        // Ignore offline fallback errors in unit tests
+        // Ignore offline startup failures
       }
     };
-    void loadGlobalIndex();
+
+    void wakeHealthAndGlobalCatalog();
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Pre-fetch the 5 mandatory benchmark targets + Comet 3I/ATLAS sequentially behind curtain
+  useEffect(() => {
+    let cancelled = false;
+    const warmupController = new AbortController();
+
+    const prewarmBenchmarks = async () => {
+      for (const target of BENCHMARK_TARGET_OPTIONS) {
+        if (cancelled) return;
+        try {
+          await loadPresetPatchFlow(target.slug, {
+            cache: defaultClientPatchCache,
+            signal: warmupController.signal,
+            onStageChange: () => undefined,
+            onReady: () => undefined,
+          });
+        } catch {
+          // Warmup skips individual failures silently so user navigation stays unaffected
+        }
+      }
+    };
+
+    void prewarmBenchmarks();
+    return () => {
+      cancelled = true;
+      warmupController.abort();
+    };
+  }, []);
+
+  const requestGlobeFocus = useCallback((ra: number, dec: number, fovDeg = 2.0) => {
+    setGlobeFocusRequest((prev) => ({
+      ra,
+      dec,
+      fovDeg,
+      seq: (prev?.seq ?? 0) + 1,
+    }));
   }, []);
 
   const updateRenderSettings = useCallback((partial: Partial<ViewportRenderSettings>) => {
@@ -146,6 +218,48 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       };
     });
   }, []);
+
+  // Warn via top-center Frame 32 alert if Subtract mode mixes distinct missions
+  useEffect(() => {
+    if (!isBlinkerModalOpen || !manifest || renderSettings.mode !== 'subtract') {
+      return;
+    }
+    const epochA = manifest.epochs[renderSettings.passAIndex];
+    const epochB = manifest.epochs[renderSettings.passBIndex];
+    if (epochA && epochB && epochA.mission !== epochB.mission) {
+      notifications?.pushWarning({
+        id: 'cross-mission-subtract',
+        title: `Cross-mission subtraction (${epochA.mission} vs ${epochB.mission})`,
+        detail: 'Subtraction requires two calibrated passes from the same mission instrument.',
+        level: 'warning',
+      });
+    }
+  }, [
+    isBlinkerModalOpen,
+    manifest,
+    notifications,
+    renderSettings.mode,
+    renderSettings.passAIndex,
+    renderSettings.passBIndex,
+  ]);
+
+  const toggleMissionFilter = useCallback(
+    (mission: MissionName) => {
+      setActiveMissions((prev) => {
+        const exists = prev.includes(mission);
+        if (exists && prev.length <= 1) {
+          notifications?.pushWarning({
+            id: 'mission-filter-empty',
+            title: 'At least one mission source must stay enabled',
+            level: 'warning',
+          });
+          return prev;
+        }
+        return exists ? prev.filter((m) => m !== mission) : [...prev, mission];
+      });
+    },
+    [notifications],
+  );
 
   const setViewportZoomPan = useCallback((zoom: number, panX: number, panY: number) => {
     const clamped = clampViewportPanZoom(zoom, panX, panY);
@@ -204,65 +318,98 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
   }, []);
 
+  const untrackObjectById = useCallback((objectId: string) => {
+    setTrackedTargets((prev) => {
+      const next = prev.filter((t) => t.matchedObjectId !== objectId);
+      setSelectedObject((curr) =>
+        curr?.matchedObjectId === objectId ? (next[next.length - 1] ?? null) : curr,
+      );
+      return next;
+    });
+  }, []);
+
   const clearTrackedTargets = useCallback(() => {
     setTrackedTargets([]);
     setSelectedObject(null);
     setLastClickDiagnostic(null);
   }, []);
 
-  // Non-looping playback timer
+  // Mission-aware non-looping playback timer
+  const filteredEpochIndices = useMemo(() => {
+    if (!manifest) return [];
+    const indices: number[] = [];
+    manifest.epochs.forEach((ep, idx) => {
+      if (activeMissions.includes(ep.mission)) {
+        indices.push(idx);
+      }
+    });
+    return indices.length > 0 ? indices : manifest.epochs.map((_, idx) => idx);
+  }, [manifest, activeMissions]);
+
   useEffect(() => {
-    if (!isPlaying || !manifest || manifest.epochs.length <= 1) {
+    if (!isPlaying || !manifest || filteredEpochIndices.length <= 1) {
       return undefined;
     }
     const intervalMs = Math.max(100, Math.round(1000 / Math.max(0.5, fps)));
     const timer = window.setInterval(() => {
       setRenderSettings((prev) => {
-        const lastIdx = manifest.epochs.length - 1;
-        if (prev.activeEpochIndex < lastIdx) {
-          return { ...prev, activeEpochIndex: prev.activeEpochIndex + 1 };
+        const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
+        if (pos >= 0 && pos < filteredEpochIndices.length - 1) {
+          return { ...prev, activeEpochIndex: filteredEpochIndices[pos + 1] };
+        }
+        if (pos === -1) {
+          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
         }
         if (isLooping) {
-          return { ...prev, activeEpochIndex: 0 };
+          return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
         }
         setIsPlaying(false);
         return prev;
       });
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [isPlaying, isLooping, fps, manifest]);
+  }, [isPlaying, isLooping, fps, manifest, filteredEpochIndices]);
 
   const play = useCallback(() => {
+    if (filteredEpochIndices.length === 0) return;
     setRenderSettings((prev) => {
-      const total = manifest?.epochs.length ?? 0;
-      if (total > 1 && prev.activeEpochIndex >= total - 1) {
-        return { ...prev, activeEpochIndex: 0 };
+      const lastValid = filteredEpochIndices[filteredEpochIndices.length - 1];
+      if (
+        !filteredEpochIndices.includes(prev.activeEpochIndex) ||
+        prev.activeEpochIndex === lastValid
+      ) {
+        return { ...prev, activeEpochIndex: filteredEpochIndices[0] };
       }
       return prev;
     });
     setIsPlaying(true);
-  }, [manifest]);
+  }, [filteredEpochIndices]);
 
   const pause = useCallback(() => setIsPlaying(false), []);
 
   const stepForward = useCallback(() => {
     setIsPlaying(false);
+    if (filteredEpochIndices.length === 0) return;
     setRenderSettings((prev) => {
-      const total = manifest?.epochs.length ?? 1;
-      return {
-        ...prev,
-        activeEpochIndex: Math.min(total - 1, prev.activeEpochIndex + 1),
-      };
+      const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
+      const nextIdx =
+        pos < 0
+          ? filteredEpochIndices[0]
+          : filteredEpochIndices[Math.min(filteredEpochIndices.length - 1, pos + 1)];
+      return { ...prev, activeEpochIndex: nextIdx };
     });
-  }, [manifest]);
+  }, [filteredEpochIndices]);
 
   const stepBackward = useCallback(() => {
     setIsPlaying(false);
-    setRenderSettings((prev) => ({
-      ...prev,
-      activeEpochIndex: Math.max(0, prev.activeEpochIndex - 1),
-    }));
-  }, []);
+    if (filteredEpochIndices.length === 0) return;
+    setRenderSettings((prev) => {
+      const pos = filteredEpochIndices.indexOf(prev.activeEpochIndex);
+      const prevIdx =
+        pos < 0 ? filteredEpochIndices[0] : filteredEpochIndices[Math.max(0, pos - 1)];
+      return { ...prev, activeEpochIndex: prevIdx };
+    });
+  }, [filteredEpochIndices]);
 
   const toggleLoop = useCallback(() => setIsLooping((prev) => !prev), []);
 
@@ -283,6 +430,8 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setRenderSettings((prev) => ({
         ...prev,
         activeEpochIndex: 0,
+        passAIndex: 0,
+        passBIndex: Math.max(0, result.manifest.epochs.length - 1),
         zoom: 1.0,
         panX: 0.0,
         panY: 0.0,
@@ -294,8 +443,9 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setTrackedTargets([]);
       setLastClickDiagnostic(null);
       setLoadingState({ stage: 'ready', fromClientCache: result.fromClientCache });
+      notifications?.finishAsyncTask('sky-patch-load');
     },
-    [],
+    [notifications],
   );
 
   const loadPresetBundle = useCallback(
@@ -304,6 +454,10 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
+      notifications?.startAsyncTask(
+        'sky-patch-load',
+        `Loading ${slug.replace(/_/g, ' ')} patch...`,
+      );
 
       try {
         await loadPresetPatchFlow(slug, {
@@ -313,20 +467,26 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           onReady: (result) => applyLoadedPatch(result, true),
         });
       } catch (err) {
+        notifications?.finishAsyncTask('sky-patch-load');
         if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
-        setLoadingState({
-          stage: 'error',
-          message: err instanceof Error ? err.message : 'Unknown error loading preset',
+        const msg = err instanceof Error ? err.message : 'Unknown error loading preset';
+        setLoadingState({ stage: 'error', message: msg });
+        notifications?.pushWarning({
+          id: 'patch-load-error',
+          title: 'Failed to load preset patch',
+          detail: msg,
+          level: 'error',
         });
       }
     },
-    [applyLoadedPatch],
+    [applyLoadedPatch, notifications],
   );
 
   const selectPreset = useCallback(
     (slug: string) => {
       setIsPlaying(false);
       setActivePresetSlug(slug);
+      setIsSpectraModalOpen(false);
       void loadPresetBundle(slug);
     },
     [loadPresetBundle],
@@ -338,6 +498,10 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
+      notifications?.startAsyncTask(
+        'sky-patch-load',
+        `Streaming cutouts at ${ra.toFixed(2)}°, ${dec >= 0 ? '+' : ''}${dec.toFixed(2)}°...`,
+      );
 
       try {
         await loadLiveCoordinatesFlow(ra, dec, fovArcmin, {
@@ -359,130 +523,233 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           onReady: (result) => applyLoadedPatch(result, false),
         });
       } catch (err) {
+        notifications?.finishAsyncTask('sky-patch-load');
         if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
-        setLoadingState({
-          stage: 'error',
-          message: err instanceof Error ? err.message : 'Unknown error loading sky patch',
+        const msg = err instanceof Error ? err.message : 'Unknown error loading sky patch';
+        setLoadingState({ stage: 'error', message: msg });
+        notifications?.pushWarning({
+          id: 'patch-load-error',
+          title: 'Sky patch stream interrupted',
+          detail: msg,
+          level: 'error',
         });
       }
     },
-    [applyLoadedPatch],
+    [applyLoadedPatch, notifications],
   );
 
   const navigateToCoordinates = useCallback(
-    (ra: number, dec: number, fovArcmin: number = 5.0) => {
+    (ra: number, dec: number, fovArcmin = 5.0) => {
       setIsPlaying(false);
       setActivePresetSlug(null);
+      setIsSpectraModalOpen(false);
       setCoordinates({ ra, dec, fovArcmin });
       void loadLiveCoordinates(ra, dec, fovArcmin);
     },
     [loadLiveCoordinates],
   );
 
-  const inspectPixelOrCoord = useCallback(
-    (x: number, y: number, originEpochIndex?: number) => {
-      if (!manifest || !epochBuffers || epochBuffers.length === 0) return;
-      const originIdx = originEpochIndex ?? renderSettings.activeEpochIndex;
-      setTrackedTargets((prevTargets) => {
-        const result = detectAndTrackBodiesAtClick({
-          clickX: x,
-          clickY: y,
-          originEpochIndex: originIdx,
-          epochBuffers,
-          manifest,
-          wavelengthRangeUm: renderSettings.wavelengthRangeUm,
-          colorIndexOffset: prevTargets.length,
-        });
+  const openBlinkerModal = useCallback(
+    (target?: string | { ra: number; dec: number; fovArcmin?: number }) => {
+      setIsSpectraModalOpen(false);
+      if (typeof target === 'string') {
+        selectPreset(target);
+      } else if (target && typeof target === 'object') {
+        navigateToCoordinates(target.ra, target.dec, target.fovArcmin ?? 5.0);
+      }
+      setIsBlinkerModalOpen(true);
+    },
+    [navigateToCoordinates, selectPreset],
+  );
 
-        setLastClickDiagnostic({
-          clickX: x,
-          clickY: y,
-          epochIndex: originIdx,
-          status: result.status,
-          message: result.message,
-          tracksAdded: result.tracks.length,
-        });
+  const closeBlinkerModal = useCallback(() => {
+    setIsPlaying(false);
+    setIsSpectraModalOpen(false);
+    setIsBlinkerModalOpen(false);
+    // Pull back above the 0.5° patch-entry FoV threshold to avoid immediate re-triggering
+    if (skyFrustum.fovDeg < 0.65) {
+      requestGlobeFocus(coordinates.ra, coordinates.dec, 1.5);
+    }
+  }, [coordinates.dec, coordinates.ra, requestGlobeFocus, skyFrustum.fovDeg]);
 
-        if (result.status === 'no_body_found' || result.tracks.length === 0) {
-          return prevTargets;
+  const openSelectedSpectrum = useCallback(
+    async (coords?: { ra: number; dec: number; label?: string }) => {
+      setIsSpectraModalOpen(true);
+      const targetRa = coords?.ra ?? selectedObject?.ra ?? coordinates.ra;
+      const targetDec = coords?.dec ?? selectedObject?.dec ?? coordinates.dec;
+
+      // Reuse already-loaded matching spectrum when clicking near patch center
+      if (
+        activeSpectrum &&
+        Math.abs(activeSpectrum.ra - targetRa) < 0.002 &&
+        Math.abs(activeSpectrum.dec - targetDec) < 0.002
+      ) {
+        return;
+      }
+
+      setIsSpectrumLoading(true);
+      notifications?.startAsyncTask('spectrum-fetch', 'Fetching 102-band SPHEREx spectrum...');
+      try {
+        const params = new URLSearchParams({
+          ra: targetRa.toFixed(5),
+          dec: targetDec.toFixed(5),
+        });
+        if (coords?.label ?? selectedObject?.matchedLabel) {
+          params.set('label', coords?.label ?? selectedObject?.matchedLabel ?? '');
         }
-
-        const matchedKnownIdsToAutoCheck: string[] = [];
-        const enrichedTracks = result.tracks.map((track) => {
-          if (!track.matchedObjectId) return track;
-          matchedKnownIdsToAutoCheck.push(track.matchedObjectId);
-          const matchedObj = knownObjects.find((o) => o.object_id === track.matchedObjectId);
-          return {
-            ...track,
-            matchedLabel: matchedObj?.label ?? track.matchedLabel,
-            matchedCatalog: matchedObj?.catalog ?? track.matchedCatalog,
-          };
-        });
-
-        // If the user clicked a known celestial object that wasn't checked in the Known Objects list,
-        // automatically turn on its tracking from the list instead of giving it an arbitrary label.
-        if (matchedKnownIdsToAutoCheck.length > 0) {
-          setRenderSettings((prev) => {
-            const nextChecked = new Set(prev.checkedObjectIds);
-            let changed = false;
-            for (const id of matchedKnownIdsToAutoCheck) {
-              if (!nextChecked.has(id)) {
-                nextChecked.add(id);
-                changed = true;
-              }
-            }
-            return changed ? { ...prev, checkedObjectIds: Array.from(nextChecked) } : prev;
+        const res = await fetch(`/api/v1/spectrum?${params.toString()}`);
+        if (res.ok) {
+          const payload = (await res.json()) as SpectrumPayload;
+          if (payload && Array.isArray(payload.channels) && payload.channels.length > 0) {
+            setActiveSpectrum(payload);
+            return;
+          }
+        }
+        throw new Error(`Spectrum endpoint returned status ${res.status}`);
+      } catch (err) {
+        if (!activeSpectrum) {
+          notifications?.pushWarning({
+            id: 'spectrum-error',
+            title: '102-band spectrum unavailable',
+            detail:
+              err instanceof Error
+                ? err.message
+                : 'Backend spectrum extractor could not be reached.',
+            level: 'warning',
           });
         }
-
-        // Accumulate multi-spot targets with distinct tracking-square colors.
-        // Re-clicking an existing group/object replaces its old branches.
-        const incomingGroupId = enrichedTracks[0].groupId;
-        const nextTargets = mergeTrackedTargets(prevTargets, enrichedTracks, {
-          checkedObjectIds: renderSettings.checkedObjectIds,
-          objectHighlighterColors,
-        });
-        const selectedTrack =
-          nextTargets.find((t) => t.groupId === incomingGroupId && t.branchIndex === 0) ??
-          nextTargets[nextTargets.length - 1] ??
-          null;
-        setSelectedObject(selectedTrack);
+      } finally {
         setIsSpectrumLoading(false);
-        return nextTargets;
+        notifications?.finishAsyncTask('spectrum-fetch');
+      }
+    },
+    [activeSpectrum, coordinates.dec, coordinates.ra, notifications, selectedObject],
+  );
+
+  const closeSpectraModal = useCallback(() => {
+    setIsSpectraModalOpen(false);
+  }, []);
+
+  const inspectPixelOrCoord = useCallback(
+    (x: number, y: number, originEpochIndex?: number) => {
+      if (!epochBuffers || !manifest || epochBuffers.length === 0) return;
+      const originEpoch = originEpochIndex ?? renderSettings.activeEpochIndex;
+
+      // Second-click untrack: hitting an already-tracked target removes its Square frame
+      const hitExisting = trackedTargets.find((t) => {
+        const wp = t.waypoints[originEpoch] ??
+          t.waypoints[t.originEpochIndex] ?? {
+            x: t.originCentroidX,
+            y: t.originCentroidY,
+          };
+        return Math.hypot(wp.x - x, wp.y - y) <= 10;
+      });
+      if (hitExisting) {
+        removeTrackedTarget(hitExisting.trackId);
+        setLastClickDiagnostic(null);
+        return;
+      }
+
+      const result = detectAndTrackBodiesAtClick({
+        clickX: x,
+        clickY: y,
+        originEpochIndex: originEpoch,
+        epochBuffers,
+        manifest,
+        wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+      });
+
+      setLastClickDiagnostic({
+        clickX: x,
+        clickY: y,
+        epochIndex: originEpoch,
+        status: result.status,
+        message: result.message,
+        tracksAdded: result.tracks.length,
+      });
+
+      if (result.status === 'no_body_found' || result.tracks.length === 0) {
+        notifications?.pushWarning({
+          id: 'no-body-clicked',
+          title: 'No source detected at cursor',
+          detail: result.message,
+          level: 'warning',
+        });
+        return;
+      }
+
+      // Preserve the known object's assigned marker color when converting in-place to Square
+      const colorMatchedTracks = result.tracks.map((track) => {
+        if (track.matchedObjectId && objectHighlighterColors[track.matchedObjectId]) {
+          return { ...track, color: objectHighlighterColors[track.matchedObjectId] };
+        }
+        return track;
+      });
+
+      setTrackedTargets((prev) => {
+        const merged = mergeTrackedTargets(prev, colorMatchedTracks);
+        const primary =
+          merged.find((t) => t.groupId === colorMatchedTracks[0].groupId) ??
+          merged[merged.length - 1];
+        if (primary) {
+          setSelectedObject(primary);
+        }
+        return merged;
       });
     },
     [
-      manifest,
       epochBuffers,
-      knownObjects,
+      manifest,
+      notifications,
       objectHighlighterColors,
+      removeTrackedTarget,
       renderSettings.activeEpochIndex,
-      renderSettings.checkedObjectIds,
       renderSettings.wavelengthRangeUm,
+      trackedTargets,
     ],
   );
 
   const focusAndTrackKnownObject = useCallback(
     (obj: KnownCelestialObject | GlobalKnownObjectEntry, targetSlug?: string) => {
       const resolvedSlug = targetSlug ?? (obj as GlobalKnownObjectEntry).target_slug;
-      if (resolvedSlug && resolvedSlug !== activePresetSlug) {
-        pendingFocusObjectIdRef.current = obj.object_id;
-        selectPreset(resolvedSlug);
+      const validPresetSlug =
+        resolvedSlug && !resolvedSlug.startsWith('all_sky') ? resolvedSlug : null;
+
+      if (isBlinkerModalOpen) {
+        if (validPresetSlug && validPresetSlug !== activePresetSlug) {
+          pendingFocusObjectIdRef.current = obj.object_id;
+          selectPreset(validPresetSlug);
+          return;
+        }
+        setRenderSettings((prev) => ({
+          ...prev,
+          checkedObjectIds: prev.checkedObjectIds.includes(obj.object_id)
+            ? prev.checkedObjectIds
+            : [...prev.checkedObjectIds, obj.object_id],
+        }));
+
+        const epIdx = renderSettings.activeEpochIndex;
+        const epPos = obj.epoch_positions?.[Math.min(epIdx, obj.epoch_positions.length - 1)] ?? obj;
+        inspectPixelOrCoord(epPos.x, epPos.y, epIdx);
         return;
       }
 
-      setRenderSettings((prev) => ({
-        ...prev,
-        checkedObjectIds: prev.checkedObjectIds.includes(obj.object_id)
-          ? prev.checkedObjectIds
-          : [...prev.checkedObjectIds, obj.object_id],
-      }));
-
-      const epIdx = renderSettings.activeEpochIndex;
-      const epPos = obj.epoch_positions?.[Math.min(epIdx, obj.epoch_positions.length - 1)] ?? obj;
-      inspectPixelOrCoord(epPos.x, epPos.y, epIdx);
+      // On the 3D globe: fly smoothly to the target coordinates
+      requestGlobeFocus(obj.ra, obj.dec, 2.2);
+      if (validPresetSlug) {
+        selectPreset(validPresetSlug);
+      } else {
+        setCoordinates({ ra: obj.ra, dec: obj.dec, fovArcmin: 5.0 });
+      }
     },
-    [activePresetSlug, selectPreset, renderSettings.activeEpochIndex, inspectPixelOrCoord],
+    [
+      activePresetSlug,
+      inspectPixelOrCoord,
+      isBlinkerModalOpen,
+      renderSettings.activeEpochIndex,
+      requestGlobeFocus,
+      selectPreset,
+    ],
   );
 
   // Fulfill pending focus-and-track request after switching to another showcase preset
@@ -537,6 +804,19 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       selectPreset,
       navigateToCoordinates,
       inspectPixelOrCoord,
+      activeMissions,
+      toggleMissionFilter,
+      skyFrustum,
+      setSkyFrustum,
+      isBlinkerModalOpen,
+      openBlinkerModal,
+      closeBlinkerModal,
+      isSpectraModalOpen,
+      openSelectedSpectrum,
+      closeSpectraModal,
+      untrackObjectById,
+      globeFocusRequest,
+      requestGlobeFocus,
     }),
     [
       activePresetSlug,
@@ -575,6 +855,18 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       selectPreset,
       navigateToCoordinates,
       inspectPixelOrCoord,
+      activeMissions,
+      toggleMissionFilter,
+      skyFrustum,
+      isBlinkerModalOpen,
+      openBlinkerModal,
+      closeBlinkerModal,
+      isSpectraModalOpen,
+      openSelectedSpectrum,
+      closeSpectraModal,
+      untrackObjectById,
+      globeFocusRequest,
+      requestGlobeFocus,
     ],
   );
 

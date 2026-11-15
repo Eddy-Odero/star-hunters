@@ -56,7 +56,22 @@ import {
   replaceUrlState,
   serializeUrlState,
 } from '../src/utils/urlStateSync.ts';
-import { applyContrastStretch, renderPixelFrame } from '../src/utils/pixelEngine.ts';
+import {
+  applyContrastStretch,
+  computeLocalPixelReadout,
+  renderPixelFrame,
+} from '../src/utils/pixelEngine.ts';
+import {
+  angularSeparationDeg,
+  computeMagneticSnap,
+  decodeHygieneFlagMask,
+  getMarkerShapeKind,
+  isObjectInPatchViewBox,
+  isObjectInSkyFrustum,
+  parseSkySearchInput,
+  resolvePositionFromAnchor,
+  sortKnownObjectsCheckedFirst,
+} from '../src/utils/observatoryMath.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PRESETS_DIR = path.resolve(__dirname, '../public/presets');
@@ -1934,5 +1949,122 @@ test('ISS-21: Changing render options, pan/zoom, known object selection, and tra
     assert.equal(httpCalls, 0);
   } finally {
     globalThis.fetch = origFetch;
+  }
+});
+
+test('Redesign math helpers enforce frustum filtering, deferred sorting, magnetic snap, hygiene flags, and 3-shape markers', () => {
+  // Frustum filtering excludes far-hemisphere objects while keeping visible region targets
+  const wiseFrustum = { ra: 133.7951, dec: -7.2451, fovDeg: 65, aspect: 1.4 };
+  assert.equal(isObjectInSkyFrustum(133.8, -7.2, wiseFrustum), true);
+  assert.equal(isObjectInSkyFrustum(313.8, 7.2, wiseFrustum), false);
+  assert.ok(angularSeparationDeg(0, 0, 180, 0) > 179.9);
+
+  // Patch viewBox filtering honors zoom/pan bounds
+  assert.equal(
+    isObjectInPatchViewBox(128, 128, { minX: 96, minY: 96, viewWidth: 64, viewHeight: 64 }),
+    true,
+  );
+  assert.equal(
+    isObjectInPatchViewBox(12, 12, { minX: 96, minY: 96, viewWidth: 64, viewHeight: 64 }),
+    false,
+  );
+
+  // Deferred sort moves checked items to top while preserving relative group order
+  const rows = [{ object_id: 'a' }, { object_id: 'b' }, { object_id: 'c' }, { object_id: 'd' }];
+  assert.deepEqual(
+    sortKnownObjectsCheckedFirst(rows, ['c', 'a']).map((r) => r.object_id),
+    ['a', 'c', 'b', 'd'],
+  );
+
+  // Magnetic snapping clamps safe 16px margins and detects corners within 24px
+  const snapped = computeMagneticSnap(
+    { x: 30, y: 20 },
+    { width: 291, height: 320 },
+    { width: 1440, height: 1024 },
+  );
+  assert.equal(snapped.x, 16);
+  assert.equal(snapped.y, 16);
+  assert.equal(snapped.edgeAnchor, 'top-left');
+
+  const resolvedRight = resolvePositionFromAnchor(
+    { x: 1000, y: 16, edgeAnchor: 'top-right' },
+    { width: 291, height: 320 },
+    { width: 1280, height: 800 },
+  );
+  assert.equal(resolvedRight.x, 1280 - 291 - 16);
+  assert.equal(resolvedRight.y, 16);
+
+  // Hygiene flag mask decoding identifies all contamination bits
+  assert.equal(decodeHygieneFlagMask(0).isFlagged, false);
+  const decodedCrSat = decodeHygieneFlagMask(1 | 2 | 4);
+  assert.equal(decodedCrSat.isFlagged, true);
+  assert.equal(decodedCrSat.severity, 'critical');
+  assert.equal(decodedCrSat.bits.length, 3);
+
+  // Search input parses decimal, HMS/DMS sexagesimal, and object names
+  const decSearch = parseSkySearchInput('133.7951, -7.2451');
+  assert.equal(decSearch.kind, 'coords');
+  if (decSearch.kind === 'coords') {
+    assert.ok(Math.abs(decSearch.ra - 133.7951) < 1e-4);
+    assert.ok(Math.abs(decSearch.dec - -7.2451) < 1e-4);
+  }
+  const sexaSearch = parseSkySearchInput('08:55:10.8 -07:14:42');
+  assert.equal(sexaSearch.kind, 'coords');
+  assert.equal(parseSkySearchInput('Jupiter').kind, 'text');
+
+  // Strictly 3 hollow shapes: square when tracked, diamond for moving Solar System, triangle for star/deep-sky
+  assert.equal(
+    getMarkerShapeKind(
+      { object_class: 'star', object_type: 'star', label: 'Sirius', epoch_positions: [] },
+      false,
+    ),
+    'triangle',
+  );
+  assert.equal(
+    getMarkerShapeKind(
+      {
+        object_class: 'comet',
+        object_type: 'solar_system',
+        label: '3I/ATLAS',
+        epoch_positions: [],
+      },
+      false,
+    ),
+    'diamond',
+  );
+  assert.equal(
+    getMarkerShapeKind(
+      { object_class: 'star', object_type: 'star', label: 'Sirius', epoch_positions: [] },
+      true,
+    ),
+    'square',
+  );
+
+  // Compute local pixel flux + variance + flag readout on real buffers
+  const testPlane = new Float32Array(256 * 256).fill(10);
+  testPlane[128 * 256 + 128] = 46;
+  const epochBufs = [Array.from({ length: 6 }, () => testPlane)];
+  const flagsBuf = new Uint8Array(256 * 256);
+  flagsBuf[128 * 256 + 128] = 2;
+  const readout = computeLocalPixelReadout({
+    epochBuffers: epochBufs,
+    flagsBuffers: [flagsBuf],
+    activeEpochIndex: 0,
+    wavelengthRangeUm: [0.75, 5.0],
+    px: 128,
+    py: 128,
+  });
+  assert.equal(readout.flagByte, 2);
+  assert.ok(Math.abs(readout.flux - 46) < 1e-4);
+  assert.ok(readout.variance > 100);
+
+  // Expanded global_known_objects.json contains planets, moons, comets, asteroids, stars, nebulae, and galaxies
+  const globalCatalog = JSON.parse(
+    fs.readFileSync(path.join(PRESETS_DIR, 'global_known_objects.json'), 'utf8'),
+  );
+  assert.ok(globalCatalog.length >= 620);
+  const classes = new Set(globalCatalog.map((item) => item.object_class || item.object_type));
+  for (const requiredClass of ['planet', 'moon', 'comet', 'asteroid', 'nebula', 'galaxy']) {
+    assert.ok(classes.has(requiredClass), `Missing expanded class ${requiredClass}`);
   }
 });

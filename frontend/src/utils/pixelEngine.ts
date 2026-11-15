@@ -438,3 +438,83 @@ export function renderEpochBuffersToImageData(params: PixelEngineRenderParams): 
 
 /** Number of detector planes expected in a cached epoch. */
 export const PIXEL_ENGINE_DETECTOR_COUNT = NUM_DETECTORS;
+
+export interface LocalPixelReadout {
+  x: number;
+  y: number;
+  flux: number;
+  variance: number;
+  flagByte: number;
+}
+
+/**
+ * Sample wavelength-weighted local flux and 3x3 spatial variance at pixel (px, py)
+ * for hover inspection over the 256x256 SPHEREx scientific plane.
+ */
+export function computeLocalPixelReadout(params: {
+  epochBuffers: Float32Array[][] | null;
+  flagsBuffers?: Uint8Array[] | null;
+  activeEpochIndex?: number;
+  wavelengthRangeUm?: [number, number];
+  px: number;
+  py: number;
+}): LocalPixelReadout {
+  const {
+    epochBuffers,
+    flagsBuffers,
+    activeEpochIndex = 0,
+    wavelengthRangeUm = [0.75, 5.0],
+    px,
+    py,
+  } = params;
+
+  const ix = Math.max(0, Math.min(GRID_WIDTH - 1, Math.floor(px)));
+  const iy = Math.max(0, Math.min(GRID_HEIGHT - 1, Math.floor(py)));
+
+  if (!epochBuffers || epochBuffers.length === 0) {
+    return { x: ix, y: iy, flux: 0, variance: 0, flagByte: 0 };
+  }
+
+  const activeIdx = clampEpochIndex(activeEpochIndex, epochBuffers.length);
+  const planes = epochBuffers[activeIdx];
+  const flags = flagsBuffers?.[activeIdx];
+  const weights = normaliseWeights(wavelengthRangeUm);
+
+  const sampleFluxAt = (sx: number, sy: number): number => {
+    const idx = sy * GRID_WIDTH + sx;
+    let total = 0;
+    let weightSum = 0;
+    for (let d = 0; d < NUM_DETECTORS; d += 1) {
+      const plane = planes[d];
+      if (!plane) continue;
+      const w = weights[d];
+      const v = plane[idx];
+      if (Number.isFinite(v)) {
+        total += w * v;
+        weightSum += w;
+      }
+    }
+    return weightSum > 0 ? total / weightSum : 0;
+  };
+
+  const centerFlux = sampleFluxAt(ix, iy);
+  const neighborhood: number[] = [];
+  for (let dy = -1; dy <= 1; dy += 1) {
+    const sy = Math.max(0, Math.min(GRID_HEIGHT - 1, iy + dy));
+    for (let dx = -1; dx <= 1; dx += 1) {
+      const sx = Math.max(0, Math.min(GRID_WIDTH - 1, ix + dx));
+      neighborhood.push(sampleFluxAt(sx, sy));
+    }
+  }
+  const mean = neighborhood.reduce((acc, v) => acc + v, 0) / neighborhood.length;
+  const variance = neighborhood.reduce((acc, v) => acc + (v - mean) ** 2, 0) / neighborhood.length;
+  const flagByte = flags ? flags[iy * GRID_WIDTH + ix] : 0;
+
+  return {
+    x: ix,
+    y: iy,
+    flux: centerFlux,
+    variance,
+    flagByte,
+  };
+}

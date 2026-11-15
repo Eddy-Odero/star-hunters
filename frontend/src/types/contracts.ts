@@ -7,7 +7,7 @@
 
 import worldCapitalCities from './world_capital_cities.json' with { type: 'json' };
 
-export type MissionName = 'SPHEREx' | 'WISE';
+export type MissionName = 'SPHEREx' | 'WISE' | 'NEOSSat';
 export type BinaryDtype = 'float32' | 'float16';
 export type ComparisonMode = 'blink' | 'subtract' | 'coadd';
 export type ContrastStretch = 'asinh' | 'linear' | 'zscale';
@@ -399,6 +399,13 @@ export interface ClickDiagnosticInfo {
   tracksAdded: number;
 }
 
+export interface SkyViewportFrustum {
+  ra: number;
+  dec: number;
+  fovDeg: number;
+  aspect?: number;
+}
+
 export interface SkyExplorerContextValue {
   // Active sky patch & progressive loading state
   activePresetSlug: string | null;
@@ -452,6 +459,20 @@ export interface SkyExplorerContextValue {
   selectPreset: (slug: string) => void;
   navigateToCoordinates: (ra: number, dec: number, fovArcmin?: number) => void;
   inspectPixelOrCoord: (x: number, y: number, originEpochIndex?: number) => void;
+  // Observatory redesign controls (mission filter, globe frustum, modals, untracking)
+  activeMissions?: MissionName[];
+  toggleMissionFilter?: (mission: MissionName) => void;
+  skyFrustum?: SkyViewportFrustum;
+  setSkyFrustum?: (frustum: SkyViewportFrustum) => void;
+  isBlinkerModalOpen?: boolean;
+  openBlinkerModal?: (target?: string | { ra: number; dec: number; fovArcmin?: number }) => void;
+  closeBlinkerModal?: () => void;
+  isSpectraModalOpen?: boolean;
+  openSelectedSpectrum?: (coords?: { ra: number; dec: number; label?: string }) => Promise<void>;
+  closeSpectraModal?: () => void;
+  untrackObjectById?: (objectId: string) => void;
+  globeFocusRequest?: { ra: number; dec: number; fovDeg: number; seq: number } | null;
+  requestGlobeFocus?: (ra: number, dec: number, fovDeg?: number) => void;
 }
 
 // ---------------------------------------------------------------------------
