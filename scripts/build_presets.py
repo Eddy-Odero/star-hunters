@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -19,7 +19,10 @@ def main() -> int:
         "--fallback-synthetic",
         action="store_true",
         default=True,
-        help="Fallback to deterministic synthetic presets when live NASA IRSA archive is unreachable.",
+        help=(
+            "Fallback to deterministic synthetic presets when live NASA IRSA archive "
+            "is unreachable."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -30,7 +33,10 @@ def main() -> int:
     args = parser.parse_args()
 
     slugs = generate_all_presets(output_root=args.output_dir)
-    print(f"[build_presets] Built and validated {len(slugs)} showcase target bundles: {', '.join(slugs)}")
+    print(
+        f"[build_presets] Built and validated {len(slugs)} showcase target bundles: "
+        f"{', '.join(slugs)}"
+    )
     return 0
 
 

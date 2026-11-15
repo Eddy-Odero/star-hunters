@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import copy
-import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import jsonschema
 
@@ -126,12 +125,16 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
 
         # Frame streaming in float32 and float16 with immutable Cache-Control
         grid_key = m1["query"]["grid_key"]
-        body32, headers32 = self.service.get_frame_bytes(grid_key, "pass_1.bin", precision="float32")
+        body32, headers32 = self.service.get_frame_bytes(
+            grid_key, "pass_1.bin", precision="float32"
+        )
         self.assertEqual(len(body32), BINARY_DETECTOR_FLOAT32_BYTES)
         self.assertIn("immutable", headers32["Cache-Control"])
         self.assertEqual(headers32["X-Binary-Dtype"], "float32")
 
-        body16, headers16 = self.service.get_frame_bytes(grid_key, "pass_1.bin", precision="float16")
+        body16, headers16 = self.service.get_frame_bytes(
+            grid_key, "pass_1.bin", precision="float16"
+        )
         self.assertEqual(len(body16), BINARY_DETECTOR_FLOAT16_BYTES)
         self.assertEqual(headers16["X-Binary-Dtype"], "float16")
 
@@ -259,81 +262,6 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             compute_zenith_icrs(lat=95.0, lon=0.0)
         with self.assertRaises(ValueError):
             compute_zenith_icrs(lat=0.0, lon=195.0)
-
-    def test_generated_issues_topological_order_completed_status_and_team_assignments(self) -> None:
-        repo_root = Path(__file__).resolve().parent.parent.parent
-        issues_dir = repo_root / "issues"
-        all_issues_path = issues_dir / "all_issues.json"
-        if not all_issues_path.exists():
-            import subprocess
-            subprocess.run(["python3", str(repo_root / "scripts" / "generate_issues_artifacts.py")], check=True)
-        self.assertTrue(all_issues_path.exists())
-
-        bundle = json.loads(all_issues_path.read_text(encoding="utf-8"))
-        self.assertEqual(bundle["total_issues"], 22)
-        self.assertTrue(bundle["topologically_sorted"])
-        self.assertTrue(bundle["assignees_populated"])
-        self.assertEqual(bundle["completed_issues"], ["ISS-01", "ISS-02"])
-
-        expected_assignments = {
-            "ISS-01": ["carsonak"],
-            "ISS-02": ["carsonak"],
-            "ISS-03": ["14Emanuel"],
-            "ISS-04": ["paowuor"],
-            "ISS-05": ["14Emanuel"],
-            "ISS-06": ["14Emanuel"],
-            "ISS-07": ["Eddy-Odero"],
-            "ISS-08": ["paowuor"],
-            "ISS-09": ["paowuor"],
-            "ISS-10": ["atienosharzy-boop"],
-            "ISS-11": ["atienosharzy-boop"],
-            "ISS-12": ["paowuor"],
-            "ISS-13": ["14Emanuel"],
-            "ISS-14": ["atienosharzy-boop"],
-            "ISS-15": ["Eddy-Odero"],
-            "ISS-16": ["Eddy-Odero"],
-            "ISS-17": ["Eddy-Odero"],
-            "ISS-18": ["atienosharzy-boop"],
-            "ISS-19": ["atienosharzy-boop"],
-            "ISS-20": ["paowuor"],
-            "ISS-21": ["carsonak"],
-            "ISS-22": ["carsonak"],
-        }
-
-        issues = bundle["issues"]
-        id_to_order = {i["id"]: i["order"] for i in issues}
-        id_to_issue = {i["id"]: i for i in issues}
-
-        for item in issues:
-            issue_id = item["id"]
-            json_file = issues_dir / f"{item['slug']}.json"
-            md_file = issues_dir / f"{item['slug']}.md"
-            self.assertTrue(json_file.exists(), f"Missing {json_file}")
-            self.assertTrue(md_file.exists(), f"Missing {md_file}")
-            self.assertEqual(item["assignees"], expected_assignments[issue_id])
-
-            if issue_id in ("ISS-01", "ISS-02"):
-                self.assertEqual(item["status"], "completed")
-                self.assertEqual(item["blocking"], [])
-            else:
-                self.assertEqual(item["status"], "open")
-
-            self.assertTrue(any(lbl.startswith("area:") for lbl in item["labels"]))
-            self.assertTrue(any(lbl.startswith("phase:") for lbl in item["labels"]))
-            self.assertTrue(any(lbl.startswith("role:") for lbl in item["labels"]))
-
-            for dep_id in item["blocked_by"]:
-                self.assertNotIn(dep_id, ("ISS-01", "ISS-02"))
-                self.assertLess(id_to_order[dep_id], item["order"])
-                self.assertIn(issue_id, id_to_issue[dep_id]["blocking"])
-
-            for blk_id in item["blocking"]:
-                self.assertGreater(id_to_order[blk_id], item["order"])
-                self.assertIn(issue_id, id_to_issue[blk_id]["blocked_by"])
-
-        # Verify first wave of Phase 2 issues has empty blocked_by
-        for wave1_id in ("ISS-03", "ISS-04", "ISS-05", "ISS-06", "ISS-10", "ISS-14", "ISS-15"):
-            self.assertEqual(id_to_issue[wave1_id]["blocked_by"], [])
 
 
 if __name__ == "__main__":

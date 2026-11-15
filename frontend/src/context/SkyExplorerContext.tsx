@@ -143,7 +143,9 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const removeTrackedTarget = useCallback((trackId: string) => {
     setTrackedTargets((prev) => {
       const next = prev.filter((t) => t.trackId !== trackId);
-      setSelectedObject((curr) => (curr?.trackId === trackId ? (next[next.length - 1] ?? null) : curr));
+      setSelectedObject((curr) =>
+        curr?.trackId === trackId ? (next[next.length - 1] ?? null) : curr,
+      );
       return next;
     });
   }, []);

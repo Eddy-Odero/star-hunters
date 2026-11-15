@@ -1,19 +1,22 @@
 """Immutable shared contracts for Star Hunters (Phase 0).
 
-Supports both Pydantic v2 (when installed) and stdlib dataclasses + jsonschema
-so contract validation, unit tests, and preset generators run cleanly in any Python 3.11+ environment.
+Supports both Pydantic v2 (when installed) and stdlib dataclasses + jsonschema so contract
+validation, unit tests, and preset generators run cleanly in any Python 3.11+ environment.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
 import math
 import struct
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal
+
 import jsonschema
 
 try:
-    from pydantic import BaseModel as _PydanticBaseModel, ConfigDict, Field as _PydanticField
+    from pydantic import BaseModel as _PydanticBaseModel
+    from pydantic import ConfigDict
+    from pydantic import Field as _PydanticField
 
     HAS_PYDANTIC = True
 except ImportError:  # pragma: no cover
@@ -37,7 +40,7 @@ BINARY_DETECTOR_FLOAT32_BYTES = TOTAL_DETECTOR_VALUES * 4  # 1,572,864 bytes
 BINARY_DETECTOR_FLOAT16_BYTES = TOTAL_DETECTOR_VALUES * 2  # 786,432 bytes
 BINARY_FLAGS_UINT8_BYTES = PIXELS_PER_PLANE * 1  # 65,536 bytes
 
-DETECTOR_BANDS_UM: Dict[int, Tuple[float, float]] = {
+DETECTOR_BANDS_UM: dict[int, tuple[float, float]] = {
     1: (0.75, 1.10),
     2: (1.10, 1.60),
     3: (1.60, 2.42),
@@ -46,36 +49,78 @@ DETECTOR_BANDS_UM: Dict[int, Tuple[float, float]] = {
     6: (4.40, 5.00),  # WISE W2 (4.6 um) fallback maps here
 }
 
-FLAG_BITS: Dict[str, int] = {
+FLAG_BITS: dict[str, int] = {
     "TRANSIENT_OR_COSMIC_RAY": 1 << 0,  # 1
-    "SATURATED_PIXEL": 1 << 1,          # 2
-    "DEAD_OR_BAD_REFERENCE": 1 << 2,    # 4
-    "STRAY_LIGHT_OR_BORDER": 1 << 3,    # 8
+    "SATURATED_PIXEL": 1 << 1,  # 2
+    "DEAD_OR_BAD_REFERENCE": 1 << 2,  # 4
+    "STRAY_LIGHT_OR_BORDER": 1 << 3,  # 8
 }
 
-DEFAULT_MOLECULAR_FEATURES: List[Dict[str, Any]] = [
+DEFAULT_MOLECULAR_FEATURES: list[dict[str, Any]] = [
     {"molecule": "H2O", "min_um": 2.95, "max_um": 3.30, "label": "Water Ice & Vapor"},
     {"molecule": "CH4", "min_um": 3.20, "max_um": 3.55, "label": "Methane Absorption"},
     {"molecule": "CO2", "min_um": 4.20, "max_um": 4.35, "label": "Carbon Dioxide"},
     {"molecule": "CO", "min_um": 4.55, "max_um": 4.80, "label": "Carbon Monoxide"},
 ]
 
-WORLD_CAPITAL_CITIES: List[Dict[str, Any]] = [
+WORLD_CAPITAL_CITIES: list[dict[str, Any]] = [
     {"slug": "nairobi", "city_name": "Nairobi", "country": "Kenya", "lat": -1.2921, "lon": 36.8219},
     {"slug": "tokyo", "city_name": "Tokyo", "country": "Japan", "lat": 35.6762, "lon": 139.6503},
-    {"slug": "london", "city_name": "London", "country": "United Kingdom", "lat": 51.5074, "lon": -0.1278},
-    {"slug": "washington_dc", "city_name": "Washington, D.C.", "country": "United States", "lat": 38.9072, "lon": -77.0369},
+    {
+        "slug": "london",
+        "city_name": "London",
+        "country": "United Kingdom",
+        "lat": 51.5074,
+        "lon": -0.1278,
+    },
+    {
+        "slug": "washington_dc",
+        "city_name": "Washington, D.C.",
+        "country": "United States",
+        "lat": 38.9072,
+        "lon": -77.0369,
+    },
     {"slug": "cairo", "city_name": "Cairo", "country": "Egypt", "lat": 30.0444, "lon": 31.2357},
-    {"slug": "santiago", "city_name": "Santiago", "country": "Chile", "lat": -33.4489, "lon": -70.6693},
-    {"slug": "canberra", "city_name": "Canberra", "country": "Australia", "lat": -35.2809, "lon": 149.1300},
-    {"slug": "reykjavik", "city_name": "Reykjavik", "country": "Iceland", "lat": 64.1466, "lon": -21.9426},
-    {"slug": "new_delhi", "city_name": "New Delhi", "country": "India", "lat": 28.6139, "lon": 77.2090},
-    {"slug": "brasilia", "city_name": "Brasília", "country": "Brazil", "lat": -15.7975, "lon": -47.8919},
+    {
+        "slug": "santiago",
+        "city_name": "Santiago",
+        "country": "Chile",
+        "lat": -33.4489,
+        "lon": -70.6693,
+    },
+    {
+        "slug": "canberra",
+        "city_name": "Canberra",
+        "country": "Australia",
+        "lat": -35.2809,
+        "lon": 149.1300,
+    },
+    {
+        "slug": "reykjavik",
+        "city_name": "Reykjavik",
+        "country": "Iceland",
+        "lat": 64.1466,
+        "lon": -21.9426,
+    },
+    {
+        "slug": "new_delhi",
+        "city_name": "New Delhi",
+        "country": "India",
+        "lat": 28.6139,
+        "lon": 77.2090,
+    },
+    {
+        "slug": "brasilia",
+        "city_name": "Brasília",
+        "country": "Brazil",
+        "lat": -15.7975,
+        "lon": -47.8919,
+    },
     {"slug": "ottawa", "city_name": "Ottawa", "country": "Canada", "lat": 45.4215, "lon": -75.6972},
     {"slug": "accra", "city_name": "Accra", "country": "Ghana", "lat": 5.6037, "lon": -0.1870},
 ]
 
-SHOWCASE_TARGETS: Dict[str, Dict[str, Any]] = {
+SHOWCASE_TARGETS: dict[str, dict[str, Any]] = {
     "wise_0855": {
         "slug": "wise_0855",
         "name": "WISE 0855",
@@ -155,7 +200,7 @@ SHOWCASE_TARGETS: Dict[str, Dict[str, Any]] = {
 # JSON Schemas (Draft-07 / Draft 2020-12 compatible)
 # ---------------------------------------------------------------------------
 
-QUERY_INFO_SCHEMA: Dict[str, Any] = {
+QUERY_INFO_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["ra", "dec", "fov_arcmin", "grid_key", "cached"],
     "properties": {
@@ -168,7 +213,7 @@ QUERY_INFO_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-WCS_HEADER_SCHEMA: Dict[str, Any] = {
+WCS_HEADER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["width", "height", "crval", "crpix", "cdelt"],
     "properties": {
@@ -196,7 +241,7 @@ WCS_HEADER_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-KNOWN_OBJECT_EPOCH_POSITION_SCHEMA: Dict[str, Any] = {
+KNOWN_OBJECT_EPOCH_POSITION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["epoch_id", "mjd", "ra", "dec", "x", "y"],
     "properties": {
@@ -210,7 +255,7 @@ KNOWN_OBJECT_EPOCH_POSITION_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-KNOWN_CELESTIAL_OBJECT_SCHEMA: Dict[str, Any] = {
+KNOWN_CELESTIAL_OBJECT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
         "object_id",
@@ -258,7 +303,7 @@ KNOWN_CELESTIAL_OBJECT_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-CATALOG_OVERLAYS_SCHEMA: Dict[str, Any] = {
+CATALOG_OVERLAYS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["gaia_dr3", "wise_sources", "most_solar_system"],
     "properties": {
@@ -324,7 +369,7 @@ CATALOG_OVERLAYS_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-SKY_PATCH_MANIFEST_JSON_SCHEMA: Dict[str, Any] = {
+SKY_PATCH_MANIFEST_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
         "query",
@@ -410,7 +455,7 @@ SKY_PATCH_MANIFEST_JSON_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-CATALOGS_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
+CATALOGS_RESPONSE_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["query", "wcs", "catalog_overlays"],
     "properties": {
@@ -421,7 +466,7 @@ CATALOGS_RESPONSE_JSON_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-SPECTRUM_PAYLOAD_JSON_SCHEMA: Dict[str, Any] = {
+SPECTRUM_PAYLOAD_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": [
         "ra",
@@ -488,7 +533,7 @@ SPECTRUM_PAYLOAD_JSON_SCHEMA: Dict[str, Any] = {
     "additionalProperties": False,
 }
 
-EARTH_TO_SKY_JSON_SCHEMA: Dict[str, Any] = {
+EARTH_TO_SKY_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["earth", "zenith_icrs"],
     "properties": {
@@ -529,19 +574,19 @@ EARTH_TO_SKY_JSON_SCHEMA: Dict[str, Any] = {
 class _ContractModelMixin:
     """Provides Pydantic v2-compatible `.model_dump()` and `.model_validate()`."""
 
-    SCHEMA: Dict[str, Any] = {}
+    SCHEMA: dict[str, Any] = {}
 
-    def model_dump(self) -> Dict[str, Any]:
+    def model_dump(self) -> dict[str, Any]:
         return asdict(self)  # type: ignore[arg-type]
 
     @classmethod
-    def model_validate(cls, data: Dict[str, Any]) -> Any:
+    def model_validate(cls, data: dict[str, Any]) -> Any:
         if cls.SCHEMA:
             jsonschema.validate(instance=data, schema=cls.SCHEMA)
         return cls._from_dict(data)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> Any:
+    def _from_dict(cls, data: dict[str, Any]) -> Any:
         return cls(**data)
 
 
@@ -578,9 +623,9 @@ class WcsHeader(_ContractModelMixin):
     SCHEMA = WCS_HEADER_SCHEMA
     width: int
     height: int
-    crval: List[float]
-    crpix: List[float]
-    cdelt: List[float]
+    crval: list[float]
+    crpix: list[float]
+    cdelt: list[float]
 
 
 @dataclass
@@ -592,7 +637,7 @@ class EpochEntry(_ContractModelMixin):
     iso_date: str
     detectors_data_url: str
     flags_mask_url: str
-    available_detectors: List[int]
+    available_detectors: list[int]
     binary_dtype: Literal["float32", "float16"] = "float32"
 
 
@@ -625,14 +670,14 @@ class KnownCelestialObject(_ContractModelMixin):
     dec: float
     x: float
     y: float
-    magnitude: Optional[float]
-    proper_motion_arcsec_yr: Optional[float]
-    w1_w2_color: Optional[float]
+    magnitude: float | None
+    proper_motion_arcsec_yr: float | None
+    w1_w2_color: float | None
     default_checked: bool
-    epoch_positions: List[KnownObjectEpochPosition] = field(default_factory=list)
+    epoch_positions: list[KnownObjectEpochPosition] = field(default_factory=list)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "KnownCelestialObject":
+    def _from_dict(cls, data: dict[str, Any]) -> KnownCelestialObject:
         positions = [
             KnownObjectEpochPosition._from_dict(p) if isinstance(p, dict) else p
             for p in data.get("epoch_positions", [])
@@ -650,9 +695,9 @@ class GaiaDr3Source(_ContractModelMixin):
     x: float
     y: float
     g_mag: float
-    bp_rp: Optional[float]
-    pmra: Optional[float]
-    pmdec: Optional[float]
+    bp_rp: float | None
+    pmra: float | None
+    pmdec: float | None
 
 
 @dataclass
@@ -681,13 +726,13 @@ class MostSolarSystemObject(_ContractModelMixin):
 @dataclass
 class CatalogOverlays(_ContractModelMixin):
     SCHEMA = CATALOG_OVERLAYS_SCHEMA
-    gaia_dr3: List[GaiaDr3Source] = field(default_factory=list)
-    wise_sources: List[WiseSource] = field(default_factory=list)
-    most_solar_system: List[MostSolarSystemObject] = field(default_factory=list)
-    known_objects: List[KnownCelestialObject] = field(default_factory=list)
+    gaia_dr3: list[GaiaDr3Source] = field(default_factory=list)
+    wise_sources: list[WiseSource] = field(default_factory=list)
+    most_solar_system: list[MostSolarSystemObject] = field(default_factory=list)
+    known_objects: list[KnownCelestialObject] = field(default_factory=list)
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "CatalogOverlays":
+    def _from_dict(cls, data: dict[str, Any]) -> CatalogOverlays:
         return cls(
             gaia_dr3=[
                 GaiaDr3Source._from_dict(item) if isinstance(item, dict) else item
@@ -715,12 +760,12 @@ class SkyPatchManifest(_ContractModelMixin):
     target_metadata: TargetMetadata
     data_source_summary: DataSourceSummary
     wcs: WcsHeader
-    epochs: List[EpochEntry]
-    default_spectrum_url: Optional[str]
+    epochs: list[EpochEntry]
+    default_spectrum_url: str | None
     catalog_overlays: CatalogOverlays
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "SkyPatchManifest":
+    def _from_dict(cls, data: dict[str, Any]) -> SkyPatchManifest:
         return cls(
             query=QueryInfo._from_dict(data["query"]),
             target_metadata=TargetMetadata._from_dict(data["target_metadata"]),
@@ -740,7 +785,7 @@ class CatalogsResponse(_ContractModelMixin):
     catalog_overlays: CatalogOverlays
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "CatalogsResponse":
+    def _from_dict(cls, data: dict[str, Any]) -> CatalogsResponse:
         return cls(
             query=QueryInfo._from_dict(data["query"]),
             wcs=WcsHeader._from_dict(data["wcs"]),
@@ -780,11 +825,11 @@ class SpectrumPayload(_ContractModelMixin):
     source_label: str
     spectrum_origin: str
     units: SpectrumUnits
-    channels: List[SpectrumChannel]
-    molecular_features: List[MolecularFeature]
+    channels: list[SpectrumChannel]
+    molecular_features: list[MolecularFeature]
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "SpectrumPayload":
+    def _from_dict(cls, data: dict[str, Any]) -> SpectrumPayload:
         return cls(
             ra=data["ra"],
             dec=data["dec"],
@@ -803,8 +848,8 @@ class EarthCoordinates(_ContractModelMixin):
     lat: float
     lon: float
     iso_time: str
-    city_name: Optional[str] = None
-    country: Optional[str] = None
+    city_name: str | None = None
+    country: str | None = None
     is_fallback_capital: bool = False
     cached: bool = False
 
@@ -823,7 +868,7 @@ class EarthToSkyResponse(_ContractModelMixin):
     zenith_icrs: ZenithIcrsCoordinates
 
     @classmethod
-    def _from_dict(cls, data: Dict[str, Any]) -> "EarthToSkyResponse":
+    def _from_dict(cls, data: dict[str, Any]) -> EarthToSkyResponse:
         return cls(
             earth=EarthCoordinates._from_dict(data["earth"]),
             zenith_icrs=ZenithIcrsCoordinates._from_dict(data["zenith_icrs"]),
@@ -835,7 +880,7 @@ class EarthToSkyResponse(_ContractModelMixin):
 # ---------------------------------------------------------------------------
 
 
-def validate_sky_patch_manifest(payload: Dict[str, Any]) -> SkyPatchManifest:
+def validate_sky_patch_manifest(payload: dict[str, Any]) -> SkyPatchManifest:
     """Validate a SkyPatchManifest dictionary against the Phase 0 schema."""
     manifest = SkyPatchManifest.model_validate(payload)
     for ep in manifest.epochs:
@@ -844,12 +889,12 @@ def validate_sky_patch_manifest(payload: Dict[str, Any]) -> SkyPatchManifest:
     return manifest
 
 
-def validate_catalogs_response(payload: Dict[str, Any]) -> CatalogsResponse:
+def validate_catalogs_response(payload: dict[str, Any]) -> CatalogsResponse:
     """Validate a GET /api/v1/catalogs response payload."""
     return CatalogsResponse.model_validate(payload)
 
 
-def validate_spectrum_payload(payload: Dict[str, Any]) -> SpectrumPayload:
+def validate_spectrum_payload(payload: dict[str, Any]) -> SpectrumPayload:
     """Validate a SpectrumPayload dictionary and check monotonic wavelength ordering."""
     spectrum = SpectrumPayload.model_validate(payload)
     wavelengths = [ch.wavelength_um for ch in spectrum.channels]
@@ -865,7 +910,7 @@ def validate_spectrum_payload(payload: Dict[str, Any]) -> SpectrumPayload:
     return spectrum
 
 
-def validate_earth_to_sky_response(payload: Dict[str, Any]) -> EarthToSkyResponse:
+def validate_earth_to_sky_response(payload: dict[str, Any]) -> EarthToSkyResponse:
     """Validate an EarthToSkyResponse dictionary."""
     return EarthToSkyResponse.model_validate(payload)
 
@@ -873,15 +918,13 @@ def validate_earth_to_sky_response(payload: Dict[str, Any]) -> EarthToSkyRespons
 def validate_detector_binary_buffer(
     raw_bytes: bytes,
     precision: Literal["float32", "float16"] = "float32",
-) -> Tuple[int, float, float]:
+) -> tuple[int, float, float]:
     """Validate raw pass_{N}.bin bytes for exact byte length and finite values.
 
     Returns (num_values, min_value, max_value).
     """
     expected = (
-        BINARY_DETECTOR_FLOAT32_BYTES
-        if precision == "float32"
-        else BINARY_DETECTOR_FLOAT16_BYTES
+        BINARY_DETECTOR_FLOAT32_BYTES if precision == "float32" else BINARY_DETECTOR_FLOAT16_BYTES
     )
     if len(raw_bytes) != expected:
         raise ValueError(
@@ -902,7 +945,7 @@ def validate_detector_binary_buffer(
     return len(values), min_val, max_val
 
 
-def validate_flags_binary_buffer(raw_bytes: bytes) -> Tuple[int, int]:
+def validate_flags_binary_buffer(raw_bytes: bytes) -> tuple[int, int]:
     """Validate raw pass_{N}_flags.bin bytes for exact 65,536-byte length.
 
     Returns (num_pixels, nonzero_count).
@@ -917,7 +960,7 @@ def validate_flags_binary_buffer(raw_bytes: bytes) -> Tuple[int, int]:
 
 
 def convert_float32_bytes_to_float16_bytes(float32_bytes: bytes) -> bytes:
-    """Convert a (6, 256, 256) float32 buffer (1,572,864 B) to float16 (786,432 B) for 3G transfer."""
+    """Convert a (6, 256, 256) float32 buffer to float16 (786,432 B) for 3G transfer."""
     if len(float32_bytes) != BINARY_DETECTOR_FLOAT32_BYTES:
         raise ValueError(
             f"Expected {BINARY_DETECTOR_FLOAT32_BYTES} bytes, got {len(float32_bytes)}"

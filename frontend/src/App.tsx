@@ -44,12 +44,7 @@ const StarHuntersWorkspace: React.FC = () => {
   }, [activePresetSlug, manifest, loadingState.stage, selectPreset]);
 
   const viewBox = useMemo(
-    () =>
-      computeViewportViewBox(
-        renderSettings.zoom,
-        renderSettings.panX,
-        renderSettings.panY,
-      ),
+    () => computeViewportViewBox(renderSettings.zoom, renderSettings.panX, renderSettings.panY),
     [renderSettings.zoom, renderSettings.panX, renderSettings.panY],
   );
 
@@ -88,10 +83,7 @@ const StarHuntersWorkspace: React.FC = () => {
   };
 
   const checkedKnownObjects = useMemo(
-    () =>
-      knownObjects.filter((obj) =>
-        renderSettings.checkedObjectIds.includes(obj.object_id),
-      ),
+    () => knownObjects.filter((obj) => renderSettings.checkedObjectIds.includes(obj.object_id)),
     [knownObjects, renderSettings.checkedObjectIds],
   );
 
@@ -101,7 +93,8 @@ const StarHuntersWorkspace: React.FC = () => {
         <div>
           <h1>Star Hunters — Planet X &amp; SPHEREx Blinker</h1>
           <p className="subtitle">
-            Multi-Epoch Near-Infrared Blinker (0.75–5.0 &mu;m) &bull; SPHEREx + WISE/NEOWISE + Gaia DR3 + MOST
+            Multi-Epoch Near-Infrared Blinker (0.75–5.0 &mu;m) &bull; SPHEREx + WISE/NEOWISE + Gaia
+            DR3 + MOST
           </p>
         </div>
         <div className="preset-bar">
@@ -115,11 +108,7 @@ const StarHuntersWorkspace: React.FC = () => {
               {p.label}
             </button>
           ))}
-          <button
-            type="button"
-            className="preset-btn"
-            onClick={() => void handleWhatsAboveMe()}
-          >
+          <button type="button" className="preset-btn" onClick={() => void handleWhatsAboveMe()}>
             What&apos;s Above Me? (Zenith / Capital Fallback)
           </button>
         </div>
@@ -200,8 +189,7 @@ const StarHuntersWorkspace: React.FC = () => {
               }}
             >
               {checkedKnownObjects.map((obj) => {
-                const epPos =
-                  obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
+                const epPos = obj.epoch_positions[renderSettings.activeEpochIndex] ?? obj;
                 return (
                   <g key={obj.object_id}>
                     <circle
@@ -212,12 +200,7 @@ const StarHuntersWorkspace: React.FC = () => {
                       stroke="#38bdf8"
                       strokeWidth={1.1}
                     />
-                    <text
-                      x={epPos.x + 6}
-                      y={epPos.y - 4}
-                      fill="#e2e8f0"
-                      fontSize={7}
-                    >
+                    <text x={epPos.x + 6} y={epPos.y - 4} fill="#e2e8f0" fontSize={7}>
                       {obj.label}
                     </text>
                   </g>
@@ -282,9 +265,9 @@ const StarHuntersWorkspace: React.FC = () => {
                     marginRight: 6,
                   }}
                 />
-                Origin Centroid: ({selectedObject.originCentroidX}, {selectedObject.originCentroidY})
-                &bull; Proper Motion: {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull; Match:{' '}
-                {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
+                Origin Centroid: ({selectedObject.originCentroidX}, {selectedObject.originCentroidY}
+                ) &bull; Proper Motion: {selectedObject.properMotionArcsecPerYr}&Prime;/yr &bull;
+                Match: {selectedObject.matchedLabel ?? 'Uncataloged Mover Candidate'}
                 {selectedObject.isOverlappedAtOrigin ? ' • Overlapped Body Branch' : ''}
               </p>
               <ul>

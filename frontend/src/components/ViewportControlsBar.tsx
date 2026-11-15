@@ -163,10 +163,7 @@ export const ViewportControlsBar: React.FC = () => {
 
           <label className="inline-select">
             <span>FPS:</span>
-            <select
-              value={playback.fps}
-              onChange={(e) => playback.setFps(Number(e.target.value))}
-            >
+            <select value={playback.fps} onChange={(e) => playback.setFps(Number(e.target.value))}>
               <option value={1}>1×</option>
               <option value={2}>2×</option>
               <option value={4}>4×</option>
@@ -235,7 +232,10 @@ export const ViewportControlsBar: React.FC = () => {
       <div className="controls-row wavelength-row">
         <div className="wavelength-slider-group">
           <span className="control-label">
-            Wavelength: <strong>{minWave.toFixed(2)}–{maxWave.toFixed(2)} µm</strong>
+            Wavelength:{' '}
+            <strong>
+              {minWave.toFixed(2)}–{maxWave.toFixed(2)} µm
+            </strong>
           </span>
           <div className="dual-range">
             <input

@@ -28,12 +28,12 @@ export const BINARY_DETECTOR_FLOAT16_BYTES = TOTAL_DETECTOR_VALUES * 2; // 786,4
 export const BINARY_FLAGS_UINT8_BYTES = PIXELS_PER_PLANE; // 65,536
 
 export const DETECTOR_WAVELENGTH_BOUNDS_UM: ReadonlyArray<readonly [number, number]> = [
-  [0.75, 1.10], // Detector 1
-  [1.10, 1.60], // Detector 2
-  [1.60, 2.42], // Detector 3
-  [2.42, 3.80], // Detector 4 (WISE W1 3.4 um fallback)
-  [3.80, 4.40], // Detector 5 (WISE W2 4.6 um fallback)
-  [4.40, 5.00], // Detector 6 (WISE W2 4.6 um fallback)
+  [0.75, 1.1], // Detector 1
+  [1.1, 1.6], // Detector 2
+  [1.6, 2.42], // Detector 3
+  [2.42, 3.8], // Detector 4 (WISE W1 3.4 um fallback)
+  [3.8, 4.4], // Detector 5 (WISE W2 4.6 um fallback)
+  [4.4, 5.0], // Detector 6 (WISE W2 4.6 um fallback)
 ];
 
 export const TRACKING_SQUARE_COLORS: readonly string[] = [
@@ -338,7 +338,7 @@ export interface SkyExplorerContextValue {
   coordinates: { ra: number; dec: number; fovArcmin: number };
   manifest: SkyPatchManifest | null;
   epochBuffers: Float32Array[][] | null; // [epochIndex][detector 0..5]
-  flagsBuffers: Uint8Array[] | null;     // [epochIndex]
+  flagsBuffers: Uint8Array[] | null; // [epochIndex]
   loadingState: {
     stage: 'idle' | 'loading_catalogs' | 'loading_cutouts' | 'ready' | 'error';
     message?: string;
@@ -553,11 +553,7 @@ export function screenToImageCoordinates(
 /**
  * Convert pixel (x, y) to sky (ra, dec) using the patch's TAN WCS header.
  */
-export function pixelToSkyWcs(
-  x: number,
-  y: number,
-  wcs: WcsHeader,
-): { ra: number; dec: number } {
+export function pixelToSkyWcs(x: number, y: number, wcs: WcsHeader): { ra: number; dec: number } {
   const [ra0, dec0] = wcs.crval;
   const [x0, y0] = wcs.crpix;
   const [cdeltX, cdeltY] = wcs.cdelt;
@@ -908,9 +904,7 @@ export function detectAndTrackBodiesAtClick(params: {
       ) {
         continue;
       }
-      if (
-        !secondaries.some((s) => Math.hypot(s.x - refined.x, s.y - refined.y) < 2.5)
-      ) {
+      if (!secondaries.some((s) => Math.hypot(s.x - refined.x, s.y - refined.y) < 2.5)) {
         secondaries.push(refined);
       }
     }
@@ -937,7 +931,12 @@ export function detectAndTrackBodiesAtClick(params: {
 
     for (let epIdx = 0; epIdx < numEpochs; epIdx += 1) {
       if (epIdx === clampedOrigin) continue;
-      const stat = checkStationaryAtSpot(epIdx, originDetection.x, originDetection.y, originDetection.netFlux);
+      const stat = checkStationaryAtSpot(
+        epIdx,
+        originDetection.x,
+        originDetection.y,
+        originDetection.netFlux,
+      );
       if (stat) {
         hasStationaryInAnyOtherEpoch = true;
         if (stat.netFlux <= 0.85 * originDetection.netFlux) {
@@ -996,8 +995,10 @@ export function detectAndTrackBodiesAtClick(params: {
         if (existing.kind !== 'moving') continue;
         if (existing.seedEpochIdx === epIdx) {
           if (
-            Math.hypot(existing.seedDetection.x - candPeak.x, existing.seedDetection.y - candPeak.y) <
-            3.5
+            Math.hypot(
+              existing.seedDetection.x - candPeak.x,
+              existing.seedDetection.y - candPeak.y,
+            ) < 3.5
           ) {
             return true;
           }
@@ -1054,11 +1055,7 @@ export function detectAndTrackBodiesAtClick(params: {
       return false;
     });
 
-    if (
-      hasStationaryInAnyOtherEpoch &&
-      !stationaryDroppedFlux &&
-      !hasSecondaryDepartingOrigin
-    ) {
+    if (hasStationaryInAnyOtherEpoch && !stationaryDroppedFlux && !hasSecondaryDepartingOrigin) {
       // The clicked star remained stationary at (originDetection.x, originDetection.y) with >=85% of its
       // original flux and no secondary moving body was in the clicked area at origin.
       branchSeeds.push({
@@ -1095,10 +1092,7 @@ export function detectAndTrackBodiesAtClick(params: {
         }
       }
       // If a stationary body also remained at originDetection alongside the moving body(s), track it too
-      if (
-        hasStationaryInAnyOtherEpoch &&
-        (stationaryDroppedFlux || hasSecondaryDepartingOrigin)
-      ) {
+      if (hasStationaryInAnyOtherEpoch && (stationaryDroppedFlux || hasSecondaryDepartingOrigin)) {
         const statSeed =
           checkStationaryAtSpot(
             bestSepEpochIdx,
@@ -1228,10 +1222,8 @@ export function detectAndTrackBodiesAtClick(params: {
         const dtSeed = manifest.epochs[seed.seedEpochIdx].mjd - originEpochMeta.mjd;
         const dtTarget = epMeta.mjd - originEpochMeta.mjd;
         if (Math.abs(dtSeed) > 1e-3) {
-          searchX =
-            branchOrigin.x + ((seed.seedDetection.x - branchOrigin.x) / dtSeed) * dtTarget;
-          searchY =
-            branchOrigin.y + ((seed.seedDetection.y - branchOrigin.y) / dtSeed) * dtTarget;
+          searchX = branchOrigin.x + ((seed.seedDetection.x - branchOrigin.x) / dtSeed) * dtTarget;
+          searchY = branchOrigin.y + ((seed.seedDetection.y - branchOrigin.y) / dtSeed) * dtTarget;
           searchRadius = isOverlapped ? 4.0 : crossEpochSearchRadiusPx;
         }
       }

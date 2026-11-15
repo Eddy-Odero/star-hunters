@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from contextlib import closing
 import json
 import os
 import sqlite3
 import time
-from typing import Any, Dict, Optional, Tuple
 import zlib
-
+from contextlib import closing
+from typing import Any
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
@@ -20,7 +19,7 @@ def compute_grid_key(
     dec: float,
     fov_arcmin: float = 5.0,
     grid_step_deg: float = DEFAULT_GRID_STEP_DEG,
-) -> Tuple[str, float, float]:
+) -> tuple[str, float, float]:
     """Quantize (ra, dec) to a 0.05-deg spatial grid and return (grid_key, ra_q, dec_q)."""
     normalized_ra = ra % 360.0
     clamped_dec = max(-90.0, min(90.0, dec))
@@ -36,12 +35,10 @@ class SpatialSqliteCache:
 
     def __init__(
         self,
-        db_path: Optional[str] = None,
+        db_path: str | None = None,
         max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
     ) -> None:
-        self.db_path = db_path or os.environ.get(
-            "SQLITE_DB_PATH", "/tmp/star_hunters_cache.db"
-        )
+        self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
         self.max_cache_bytes = max_cache_bytes
         self._init_db()
 
@@ -102,7 +99,7 @@ class SpatialSqliteCache:
                 """
             )
 
-    def get_manifest(self, grid_key: str) -> Optional[Dict[str, Any]]:
+    def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
         now = time.time()
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -119,7 +116,7 @@ class SpatialSqliteCache:
             manifest["query"]["cached"] = True
             return manifest
 
-    def get_catalogs(self, grid_key: str) -> Optional[Dict[str, Any]]:
+    def get_catalogs(self, grid_key: str) -> dict[str, Any] | None:
         now = time.time()
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -136,7 +133,7 @@ class SpatialSqliteCache:
             payload["query"]["cached"] = True
             return payload
 
-    def get_frame(self, grid_key: str, filename: str) -> Optional[bytes]:
+    def get_frame(self, grid_key: str, filename: str) -> bytes | None:
         now = time.time()
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -157,8 +154,8 @@ class SpatialSqliteCache:
         ra_center: float,
         dec_center: float,
         fov_arcmin: float,
-        manifest: Dict[str, Any],
-        frames: Dict[str, bytes],
+        manifest: dict[str, Any],
+        frames: dict[str, bytes],
     ) -> None:
         now = time.time()
         manifest_str = json.dumps(manifest)
@@ -169,7 +166,7 @@ class SpatialSqliteCache:
         }
         catalogs_str = json.dumps(catalogs_payload)
 
-        compressed_frames: Dict[str, Tuple[bytes, int]] = {}
+        compressed_frames: dict[str, tuple[bytes, int]] = {}
         total_bytes = len(manifest_str.encode("utf-8")) + len(catalogs_str.encode("utf-8"))
         for fname, raw_bytes in frames.items():
             comp = zlib.compress(raw_bytes, level=6)
@@ -218,7 +215,7 @@ class SpatialSqliteCache:
             ).fetchone()
             return int(row["byte_size"]) if row else 0
 
-    def get_spectrum(self, spectrum_key: str) -> Optional[Dict[str, Any]]:
+    def get_spectrum(self, spectrum_key: str) -> dict[str, Any] | None:
         now = time.time()
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -238,7 +235,7 @@ class SpatialSqliteCache:
         spectrum_key: str,
         ra: float,
         dec: float,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
     ) -> None:
         now = time.time()
         payload_str = json.dumps(payload)
@@ -252,7 +249,7 @@ class SpatialSqliteCache:
                 (spectrum_key, ra, dec, payload_str, now, now),
             )
 
-    def get_zenith_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
+    def get_zenith_response(self, cache_key: str) -> dict[str, Any] | None:
         now = time.time()
         with closing(self._connect()) as conn, conn:
             row = conn.execute(
@@ -274,8 +271,8 @@ class SpatialSqliteCache:
         cache_key: str,
         lat: float,
         lon: float,
-        payload: Dict[str, Any],
-        city_slug: Optional[str] = None,
+        payload: dict[str, Any],
+        city_slug: str | None = None,
     ) -> None:
         now = time.time()
         payload_str = json.dumps(payload)
@@ -292,7 +289,7 @@ class SpatialSqliteCache:
     def _prune_if_needed(
         self,
         conn: sqlite3.Connection,
-        preserve_grid_key: Optional[str] = None,
+        preserve_grid_key: str | None = None,
     ) -> int:
         row = conn.execute(
             "SELECT COALESCE(SUM(byte_size), 0) AS total_bytes FROM sky_patches"

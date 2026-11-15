@@ -5,7 +5,6 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  BINARY_DETECTOR_FLOAT16_BYTES,
   BINARY_DETECTOR_FLOAT32_BYTES,
   BINARY_FLAGS_UINT8_BYTES,
   TRACKING_SQUARE_COLORS,

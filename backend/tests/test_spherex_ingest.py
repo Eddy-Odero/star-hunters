@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import io
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from astropy.io import fits
 import numpy as np
+from astropy.io import fits
 
 from app.services import spherex_ingest as ingest
 
@@ -88,14 +88,10 @@ class TestSpherexValidationAndQuery(unittest.TestCase):
         url = ingest.build_cutout_url("artifact/abc.fits", 10.0, 20.5, 6.0)
         self.assertEqual(
             url,
-            "https://irsa.ipac.caltech.edu/artifact/abc.fits"
-            "?center=10.0,20.5d&size=0.1",
+            "https://irsa.ipac.caltech.edu/artifact/abc.fits?center=10.0,20.5d&size=0.1",
         )
 
-        existing = (
-            "https://irsa.ipac.caltech.edu/artifact/abc.fits"
-            "?center=1,2d&size=0.1"
-        )
+        existing = "https://irsa.ipac.caltech.edu/artifact/abc.fits?center=1,2d&size=0.1"
         self.assertEqual(
             ingest.build_cutout_url(existing, 10.0, 20.5, 6.0),
             existing,
@@ -396,14 +392,17 @@ class TestDownloadsAndFallback(unittest.TestCase):
             mjd_obs=61000.0,
         )
 
-        with mock.patch.object(
-            ingest,
-            "query_observations",
-            return_value=[observation],
-        ), mock.patch.object(
-            ingest,
-            "download_cutout",
-            side_effect=ingest.SpherexDownloadError("offline"),
+        with (
+            mock.patch.object(
+                ingest,
+                "query_observations",
+                return_value=[observation],
+            ),
+            mock.patch.object(
+                ingest,
+                "download_cutout",
+                side_effect=ingest.SpherexDownloadError("offline"),
+            ),
         ):
             cutouts = ingest.ingest_spherex_cutouts(
                 ra=10.0,

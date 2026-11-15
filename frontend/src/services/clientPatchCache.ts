@@ -6,11 +6,7 @@
  * checking/unchecking known objects, and click-to-track) execute locally without refetching.
  */
 
-import type {
-  CatalogsResponse,
-  SkyPatchManifest,
-  SpectrumPayload,
-} from '../types/contracts.ts';
+import type { CatalogsResponse, SkyPatchManifest, SpectrumPayload } from '../types/contracts.ts';
 
 export interface CachedSkyPatchBundle {
   cacheKey: string;
@@ -100,7 +96,11 @@ export class ClientPatchCache {
   }
 
   private isIndexedDbAvailable(): boolean {
-    return typeof globalThis !== 'undefined' && 'indexedDB' in globalThis && globalThis.indexedDB !== null;
+    return (
+      typeof globalThis !== 'undefined' &&
+      'indexedDB' in globalThis &&
+      globalThis.indexedDB !== null
+    );
   }
 
   private openDb(): Promise<IDBDatabase | null> {
