@@ -9,14 +9,10 @@ import React, {
 } from 'react';
 import {
   clampViewportPanZoom,
-  computeGridKey,
-  decodeDetectorBinaryBuffer,
-  decodeFlagsBinaryBuffer,
   detectAndTrackBodiesAtClick,
   getDefaultCheckedObjectIds,
   mergeTrackedTargets,
   pickDistinctHighlighterColors,
-  type BinaryDtype,
   type CatalogsResponse,
   type ClickDiagnosticInfo,
   type GlobalKnownObjectEntry,
@@ -28,6 +24,11 @@ import {
   type ViewportRenderSettings,
 } from '../types/contracts';
 import { defaultClientPatchCache } from '../services/clientPatchCache';
+import {
+  loadLiveCoordinatesFlow,
+  loadPresetPatchFlow,
+  type LoadedPatchResult,
+} from '../services/progressivePatchLoader';
 import {
   clearCheckedObjectIds,
   selectAllObjectIds,
@@ -78,13 +79,14 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [activeSpectrum, setActiveSpectrum] = useState<SpectrumPayload | null>(null);
   const [isSpectrumLoading, setIsSpectrumLoading] = useState<boolean>(false);
   const [globalKnownObjects, setGlobalKnownObjects] = useState<GlobalKnownObjectEntry[]>([]);
+  const [stageAKnownObjects, setStageAKnownObjects] = useState<KnownCelestialObject[] | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const pendingFocusObjectIdRef = useRef<string | null>(null);
 
   const knownObjects: KnownCelestialObject[] = useMemo(
-    () => manifest?.catalog_overlays?.known_objects ?? [],
-    [manifest],
+    () => stageAKnownObjects ?? manifest?.catalog_overlays?.known_objects ?? [],
+    [stageAKnownObjects, manifest],
   );
 
   // Randomly assign a distinct highlighter color from the 20-color palette to each object in the patch
@@ -264,96 +266,20 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const toggleLoop = useCallback(() => setIsLooping((prev) => !prev), []);
 
-  const loadPresetBundle = useCallback(async (slug: string) => {
-    abortControllerRef.current?.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    const cacheKey = `preset:${slug}`;
-    const cached = await defaultClientPatchCache.getPatch(cacheKey);
-    if (cached) {
-      setManifest(cached.manifest);
-      setEpochBuffers(cached.epochBuffers);
-      setFlagsBuffers(cached.flagsBuffers);
-      setActiveSpectrum(cached.spectrum ?? null);
-      setCoordinates({
-        ra: cached.manifest.query.ra,
-        dec: cached.manifest.query.dec,
-        fovArcmin: cached.manifest.query.fov_arcmin,
-      });
-      setRenderSettings((prev) => ({
-        ...prev,
-        activeEpochIndex: 0,
-        zoom: 1.0,
-        panX: 0.0,
-        panY: 0.0,
-        checkedObjectIds: getDefaultCheckedObjectIds(
-          cached.manifest.catalog_overlays.known_objects ?? [],
-        ),
-      }));
-      setSelectedObject(null);
-      setTrackedTargets([]);
-      setLastClickDiagnostic(null);
-      setLoadingState({ stage: 'ready', fromClientCache: true });
-      return;
-    }
-
-    try {
-      setLoadingState({ stage: 'loading_cutouts', message: `Loading preset ${slug}...` });
-      const manifestRes = await fetch(`/presets/${slug}/manifest.json`, {
-        signal: controller.signal,
-      });
-      if (!manifestRes.ok) {
-        throw new Error(`Failed to load preset manifest (${manifestRes.status})`);
-      }
-      const loadedManifest = (await manifestRes.json()) as SkyPatchManifest;
-
-      const decodedEpochs: Float32Array[][] = [];
-      const decodedFlags: Uint8Array[] = [];
-
-      for (const ep of loadedManifest.epochs) {
-        const [detRes, flagRes] = await Promise.all([
-          fetch(ep.detectors_data_url, { signal: controller.signal }),
-          fetch(ep.flags_mask_url, { signal: controller.signal }),
-        ]);
-        const detBuf = await detRes.arrayBuffer();
-        const flagBuf = await flagRes.arrayBuffer();
-        const headerDtype = (detRes.headers.get('X-Binary-Dtype') ||
-          ep.binary_dtype ||
-          'float32') as BinaryDtype;
-        decodedEpochs.push(decodeDetectorBinaryBuffer(detBuf, headerDtype));
-        decodedFlags.push(decodeFlagsBinaryBuffer(flagBuf));
-      }
-
-      let loadedSpectrum: SpectrumPayload | null = null;
-      if (loadedManifest.default_spectrum_url) {
-        const specRes = await fetch(loadedManifest.default_spectrum_url, {
-          signal: controller.signal,
+  const applyLoadedPatch = useCallback(
+    (result: LoadedPatchResult, syncCoordinatesFromManifest: boolean) => {
+      setStageAKnownObjects(null);
+      setManifest(result.manifest);
+      setEpochBuffers(result.epochBuffers);
+      setFlagsBuffers(result.flagsBuffers);
+      setActiveSpectrum(result.spectrum);
+      if (syncCoordinatesFromManifest) {
+        setCoordinates({
+          ra: result.manifest.query.ra,
+          dec: result.manifest.query.dec,
+          fovArcmin: result.manifest.query.fov_arcmin,
         });
-        if (specRes.ok) {
-          loadedSpectrum = (await specRes.json()) as SpectrumPayload;
-        }
       }
-
-      await defaultClientPatchCache.putPatch({
-        cacheKey,
-        manifest: loadedManifest,
-        epochBuffers: decodedEpochs,
-        flagsBuffers: decodedFlags,
-        spectrum: loadedSpectrum,
-        storedAt: Date.now(),
-        lastAccessed: Date.now(),
-      });
-
-      setManifest(loadedManifest);
-      setEpochBuffers(decodedEpochs);
-      setFlagsBuffers(decodedFlags);
-      setActiveSpectrum(loadedSpectrum);
-      setCoordinates({
-        ra: loadedManifest.query.ra,
-        dec: loadedManifest.query.dec,
-        fovArcmin: loadedManifest.query.fov_arcmin,
-      });
       setRenderSettings((prev) => ({
         ...prev,
         activeEpochIndex: 0,
@@ -361,21 +287,41 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         panX: 0.0,
         panY: 0.0,
         checkedObjectIds: getDefaultCheckedObjectIds(
-          loadedManifest.catalog_overlays.known_objects ?? [],
+          result.manifest.catalog_overlays.known_objects ?? [],
         ),
       }));
       setSelectedObject(null);
       setTrackedTargets([]);
       setLastClickDiagnostic(null);
-      setLoadingState({ stage: 'ready', fromClientCache: false });
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
-      setLoadingState({
-        stage: 'error',
-        message: err instanceof Error ? err.message : 'Unknown error loading preset',
-      });
-    }
-  }, []);
+      setLoadingState({ stage: 'ready', fromClientCache: result.fromClientCache });
+    },
+    [],
+  );
+
+  const loadPresetBundle = useCallback(
+    async (slug: string) => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      setStageAKnownObjects(null);
+
+      try {
+        await loadPresetPatchFlow(slug, {
+          cache: defaultClientPatchCache,
+          signal: controller.signal,
+          onStageChange: setLoadingState,
+          onReady: (result) => applyLoadedPatch(result, true),
+        });
+      } catch (err) {
+        if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
+        setLoadingState({
+          stage: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error loading preset',
+        });
+      }
+    },
+    [applyLoadedPatch],
+  );
 
   const selectPreset = useCallback(
     (slug: string) => {
@@ -386,137 +332,42 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [loadPresetBundle],
   );
 
-  const loadLiveCoordinates = useCallback(async (ra: number, dec: number, fovArcmin: number) => {
-    abortControllerRef.current?.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+  const loadLiveCoordinates = useCallback(
+    async (ra: number, dec: number, fovArcmin: number) => {
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      setStageAKnownObjects(null);
 
-    const gridKey = computeGridKey(ra, dec, fovArcmin);
-    const cached = await defaultClientPatchCache.getPatch(gridKey);
-    if (cached) {
-      setManifest(cached.manifest);
-      setEpochBuffers(cached.epochBuffers);
-      setFlagsBuffers(cached.flagsBuffers);
-      setActiveSpectrum(cached.spectrum ?? null);
-      setRenderSettings((prev) => ({
-        ...prev,
-        activeEpochIndex: 0,
-        zoom: 1.0,
-        panX: 0.0,
-        panY: 0.0,
-        checkedObjectIds: getDefaultCheckedObjectIds(
-          cached.manifest.catalog_overlays.known_objects ?? [],
-        ),
-      }));
-      setSelectedObject(null);
-      setTrackedTargets([]);
-      setLastClickDiagnostic(null);
-      setLoadingState({ stage: 'ready', fromClientCache: true });
-      return;
-    }
-
-    try {
-      setLoadingState({
-        stage: 'loading_catalogs',
-        message: `Querying known celestial objects at (${ra.toFixed(2)}, ${dec.toFixed(2)})...`,
-      });
-      const qs = `ra=${encodeURIComponent(ra)}&dec=${encodeURIComponent(dec)}&fov=${encodeURIComponent(fovArcmin)}`;
-
-      // Stage A (fast async catalogs) and Stage B (cutout manifest) run concurrently
-      const catalogsPromise = fetch(`/api/v1/catalogs?${qs}`, {
-        signal: controller.signal,
-      }).then(async (res) => {
-        if (!res.ok) return null;
-        const catData = (await res.json()) as CatalogsResponse;
-        await defaultClientPatchCache.putCatalogs(gridKey, catData);
-        setRenderSettings((prev) => ({
-          ...prev,
-          checkedObjectIds: getDefaultCheckedObjectIds(
-            catData.catalog_overlays.known_objects ?? [],
-          ),
-        }));
-        setLoadingState({
-          stage: 'loading_cutouts',
-          message: 'Known objects loaded; streaming 3G-compressed epoch frames...',
-        });
-        return catData;
-      });
-
-      const patchRes = await fetch(`/api/v1/sky-patch?${qs}`, {
-        signal: controller.signal,
-      });
-      if (!patchRes.ok) {
-        throw new Error(`Failed to load sky patch (${patchRes.status})`);
-      }
-      const loadedManifest = (await patchRes.json()) as SkyPatchManifest;
-      await catalogsPromise;
-
-      const decodedEpochs: Float32Array[][] = [];
-      const decodedFlags: Uint8Array[] = [];
-
-      for (const ep of loadedManifest.epochs) {
-        const detUrl = ep.detectors_data_url.includes('?')
-          ? ep.detectors_data_url
-          : `${ep.detectors_data_url}?precision=float16`;
-        const [detRes, flagRes] = await Promise.all([
-          fetch(detUrl, { signal: controller.signal }),
-          fetch(ep.flags_mask_url, { signal: controller.signal }),
-        ]);
-        const detBuf = await detRes.arrayBuffer();
-        const flagBuf = await flagRes.arrayBuffer();
-        const headerDtype = (detRes.headers.get('X-Binary-Dtype') ||
-          ep.binary_dtype ||
-          'float16') as BinaryDtype;
-        decodedEpochs.push(decodeDetectorBinaryBuffer(detBuf, headerDtype));
-        decodedFlags.push(decodeFlagsBinaryBuffer(flagBuf));
-      }
-
-      let loadedSpectrum: SpectrumPayload | null = null;
-      if (loadedManifest.default_spectrum_url) {
-        const specRes = await fetch(loadedManifest.default_spectrum_url, {
+      try {
+        await loadLiveCoordinatesFlow(ra, dec, fovArcmin, {
+          cache: defaultClientPatchCache,
           signal: controller.signal,
+          onStageChange: setLoadingState,
+          onCatalogsReady: (catData: CatalogsResponse) => {
+            const stageAObjects = catData.catalog_overlays.known_objects ?? [];
+            setStageAKnownObjects(stageAObjects);
+            setRenderSettings((prev) => ({
+              ...prev,
+              checkedObjectIds: getDefaultCheckedObjectIds(stageAObjects),
+            }));
+            setLoadingState({
+              stage: 'loading_cutouts',
+              message: 'Known objects loaded; streaming 3G-compressed epoch frames...',
+            });
+          },
+          onReady: (result) => applyLoadedPatch(result, false),
         });
-        if (specRes.ok) {
-          loadedSpectrum = (await specRes.json()) as SpectrumPayload;
-        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
+        setLoadingState({
+          stage: 'error',
+          message: err instanceof Error ? err.message : 'Unknown error loading sky patch',
+        });
       }
-
-      await defaultClientPatchCache.putPatch({
-        cacheKey: gridKey,
-        manifest: loadedManifest,
-        epochBuffers: decodedEpochs,
-        flagsBuffers: decodedFlags,
-        spectrum: loadedSpectrum,
-        storedAt: Date.now(),
-        lastAccessed: Date.now(),
-      });
-
-      setManifest(loadedManifest);
-      setEpochBuffers(decodedEpochs);
-      setFlagsBuffers(decodedFlags);
-      setActiveSpectrum(loadedSpectrum);
-      setRenderSettings((prev) => ({
-        ...prev,
-        activeEpochIndex: 0,
-        zoom: 1.0,
-        panX: 0.0,
-        panY: 0.0,
-        checkedObjectIds: getDefaultCheckedObjectIds(
-          loadedManifest.catalog_overlays.known_objects ?? [],
-        ),
-      }));
-      setSelectedObject(null);
-      setTrackedTargets([]);
-      setLastClickDiagnostic(null);
-      setLoadingState({ stage: 'ready', fromClientCache: false });
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return;
-      setLoadingState({
-        stage: 'error',
-        message: err instanceof Error ? err.message : 'Unknown error loading sky patch',
-      });
-    }
-  }, []);
+    },
+    [applyLoadedPatch],
+  );
 
   const navigateToCoordinates = useCallback(
     (ra: number, dec: number, fovArcmin: number = 5.0) => {

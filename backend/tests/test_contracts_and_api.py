@@ -610,6 +610,39 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             self.assertEqual(clear_resp.json(), {"status": "cleared"})
             self.assertIsNone(self.cache.get_manifest(grid_key))
 
+    def test_dockerfile_fly_toml_and_unified_spa_serving(self) -> None:
+        import tomllib
+
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        dockerfile_text = (repo_root / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("FROM node:22-alpine AS frontend-builder", dockerfile_text)
+        self.assertIn("FROM python:3.11-slim AS runtime", dockerfile_text)
+        self.assertIn(
+            "COPY --from=frontend-builder /app/frontend/dist ./frontend/dist", dockerfile_text
+        )
+        self.assertIn("SQLITE_DB_PATH=/data/spherex_cache.db", dockerfile_text)
+
+        fly_cfg = tomllib.loads((repo_root / "fly.toml").read_text(encoding="utf-8"))
+        self.assertEqual(fly_cfg["primary_region"], "iad")
+        self.assertEqual(fly_cfg["env"]["SQLITE_DB_PATH"], "/data/spherex_cache.db")
+        self.assertEqual(fly_cfg["http_service"]["auto_stop_machines"], "suspend")
+        self.assertEqual(fly_cfg["http_service"]["min_machines_running"], 0)
+        self.assertEqual(fly_cfg["mounts"][0]["destination"], "/data")
+        self.assertEqual(fly_cfg["vm"][0]["memory"], "2048mb")
+
+        frontend_dist = repo_root / "frontend" / "dist"
+        if (frontend_dist / "index.html").is_file():
+            from fastapi.testclient import TestClient
+
+            from app.main import app
+
+            self.assertIsNotNone(app)
+            with TestClient(app) as client:
+                root_resp = client.get("/")
+                self.assertEqual(root_resp.status_code, 200)
+                self.assertIn("text/html", root_resp.headers.get("content-type", ""))
+                self.assertEqual(client.get("/health").status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

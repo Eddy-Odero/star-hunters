@@ -95,6 +95,15 @@ python3 scripts/generate_synthetic_presets.py
 cd frontend && pnpm test
 ```
 
+### 4. Production Deployment (Fly.io)
+The root `Dockerfile` builds `frontend/dist` with `pnpm` and serves both the static SPA and `/api/v1/*` endpoints from a single FastAPI container. `fly.toml` configures `primary_region = "iad"`, scale-to-zero (`auto_stop_machines = "suspend"`, `min_machines_running = 0`), and a persistent `/data` volume for `/data/spherex_cache.db`:
+
+```bash
+flyctl apps create star-hunters-spherex --org personal
+flyctl volumes create spherex_cache_vol --region iad --size 1 -a star-hunters-spherex -y
+flyctl deploy --remote-only
+```
+
 ---
 
 ## Further Documentation
