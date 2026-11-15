@@ -159,7 +159,6 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertGreater(nonzero, 0)
 
     def test_sqlite_spatial_cache_hit_and_lru_pruning(self) -> None:
-        import sqlite3
         import time
         import warnings
         from contextlib import closing
