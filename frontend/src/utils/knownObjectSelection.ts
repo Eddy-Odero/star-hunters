@@ -18,15 +18,26 @@ import {
 export interface WavelengthPreset {
   id: string;
   label: string;
+  shortLabel: string;
   range: [number, number];
 }
 
 /** Standard SPHEREx infrared Dim & Pop quick-filter wavelength presets. */
 export const WAVELENGTH_PRESETS: ReadonlyArray<WavelengthPreset> = [
-  { id: 'all', label: 'All Bands (0.75–5.0 µm)', range: [0.75, 5.0] },
-  { id: 'cold', label: 'Cold Objects / Planet X (3.8–5.0 µm)', range: [3.8, 5.0] },
-  { id: 'molecules', label: 'H₂O / CH₄ Band (2.4–3.8 µm)', range: [2.4, 3.8] },
-  { id: 'hot', label: 'Hot Stars (0.75–2.4 µm)', range: [0.75, 2.4] },
+  { id: 'all', label: 'All Bands (0.75–5.0 µm)', shortLabel: 'All 0.75-5.0', range: [0.75, 5.0] },
+  {
+    id: 'cold',
+    label: 'Cold Objects / Planet X (3.8–5.0 µm)',
+    shortLabel: 'Cold 3.8-5.0',
+    range: [3.8, 5.0],
+  },
+  {
+    id: 'molecules',
+    label: 'H₂O / CH₄ Band (2.4–3.8 µm)',
+    shortLabel: 'Ice 2.4-3.8',
+    range: [2.4, 3.8],
+  },
+  { id: 'hot', label: 'Hot Stars (0.75–2.4 µm)', shortLabel: 'Hot 0.75-2.4', range: [0.75, 2.4] },
 ];
 
 const PRESET_MATCH_TOLERANCE_UM = 0.05;
@@ -174,6 +185,60 @@ export function formatMagnitude(magnitude: number | null): string {
 export function formatProperMotion(arcsecPerYr: number | null): string {
   if (arcsecPerYr === null || !Number.isFinite(arcsecPerYr)) return 'μ n/a';
   return `μ ${arcsecPerYr.toFixed(arcsecPerYr < 1 ? 3 : 2)}″/yr`;
+}
+
+/**
+ * Compute default checked object IDs from `knownObjects`, keeping only
+ * items marked `default_checked = true`.
+ *
+ * @param knownObjects - Known celestial objects in the active sky patch.
+ * @returns Array of default-checked object IDs.
+ */
+export function getDefaultCheckedObjectIds(
+  knownObjects: ReadonlyArray<Pick<KnownCelestialObject, 'object_id' | 'default_checked'>>,
+): string[] {
+  return knownObjects.filter((obj) => obj.default_checked).map((obj) => obj.object_id);
+}
+
+/**
+ * Randomly select `count` distinct highlighter colors from `TRACKING_SQUARE_COLORS`,
+ * prioritizing colors not currently in `usedColors` before cycling.
+ *
+ * @param count - Number of colors to pick.
+ * @param usedColors - Colors already reserved or in use.
+ * @param rng - Optional uniform `[0, 1)` random number generator for testing.
+ * @returns Array of `count` hex color strings.
+ */
+export function pickDistinctHighlighterColors(
+  count: number,
+  usedColors: Iterable<string> = [],
+  rng: () => number = Math.random,
+): string[] {
+  const usedSet = new Set(usedColors);
+  const available = TRACKING_SQUARE_COLORS.filter((c) => !usedSet.has(c));
+  const shuffle = (arr: string[]): string[] => {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = copy[i];
+      copy[i] = copy[j];
+      copy[j] = tmp;
+    }
+    return copy;
+  };
+
+  const result: string[] = [];
+  let pool = shuffle(available);
+  while (result.length < count) {
+    if (pool.length === 0) {
+      pool = shuffle([...TRACKING_SQUARE_COLORS]);
+    }
+    const nextColor = pool.pop();
+    if (nextColor) {
+      result.push(nextColor);
+    }
+  }
+  return result;
 }
 
 /**

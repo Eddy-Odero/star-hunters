@@ -12,7 +12,7 @@ from unittest import mock
 import numpy as np
 from astropy.io import fits
 
-from app.services import spherex_ingest as ingest
+from app.services import spherex_fits, spherex_flags, spherex_ingest, spherex_synthetic
 
 
 def build_test_hdul(
@@ -53,8 +53,8 @@ def build_test_hdul(
 
 class TestSpherexValidationAndQuery(unittest.TestCase):
     def test_validate_coordinates(self) -> None:
-        ingest.validate_coordinates(0.0, -90.0, 5.0)
-        ingest.validate_coordinates(359.999, 90.0, 0.1)
+        spherex_fits.validate_coordinates(0.0, -90.0, 5.0)
+        spherex_fits.validate_coordinates(359.999, 90.0, 0.1)
 
         for ra, dec, fov in (
             (-0.1, 0.0, 5.0),
@@ -64,28 +64,28 @@ class TestSpherexValidationAndQuery(unittest.TestCase):
             (0.0, 0.0, 0.0),
             (float("nan"), 0.0, 5.0),
         ):
-            with self.assertRaises(ingest.SpherexValidationError):
-                ingest.validate_coordinates(ra, dec, fov)
+            with self.assertRaises(spherex_fits.SpherexValidationError):
+                spherex_fits.validate_coordinates(ra, dec, fov)
 
     def test_build_adql_query(self) -> None:
-        query = ingest.build_adql_query(133.7951, -7.2451, 5.0)
+        query = spherex_ingest.build_adql_query(133.7951, -7.2451, 5.0)
         self.assertIn("spherex.artifact", query)
         self.assertIn("spherex.plane", query)
         self.assertIn("CONTAINS", query)
         self.assertIn("POINT('ICRS', 133.7951, -7.2451)", query)
         self.assertIn("p.poly", query)
-        for band in ingest.SPHEREX_BANDPASSES:
+        for band in spherex_fits.SPHEREX_BANDPASSES:
             self.assertIn(f"'{band}'", query)
         self.assertIn("center=133.7951,-7.2451d", query)
         self.assertIn("size=0.08333333333333333", query)
 
-        with self.assertRaises(ingest.SpherexValidationError):
-            ingest.build_adql_query(10.0, 20.0, 5.0, bandpasses=())
-        with self.assertRaises(ingest.SpherexValidationError):
-            ingest.build_adql_query(10.0, 20.0, 5.0, bandpasses=("SPHEREx-D7",))
+        with self.assertRaises(spherex_fits.SpherexValidationError):
+            spherex_ingest.build_adql_query(10.0, 20.0, 5.0, bandpasses=())
+        with self.assertRaises(spherex_fits.SpherexValidationError):
+            spherex_ingest.build_adql_query(10.0, 20.0, 5.0, bandpasses=("SPHEREx-D7",))
 
     def test_build_cutout_url(self) -> None:
-        url = ingest.build_cutout_url("artifact/abc.fits", 10.0, 20.5, 6.0)
+        url = spherex_ingest.build_cutout_url("artifact/abc.fits", 10.0, 20.5, 6.0)
         self.assertEqual(
             url,
             "https://irsa.ipac.caltech.edu/artifact/abc.fits?center=10.0,20.5d&size=0.1",
@@ -93,7 +93,7 @@ class TestSpherexValidationAndQuery(unittest.TestCase):
 
         existing = "https://irsa.ipac.caltech.edu/artifact/abc.fits?center=1,2d&size=0.1"
         self.assertEqual(
-            ingest.build_cutout_url(existing, 10.0, 20.5, 6.0),
+            spherex_ingest.build_cutout_url(existing, 10.0, 20.5, 6.0),
             existing,
         )
 
@@ -102,63 +102,63 @@ class TestFlagHygieneMapping(unittest.TestCase):
     def test_low_byte_maps_directly(self) -> None:
         flags = np.array([0, 1, 2, 4, 8, 15], dtype=np.uint32)
         np.testing.assert_array_equal(
-            ingest.map_flags_to_hygiene(flags),
+            spherex_flags.map_flags_to_hygiene(flags),
             np.array([0, 1, 2, 4, 8, 15], dtype=np.uint8),
         )
 
     def test_native_spherex_bits_map_semantically(self) -> None:
         flags = np.array(
             [
-                1 << ingest.SPHEREX_FLAG_BITS["TRANSIENT"],
-                1 << ingest.SPHEREX_FLAG_BITS["OVERFLOW"],
-                1 << ingest.SPHEREX_FLAG_BITS["NONFUNC"],
-                1 << ingest.SPHEREX_FLAG_BITS["GHOST"],
-                1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"],
-                1 << ingest.SPHEREX_FLAG_BITS["BLOOM"],
-                1 << ingest.SPHEREX_FLAG_BITS["MISSING_DATA"],
-                1 << ingest.SPHEREX_FLAG_BITS["HALO"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["TRANSIENT"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["OVERFLOW"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["NONFUNC"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["GHOST"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["SNOWBALL"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["BLOOM"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["MISSING_DATA"],
+                1 << spherex_flags.SPHEREX_FLAG_BITS["HALO"],
             ],
             dtype=np.uint32,
         )
         np.testing.assert_array_equal(
-            ingest.map_flags_to_hygiene(flags),
+            spherex_flags.map_flags_to_hygiene(flags),
             np.array([1, 2, 4, 8, 1, 2, 4, 8], dtype=np.uint8),
         )
 
     def test_nan_flags_are_bad_reference(self) -> None:
         flags = np.array([np.nan, 0.0, np.inf], dtype=np.float32)
         np.testing.assert_array_equal(
-            ingest.map_flags_to_hygiene(flags),
+            spherex_flags.map_flags_to_hygiene(flags),
             np.array([4, 0, 4], dtype=np.uint8),
         )
 
     def test_combined_multi_group_bits_or_together(self) -> None:
         combined = (
-            (1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"])
-            | (1 << ingest.SPHEREX_FLAG_BITS["BLOOM"])
-            | (1 << ingest.SPHEREX_FLAG_BITS["PERSIST"])
-            | (1 << ingest.SPHEREX_FLAG_BITS["SATELLITE_HALO"])
+            (1 << spherex_flags.SPHEREX_FLAG_BITS["SNOWBALL"])
+            | (1 << spherex_flags.SPHEREX_FLAG_BITS["BLOOM"])
+            | (1 << spherex_flags.SPHEREX_FLAG_BITS["PERSIST"])
+            | (1 << spherex_flags.SPHEREX_FLAG_BITS["SATELLITE_HALO"])
         )
         flags = np.array([combined, 0], dtype=np.uint32)
         np.testing.assert_array_equal(
-            ingest.map_flags_to_hygiene(flags),
+            spherex_flags.map_flags_to_hygiene(flags),
             np.array([1 | 2 | 4 | 8, 0], dtype=np.uint8),
         )
 
     def test_scalar_and_empty_flag_inputs(self) -> None:
         for scalar_input, expected in (
             (0, 0),
-            (1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"], 1),
-            (np.uint32(1 << ingest.SPHEREX_FLAG_BITS["SNOWBALL"]), 1),
+            (1 << spherex_flags.SPHEREX_FLAG_BITS["SNOWBALL"], 1),
+            (np.uint32(1 << spherex_flags.SPHEREX_FLAG_BITS["SNOWBALL"]), 1),
             (float("nan"), 4),
         ):
-            mapped = ingest.map_flags_to_hygiene(scalar_input)
+            mapped = spherex_flags.map_flags_to_hygiene(scalar_input)
             self.assertIsInstance(mapped, np.ndarray)
             self.assertEqual(mapped.shape, ())
             self.assertEqual(mapped.dtype, np.uint8)
             self.assertEqual(int(mapped), expected)
 
-        empty = ingest.map_flags_to_hygiene(np.array([], dtype=np.uint32))
+        empty = spherex_flags.map_flags_to_hygiene(np.array([], dtype=np.uint32))
         self.assertEqual(empty.shape, (0,))
         self.assertEqual(empty.dtype, np.uint8)
 
@@ -176,7 +176,7 @@ class TestFitsProcessing(unittest.TestCase):
         finally:
             hdul.close()
 
-        cutout = ingest.process_spherex_fits(buffer.getvalue())
+        cutout = spherex_fits.process_spherex_fits(buffer.getvalue())
 
         self.assertEqual(cutout.clean_image.shape, (8, 8))
         self.assertEqual(cutout.clean_image.dtype, np.float32)
@@ -211,13 +211,13 @@ class TestFitsProcessing(unittest.TestCase):
         self.assertEqual(cutout.clean_image[2, 2], 0.0)
 
     def test_reads_path_fixture(self) -> None:
-        path = ingest.write_synthetic_spherex_fits(
+        path = spherex_synthetic.write_synthetic_spherex_fits(
             Path(self.temp_dir.name) / "cutout.fits",
             ra=10.0,
             dec=20.0,
             bandpass="SPHEREx-D3",
         )
-        cutout = ingest.process_spherex_fits(path)
+        cutout = spherex_fits.process_spherex_fits(path)
         self.assertEqual(cutout.bandpass, "SPHEREx-D3")
         self.assertEqual(cutout.source, "fits")
         self.assertTrue(np.isfinite(cutout.clean_image).all())
@@ -233,7 +233,7 @@ class TestFitsProcessing(unittest.TestCase):
         wave_hdu.header["CTYPE3"] = "WAVE"
         hdul.append(wave_hdu)
         try:
-            cutout = ingest.process_spherex_fits(hdul)
+            cutout = spherex_fits.process_spherex_fits(hdul)
         finally:
             hdul.close()
 
@@ -250,7 +250,7 @@ class TestFitsProcessing(unittest.TestCase):
         hdul[0].header["MJD-BEG"] = 60200.0
         hdul[0].header["MJD-END"] = 60200.5
         try:
-            cutout = ingest.process_spherex_fits(hdul, source_name="memory")
+            cutout = spherex_fits.process_spherex_fits(hdul, source_name="memory")
         finally:
             hdul.close()
 
@@ -262,8 +262,8 @@ class TestFitsProcessing(unittest.TestCase):
         hdul = build_test_hdul()
         hdul.pop(4)
         try:
-            with self.assertRaises(ingest.SpherexProcessingError):
-                ingest.process_spherex_fits(hdul)
+            with self.assertRaises(spherex_fits.SpherexProcessingError):
+                spherex_fits.process_spherex_fits(hdul)
         finally:
             hdul.close()
 
@@ -271,19 +271,19 @@ class TestFitsProcessing(unittest.TestCase):
         hdul = build_test_hdul()
         hdul["ZODI"].data = np.ones((4, 4), dtype=np.float32)
         try:
-            with self.assertRaises(ingest.SpherexProcessingError):
-                ingest.process_spherex_fits(hdul)
+            with self.assertRaises(spherex_fits.SpherexProcessingError):
+                spherex_fits.process_spherex_fits(hdul)
         finally:
             hdul.close()
 
     def test_synthetic_generator_is_deterministic(self) -> None:
-        first = ingest.generate_synthetic_spherex_cutout(
+        first = spherex_synthetic.generate_synthetic_spherex_cutout(
             ra=10.0,
             dec=20.0,
             bandpass="SPHEREx-D4",
             seed=7,
         )
-        second = ingest.generate_synthetic_spherex_cutout(
+        second = spherex_synthetic.generate_synthetic_spherex_cutout(
             ra=10.0,
             dec=20.0,
             bandpass="SPHEREx-D4",
@@ -330,7 +330,7 @@ class TestDownloadsAndFallback(unittest.TestCase):
         response = FakeResponse(b"mef-payload")
         session = FakeSession(response)
 
-        payload = ingest.download_cutout(
+        payload = spherex_ingest.download_cutout(
             "artifact/abc.fits",
             ra=10.0,
             dec=20.0,
@@ -347,8 +347,8 @@ class TestDownloadsAndFallback(unittest.TestCase):
     def test_download_cutout_failure_raises_download_error(self) -> None:
         response = FakeResponse(status_error=True)
         session = FakeSession(response)
-        with self.assertRaises(ingest.SpherexDownloadError):
-            ingest.download_cutout(
+        with self.assertRaises(spherex_fits.SpherexDownloadError):
+            spherex_ingest.download_cutout(
                 "artifact/abc.fits",
                 ra=10.0,
                 dec=20.0,
@@ -367,7 +367,7 @@ class TestDownloadsAndFallback(unittest.TestCase):
         async def run() -> bytes:
             transport = httpx.MockTransport(handler)
             async with httpx.AsyncClient(transport=transport) as client:
-                return await ingest.download_cutout_async(
+                return await spherex_ingest.download_cutout_async(
                     "artifact/abc.fits",
                     ra=10.0,
                     dec=20.0,
@@ -386,14 +386,14 @@ class TestDownloadsAndFallback(unittest.TestCase):
             return httpx.Response(200, content=b"ok")
 
         observations = [
-            ingest.SpherexObservation(uri="artifact/good.fits", bandpass="SPHEREx-D1"),
-            ingest.SpherexObservation(uri="artifact/bad.fits", bandpass="SPHEREx-D2"),
+            spherex_fits.SpherexObservation(uri="artifact/good.fits", bandpass="SPHEREx-D1"),
+            spherex_fits.SpherexObservation(uri="artifact/bad.fits", bandpass="SPHEREx-D2"),
         ]
 
         async def run() -> list:
             transport = httpx.MockTransport(handler)
             async with httpx.AsyncClient(transport=transport) as client:
-                return await ingest.download_cutouts_async(
+                return await spherex_ingest.download_cutouts_async(
                     observations,
                     ra=10.0,
                     dec=20.0,
@@ -405,11 +405,11 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
     def test_ingest_falls_back_to_synthetic_when_irsa_unreachable(self) -> None:
         with mock.patch.object(
-            ingest,
+            spherex_ingest,
             "query_observations",
-            side_effect=ingest.SpherexIngestError("offline"),
+            side_effect=spherex_fits.SpherexIngestError("offline"),
         ):
-            cutouts = ingest.ingest_spherex_cutouts(
+            cutouts = spherex_ingest.ingest_spherex_cutouts(
                 ra=10.0,
                 dec=20.0,
                 fov_arcmin=5.0,
@@ -426,13 +426,13 @@ class TestDownloadsAndFallback(unittest.TestCase):
     def test_ingest_falls_back_to_cached_fixture_after_download_error(self) -> None:
         fixture_dir = Path(self.temp_dir.name) / "fixtures"
         fixture_dir.mkdir()
-        ingest.write_synthetic_spherex_fits(
+        spherex_synthetic.write_synthetic_spherex_fits(
             fixture_dir / "SPHEREx-D2.fits",
             ra=10.0,
             dec=20.0,
             bandpass="SPHEREx-D2",
         )
-        observation = ingest.SpherexObservation(
+        observation = spherex_fits.SpherexObservation(
             uri="artifact/abc.fits",
             bandpass="SPHEREx-D2",
             time_bounds_lower="2026-01-01T00:00:00Z",
@@ -441,17 +441,17 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
         with (
             mock.patch.object(
-                ingest,
+                spherex_ingest,
                 "query_observations",
                 return_value=[observation],
             ),
             mock.patch.object(
-                ingest,
+                spherex_ingest,
                 "download_cutout",
-                side_effect=ingest.SpherexDownloadError("offline"),
+                side_effect=spherex_fits.SpherexDownloadError("offline"),
             ),
         ):
-            cutouts = ingest.ingest_spherex_cutouts(
+            cutouts = spherex_ingest.ingest_spherex_cutouts(
                 ra=10.0,
                 dec=20.0,
                 fov_arcmin=5.0,
@@ -465,12 +465,12 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
     def test_ingest_without_fallback_raises(self) -> None:
         with mock.patch.object(
-            ingest,
+            spherex_ingest,
             "query_observations",
-            side_effect=ingest.SpherexIngestError("offline"),
+            side_effect=spherex_fits.SpherexIngestError("offline"),
         ):
-            with self.assertRaises(ingest.SpherexIngestError):
-                ingest.ingest_spherex_cutouts(
+            with self.assertRaises(spherex_fits.SpherexIngestError):
+                spherex_ingest.ingest_spherex_cutouts(
                     ra=10.0,
                     dec=20.0,
                     fov_arcmin=5.0,
@@ -479,12 +479,12 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
     def test_ingest_async_falls_back_to_synthetic_when_irsa_unreachable(self) -> None:
         with mock.patch.object(
-            ingest,
+            spherex_ingest,
             "query_observations",
-            side_effect=ingest.SpherexIngestError("offline"),
+            side_effect=spherex_fits.SpherexIngestError("offline"),
         ):
             cutouts = asyncio.run(
-                ingest.ingest_spherex_cutouts_async(
+                spherex_ingest.ingest_spherex_cutouts_async(
                     ra=10.0,
                     dec=20.0,
                     fov_arcmin=5.0,
@@ -498,7 +498,7 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
     def test_ingest_retains_partial_cutouts_on_single_503_failure(self) -> None:
         obs_list = [
-            ingest.SpherexObservation(
+            spherex_fits.SpherexObservation(
                 uri=f"artifact/{bp}.fits",
                 bandpass=bp,
                 time_bounds_lower="2026-01-01T00:00:00Z",
@@ -508,23 +508,27 @@ class TestDownloadsAndFallback(unittest.TestCase):
         ]
         d1_path = Path(self.temp_dir.name) / "d1.fits"
         d2_path = Path(self.temp_dir.name) / "d2.fits"
-        ingest.write_synthetic_spherex_fits(d1_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D1")
-        ingest.write_synthetic_spherex_fits(d2_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D2")
+        spherex_synthetic.write_synthetic_spherex_fits(
+            d1_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D1"
+        )
+        spherex_synthetic.write_synthetic_spherex_fits(
+            d2_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D2"
+        )
         d1_bytes = d1_path.read_bytes()
         d2_bytes = d2_path.read_bytes()
 
         def _mock_download(uri: str, **_kwargs: object) -> bytes:
             if "D6" in uri:
-                raise ingest.SpherexDownloadError(
+                raise spherex_fits.SpherexDownloadError(
                     "503 Server Error: Service Unavailable for url: https://irsa.ipac.caltech.edu/..."
                 )
             return d1_bytes if "D1" in uri else d2_bytes
 
         with (
-            mock.patch.object(ingest, "query_observations", return_value=obs_list),
-            mock.patch.object(ingest, "download_cutout", side_effect=_mock_download),
+            mock.patch.object(spherex_ingest, "query_observations", return_value=obs_list),
+            mock.patch.object(spherex_ingest, "download_cutout", side_effect=_mock_download),
         ):
-            cutouts = ingest.ingest_spherex_cutouts(
+            cutouts = spherex_ingest.ingest_spherex_cutouts(
                 ra=147.0,
                 dec=13.3,
                 fov_arcmin=5.0,
@@ -535,7 +539,7 @@ class TestDownloadsAndFallback(unittest.TestCase):
 
     def test_ingest_503_circuit_breaker_fails_fast(self) -> None:
         obs_list = [
-            ingest.SpherexObservation(
+            spherex_fits.SpherexObservation(
                 uri=f"artifact/obs_{idx}.fits",
                 bandpass=f"SPHEREx-D{(idx % 6) + 1}",
                 time_bounds_lower="2026-01-01T00:00:00Z",
@@ -545,14 +549,16 @@ class TestDownloadsAndFallback(unittest.TestCase):
         ]
 
         def _always_503(uri: str, **_kwargs: object) -> bytes:
-            raise ingest.SpherexDownloadError(f"503 Server Error: Service Unavailable for {uri}")
+            raise spherex_fits.SpherexDownloadError(
+                f"503 Server Error: Service Unavailable for {uri}"
+            )
 
         with (
-            mock.patch.object(ingest, "query_observations", return_value=obs_list),
-            mock.patch.object(ingest, "download_cutout", side_effect=_always_503),
+            mock.patch.object(spherex_ingest, "query_observations", return_value=obs_list),
+            mock.patch.object(spherex_ingest, "download_cutout", side_effect=_always_503),
         ):
-            with self.assertRaises(ingest.SpherexDownloadError):
-                ingest.ingest_spherex_cutouts(
+            with self.assertRaises(spherex_fits.SpherexDownloadError):
+                spherex_ingest.ingest_spherex_cutouts(
                     ra=147.0,
                     dec=13.3,
                     fov_arcmin=5.0,

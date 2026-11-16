@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { IAU_CONSTELLATIONS } from '../data/constellations';
-import { useSkyExplorer } from '../context/SkyExplorerContext';
+import { useSkyExplorer, useSkyFrustum } from '../context/SkyExplorerContext';
 import {
   clampGlobeFov,
   IRSA_2MASS_HIPS_URL,
@@ -22,9 +22,9 @@ import {
   computeSpherExReticleCorners,
   formatRaDecCompact,
   getMarkerShapeKind,
-  quantizeGridCenter,
   wrapRaDeg,
 } from '../utils/observatoryMath';
+import { quantizeGridCenter } from '../utils/wcsViewport';
 import {
   loadAladinLite,
   projectSkySin,
@@ -53,19 +53,24 @@ function isInteractiveOverlayTarget(target: EventTarget | null): boolean {
   );
 }
 
+/**
+ * Full-bleed interactive 3D Night-Sky Globe powered by Aladin Lite v3 with a
+ * deterministic pure-black 2D canvas star-sphere fallback, SVG constellation &
+ * catalog overlays, progressive click-to-zoom, and accessible pan/zoom dock.
+ *
+ * @returns Rendered sky globe layer, navigation dock, and telemetry bar.
+ */
 export const NightSkyGlobe: React.FC = () => {
   const {
     coordinates,
-    skyFrustum,
-    setSkyFrustum,
     knownObjects = [],
     globalKnownObjects = [],
     renderSettings,
     objectHighlighterColors = {},
     isBlinkerModalOpen = false,
     openBlinkerModal,
-    globeFocusRequest,
   } = useSkyExplorer();
+  const { skyFrustum, setSkyFrustum, globeFocusRequest } = useSkyFrustum();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const aladinHostRef = useRef<HTMLDivElement | null>(null);

@@ -1,15 +1,14 @@
-import {
-  computeGridKey,
-  decodeDetectorBinaryBuffer,
-  decodeFlagsBinaryBuffer,
-  type BinaryDtype,
-  type CatalogsResponse,
-  type EpochManifestEntry,
-  type SkyPatchManifest,
-  type SpectrumPayload,
+import type {
+  BinaryDtype,
+  CatalogsResponse,
+  EpochManifestEntry,
+  SkyPatchManifest,
+  SpectrumPayload,
 } from '../types/contracts.ts';
-import type { ClientPatchCache } from './clientPatchCache.ts';
+import { decodeDetectorBinaryBuffer, decodeFlagsBinaryBuffer } from '../utils/binaryDecoder.ts';
 import { observatoryLogger } from '../utils/observatoryLogger.ts';
+import { computeGridKey } from '../utils/wcsViewport.ts';
+import type { ClientPatchCache } from './clientPatchCache.ts';
 
 /** Progressive two-stage loading state emitted during preset and live sky patch loads. */
 export type ProgressiveLoadingStage =

@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSkyExplorer } from '../context/SkyExplorerContext';
+import { useSkyExplorer, useSkyFrustum } from '../context/SkyExplorerContext';
 import { useDraggablePanel } from '../hooks/useDraggablePanel';
 import { useOnClickOutside } from '../hooks/useOnClickOutside';
 import {
-  computeViewportViewBox,
   TRACKING_SQUARE_COLORS,
   type GlobalKnownObjectEntry,
   type KnownCelestialObject,
@@ -22,10 +21,20 @@ import {
   isObjectInSkyFrustum,
   sortKnownObjectsCheckedFirst,
 } from '../utils/observatoryMath';
+import { computeViewportViewBox } from '../utils/wcsViewport';
 import { ChevronIcon, DragGripIcon, HollowShapeBadge } from './icons/ObservatoryIcons';
 
 type PanelItem = KnownCelestialObject | GlobalKnownObjectEntry;
 
+/**
+ * Floating draggable Known Celestial Objects HUD panel (`291px` top-right default)
+ * filtered live by either the 3D globe frustum or the zoomed Blinker viewBox.
+ *
+ * Uses deferred checked-item sorting so checked rows only float to the top when
+ * clicking outside the panel or changing view frustum.
+ *
+ * @returns Rendered draggable Known Objects panel.
+ */
 export const KnownObjectsPanel: React.FC = () => {
   const {
     activePresetSlug,
@@ -41,10 +50,9 @@ export const KnownObjectsPanel: React.FC = () => {
     focusAndTrackKnownObject,
     trackedTargets,
     isBlinkerModalOpen = false,
-    skyFrustum,
-    requestGlobeFocus,
     openBlinkerModal,
   } = useSkyExplorer();
+  const { skyFrustum, requestGlobeFocus } = useSkyFrustum();
 
   const { panelRef, x, y, isFolded, isDragging, toggleFolded, dragHandleProps } = useDraggablePanel(
     {
@@ -201,7 +209,7 @@ export const KnownObjectsPanel: React.FC = () => {
     >
       <div className="hud-drag-handle" {...dragHandleProps}>
         <div className="hud-title-group">
-          <span style={{ color: 'var(--text-muted)', display: 'inline-flex' }}>
+          <span className="hud-grip-icon">
             <DragGripIcon size={14} />
           </span>
           <h2 className="hud-title">Known Objects</h2>
@@ -230,17 +238,13 @@ export const KnownObjectsPanel: React.FC = () => {
         <>
           <div className="known-panel-toolbar">
             <div className="known-benchmark-row">
-              <label
-                htmlFor="benchmark-jump-select"
-                style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}
-              >
+              <label htmlFor="benchmark-jump-select" className="known-benchmark-label">
                 Benchmark
               </label>
               <select
                 id="benchmark-jump-select"
                 data-testid="benchmark-jump-select"
-                className="hud-select"
-                style={{ flex: 1, minWidth: 0 }}
+                className="hud-select known-benchmark-select"
                 value={activePresetSlug ?? ''}
                 onChange={(e) => {
                   if (e.target.value) handleBenchmarkJump(e.target.value);
@@ -258,38 +262,28 @@ export const KnownObjectsPanel: React.FC = () => {
             </div>
 
             {isBlinkerModalOpen && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 6,
-                }}
-              >
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              <div className="known-selection-bar">
+                <span className="known-selection-count">
                   {renderSettings.checkedObjectIds.length} active
                 </span>
-                <div style={{ display: 'flex', gap: 4 }}>
+                <div className="known-selection-actions">
                   <button
                     type="button"
-                    className="hud-btn-secondary"
-                    style={{ height: 24, padding: '0 7px', fontSize: 11 }}
+                    className="hud-btn-secondary known-selection-btn"
                     onClick={checkAllKnownObjects}
                   >
                     All
                   </button>
                   <button
                     type="button"
-                    className="hud-btn-secondary"
-                    style={{ height: 24, padding: '0 7px', fontSize: 11 }}
+                    className="hud-btn-secondary known-selection-btn"
                     onClick={resetDefaultKnownObjects}
                   >
                     Notable
                   </button>
                   <button
                     type="button"
-                    className="hud-btn-secondary"
-                    style={{ height: 24, padding: '0 7px', fontSize: 11 }}
+                    className="hud-btn-secondary known-selection-btn"
                     onClick={uncheckAllKnownObjects}
                   >
                     None
@@ -301,14 +295,7 @@ export const KnownObjectsPanel: React.FC = () => {
 
           <div className="known-objects-scroll" role="list" data-testid="known-objects-list">
             {displayItems.length === 0 ? (
-              <div
-                style={{
-                  padding: '20px 10px',
-                  textAlign: 'center',
-                  fontSize: 12,
-                  color: 'var(--text-muted)',
-                }}
-              >
+              <div className="known-objects-empty">
                 No cataloged objects fall within this sky frustum. Pan or jump to a benchmark
                 target.
               </div>

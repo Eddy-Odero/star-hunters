@@ -8,23 +8,31 @@ import {
   BINARY_DETECTOR_FLOAT16_BYTES,
   BINARY_DETECTOR_FLOAT32_BYTES,
   BINARY_FLAGS_UINT8_BYTES,
+  DEFAULT_MOLECULAR_BANDS,
   TRACKING_SQUARE_COLORS,
   WORLD_CAPITAL_CITIES,
+} from '../src/types/contracts.ts';
+import * as ContractsModule from '../src/types/contracts.ts';
+import { readStoredNumber } from '../src/hooks/useResizableSplit.ts';
+import {
+  decodeDetectorBinaryBuffer,
+  decodeFlagsBinaryBuffer,
+  decodeFloat16Word,
+} from '../src/utils/binaryDecoder.ts';
+import {
+  detectAndTrackBodiesAtClick,
+  detectAndTrackBrightBodyAcrossEpochs,
+  mergeTrackedTargets,
+} from '../src/utils/clickTracker.ts';
+import {
   clampViewportPanZoom,
   computeDetectorWeights,
   computeGridKey,
   computeViewportViewBox,
-  decodeDetectorBinaryBuffer,
-  decodeFlagsBinaryBuffer,
-  decodeFloat16Word,
-  detectAndTrackBodiesAtClick,
-  detectAndTrackBrightBodyAcrossEpochs,
-  formatImageProvenanceBadge,
-  getDefaultCheckedObjectIds,
-  mergeTrackedTargets,
-  pickDistinctHighlighterColors,
+  pixelToSkyWcs,
+  quantizeGridCenter,
   screenToImageCoordinates,
-} from '../src/types/contracts.ts';
+} from '../src/utils/wcsViewport.ts';
 import {
   ClientPatchCache,
   gridCacheKey,
@@ -45,10 +53,12 @@ import {
   formatProperMotion,
   fuzzyScoreText,
   fuzzySearchKnownObjects,
+  getDefaultCheckedObjectIds,
   inferObjectClass,
   isMovingSolarSystemObject,
   isWavelengthPresetActive,
   objectClassBadgeLabel,
+  pickDistinctHighlighterColors,
   pickNearestAllowedEpoch,
   resolveFilteredEpochIndices,
   selectAllObjectIds,
@@ -69,6 +79,7 @@ import {
   angularSeparationDeg,
   computeMagneticSnap,
   decodeHygieneFlagMask,
+  formatImageProvenanceBadge,
   formatRaDecCompact,
   getMarkerShapeKind,
   isObjectInPatchViewBox,
@@ -2651,4 +2662,103 @@ test('Phase 1 progressivePatchLoader treats aborted non-ok frame responses as Ab
       }),
     (err) => err instanceof Error && err.name === 'AbortError',
   );
+});
+
+test('Phase 2 decomposed modules: DEFAULT_MOLECULAR_BANDS, unified grid quantization, WCS edge cases, and binary flags validation', () => {
+  // Consolidated DEFAULT_MOLECULAR_BANDS covers H2O, CH4, CO2, and CO within [0.75, 5.0] um
+  assert.equal(DEFAULT_MOLECULAR_BANDS.length, 4);
+  assert.deepEqual(
+    DEFAULT_MOLECULAR_BANDS.map((b) => b.molecule),
+    ['h2o', 'ch4', 'co2', 'co'],
+  );
+  for (const band of DEFAULT_MOLECULAR_BANDS) {
+    assert.ok(band.min_um >= 0.75 && band.max_um <= 5.0 && band.min_um < band.max_um);
+    assert.ok(band.label.length > 0);
+  }
+
+  // Consolidated WAVELENGTH_PRESETS exposes shortLabel for BlinkerControlsSection pills
+  for (const preset of WAVELENGTH_PRESETS) {
+    assert.ok(typeof preset.shortLabel === 'string' && preset.shortLabel.length > 0);
+  }
+
+  // Unified quantizeGridCenter & computeGridKey handle RA wraparound and Dec clamping
+  assert.deepEqual(quantizeGridCenter(-10.02, 95.0), { raQ: 350.0, decQ: 90.0 });
+  assert.deepEqual(quantizeGridCenter(359.99, -95.0), { raQ: 0.0, decQ: -90.0 });
+  assert.equal(computeGridKey(-10.02, 95.0, 5.0), 'ra350.00_dec90.00_fov5.0');
+  assert.equal(computeGridKey(359.99, -95.0, 5.0), 'ra0.00_dec-90.00_fov5.0');
+
+  // pixelToSkyWcs wraps RA across 0/360 and clamps Dec to [-90, 90]
+  const wcs = {
+    width: 256,
+    height: 256,
+    crval: [0.001, 89.99],
+    crpix: [128, 128],
+    cdelt: [-0.0003255, 0.0003255],
+  };
+  const sky = pixelToSkyWcs(200, 200, wcs);
+  assert.ok(sky.ra >= 0 && sky.ra < 360);
+  assert.ok(sky.dec <= 90 && sky.dec >= -90);
+
+  // screenToImageCoordinates rejects degenerate rects and out-of-rect clicks
+  assert.equal(
+    screenToImageCoordinates(50, 50, { left: 0, top: 0, width: 0, height: 100 }).inBounds,
+    false,
+  );
+  assert.equal(
+    screenToImageCoordinates(-10, 50, { left: 0, top: 0, width: 256, height: 256 }).inBounds,
+    false,
+  );
+
+  // decodeFlagsBinaryBuffer enforces exact 65,536-byte length
+  assert.throws(() => decodeFlagsBinaryBuffer(new ArrayBuffer(1024)));
+
+  // contracts.ts stays strictly pure (constants/types only; zero runtime function exports)
+  const exportedFunctions = Object.entries(ContractsModule).filter(
+    ([, value]) => typeof value === 'function',
+  );
+  assert.deepEqual(exportedFunctions, []);
+});
+
+test('Phase 2 readStoredNumber safely validates localStorage bounds and SSR fallback', () => {
+  // In Node SSR (window undefined), returns fallback
+  assert.equal(readStoredNumber('sh_test_width', 292, 240, 420), 292);
+
+  const origWindowDesc = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const storageMap = new Map();
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      },
+    },
+  });
+  try {
+    // Missing key or empty string -> fallback even when 0 is within [min, max]
+    assert.equal(readStoredNumber('missing', 292, 240, 420), 292);
+    assert.equal(readStoredNumber('missing', 0.5, 0, 1), 0.5);
+    storageMap.set('empty', '');
+    storageMap.set('whitespace', '   ');
+    assert.equal(readStoredNumber('empty', 0.5, 0, 1), 0.5);
+    assert.equal(readStoredNumber('whitespace', 0.5, 0, 1), 0.5);
+    // Out-of-bounds / non-numeric -> fallback
+    storageMap.set('too_small', '120');
+    storageMap.set('too_large', '999');
+    storageMap.set('nan_val', 'abc');
+    assert.equal(readStoredNumber('too_small', 292, 240, 420), 292);
+    assert.equal(readStoredNumber('too_large', 292, 240, 420), 292);
+    assert.equal(readStoredNumber('nan_val', 292, 240, 420), 292);
+    assert.equal(readStoredNumber('empty', 292, 240, 420), 292);
+    // Valid stored number (including 0 when inside [min, max]) -> parsed value
+    storageMap.set('valid', '340');
+    storageMap.set('zero', '0');
+    assert.equal(readStoredNumber('valid', 292, 240, 420), 340);
+    assert.equal(readStoredNumber('zero', 0.5, 0, 1), 0);
+  } finally {
+    if (origWindowDesc) {
+      Object.defineProperty(globalThis, 'window', origWindowDesc);
+    } else {
+      delete globalThis.window;
+    }
+  }
 });

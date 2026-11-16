@@ -12,13 +12,13 @@ import weakref
 import zlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
+
+from app.utils.astronomy import angular_separation_deg, mjd_to_date_bucket
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
 DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
-_MJD_EPOCH = datetime(1858, 11, 17, 0, 0, 0, tzinfo=UTC)
 
 
 def quantize_bucket(
@@ -42,43 +42,6 @@ def quantize_bucket(
         val = max(-90.0, min(90.0, val))
     q = round(round(val / step) * step, 4)
     return q % 360.0 if wrap_360 else max(-90.0, min(90.0, q))
-
-
-def mjd_to_date_bucket(mjd: float) -> str:
-    """Convert Modified Julian Date (MJD) to an ISO UTC date bucket ``YYYY-MM-DD``.
-
-    Args:
-        mjd: Modified Julian Date.
-
-    Returns:
-        ISO-8601 UTC date string (``YYYY-MM-DD``).
-    """
-    dt = _MJD_EPOCH + timedelta(days=float(mjd))
-    return dt.date().isoformat()
-
-
-def angular_separation_deg(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
-    """Compute great-circle angular separation between two ICRS coordinates.
-
-    Args:
-        ra1: First Right Ascension in degrees.
-        dec1: First Declination in degrees.
-        ra2: Second Right Ascension in degrees.
-        dec2: Second Declination in degrees.
-
-    Returns:
-        Angular separation in degrees using the haversine formula.
-    """
-    ra1_r = math.radians(ra1)
-    dec1_r = math.radians(dec1)
-    ra2_r = math.radians(ra2)
-    dec2_r = math.radians(dec2)
-    dra = ra2_r - ra1_r
-    ddec = dec2_r - dec1_r
-    sin_ddec = math.sin(ddec / 2.0)
-    sin_dra = math.sin(dra / 2.0)
-    a = sin_ddec * sin_ddec + math.cos(dec1_r) * math.cos(dec2_r) * sin_dra * sin_dra
-    return math.degrees(2.0 * math.asin(min(1.0, math.sqrt(max(0.0, a)))))
 
 
 def compute_grid_key(

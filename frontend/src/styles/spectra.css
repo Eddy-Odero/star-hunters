@@ -1,0 +1,103 @@
+/* Spectra Modal (1035x284px) */
+.spectra-modal {
+  width: min(1035px, calc(100vw - 32px));
+  border-radius: 16px;
+  background: rgba(11, 15, 23, 0.96);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.86);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.spectra-modal-body {
+  height: 262px;
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.spectra-channel-count {
+  font-size: 11px;
+}
+
+.spectra-csv-btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+
+.spectra-loading-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.spectra-feature-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.spectra-feature-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.spectra-feature-pill {
+  text-transform: none;
+}
+
+.spectra-plot-svg {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: block;
+}
+
+.spectra-hover-readout {
+  height: 22px;
+  min-height: 22px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  padding-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.spectra-readout-active {
+  color: var(--accent-amber-bright);
+}
+
+.spectra-readout-hint {
+  color: var(--text-muted);
+}
+
+.spectra-readout-origin {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.spectra-empty-state {
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+}

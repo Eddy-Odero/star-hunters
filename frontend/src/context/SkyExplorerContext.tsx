@@ -7,41 +7,30 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import {
-  clampViewportPanZoom,
-  detectAndTrackBodiesAtClick,
-  getDefaultCheckedObjectIds,
-  mergeTrackedTargets,
-  type CatalogsResponse,
-  type ClickDiagnosticInfo,
-  type GlobalKnownObjectEntry,
-  type KnownCelestialObject,
-  type MissionName,
-  type SkyExplorerContextValue,
-  type SkyPatchManifest,
-  type SkyViewportFrustum,
-  type SpectrumPayload,
-  type TracedObjectSummary,
-  type ViewportRenderSettings,
+import { useBlinkerPlayback } from '../hooks/useBlinkerPlayback';
+import { useObservatoryWarmup } from '../hooks/useObservatoryWarmup';
+import { usePatchLoader } from '../hooks/usePatchLoader';
+import { useSpectrumInspector } from '../hooks/useSpectrumInspector';
+import { useTargetTracking } from '../hooks/useTargetTracking';
+import type {
+  GlobalKnownObjectEntry,
+  KnownCelestialObject,
+  MissionName,
+  SkyExplorerContextValue,
+  SkyViewportFrustum,
+  ViewportRenderSettings,
 } from '../types/contracts';
-import { defaultClientPatchCache } from '../services/clientPatchCache';
 import {
-  loadLiveCoordinatesFlow,
-  loadPresetPatchFlow,
-  type LoadedPatchResult,
-} from '../services/progressivePatchLoader';
-import {
-  assignDeterministicHighlighterColors,
   clearCheckedObjectIds,
   extractAvailableMissions,
+  getDefaultCheckedObjectIds,
   pickNearestAllowedEpoch,
   resolveFilteredEpochIndices,
   selectAllObjectIds,
   toggleObjectId,
 } from '../utils/knownObjectSelection';
 import { observatoryLogger } from '../utils/observatoryLogger';
-import { useBlinkerPlayback } from '../hooks/useBlinkerPlayback';
-import { useObservatoryWarmup } from '../hooks/useObservatoryWarmup';
+import { clampViewportPanZoom } from '../utils/wcsViewport';
 import { useOptionalNotifications } from './NotificationContext';
 
 const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
@@ -73,6 +62,15 @@ const ALL_MISSIONS: MissionName[] = [
   'Simulated',
 ];
 
+/** High-frequency 3D globe frustum & focus slice separated from patch/blinker state. */
+export interface SkyFrustumContextValue {
+  skyFrustum: SkyViewportFrustum;
+  setSkyFrustum: (frustum: SkyViewportFrustum) => void;
+  globeFocusRequest: { ra: number; dec: number; fovDeg: number; seq: number } | null;
+  requestGlobeFocus: (ra: number, dec: number, fovDeg?: number) => void;
+}
+
+const SkyFrustumContext = createContext<SkyFrustumContextValue | null>(null);
 const SkyExplorerContext = createContext<SkyExplorerContextValue | null>(null);
 
 /**
@@ -81,7 +79,7 @@ const SkyExplorerContext = createContext<SkyExplorerContextValue | null>(null);
  * targets, and 102-band SPHEREx spectrum inspection.
  *
  * @param props - Provider props containing descendant React nodes.
- * @returns Context provider element wrapping the application tree.
+ * @returns Context provider elements wrapping the application tree.
  */
 export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const notifications = useOptionalNotifications();
@@ -90,22 +88,18 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     notificationsRef.current = notifications;
   }, [notifications]);
 
-  const [activePresetSlug, setActivePresetSlug] = useState<string | null>('wise_0855');
-  const [coordinates, setCoordinates] = useState<{
-    ra: number;
-    dec: number;
-    fovArcmin: number;
-  }>({
-    ra: 133.7951,
-    dec: -7.2451,
-    fovArcmin: 5.0,
-  });
   const [skyFrustum, setSkyFrustum] = useState<SkyViewportFrustum>({
     ra: 133.7951,
     dec: -7.2451,
     fovDeg: 70,
     aspect: 1.4,
   });
+  const skyFrustumRef = useRef<SkyViewportFrustum>(skyFrustum);
+  useEffect(() => {
+    skyFrustumRef.current = skyFrustum;
+  }, [skyFrustum]);
+  const getSkyFrustum = useCallback(() => skyFrustumRef.current, []);
+
   const [globeFocusRequest, setGlobeFocusRequest] = useState<{
     ra: number;
     dec: number;
@@ -113,38 +107,102 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     seq: number;
   } | null>(null);
 
-  const [manifest, setManifest] = useState<SkyPatchManifest | null>(null);
-  const [epochBuffers, setEpochBuffers] = useState<Float32Array[][] | null>(null);
-  const [flagsBuffers, setFlagsBuffers] = useState<Uint8Array[] | null>(null);
-  const [loadingState, setLoadingState] = useState<SkyExplorerContextValue['loadingState']>({
-    stage: 'idle',
-  });
   const [renderSettings, setRenderSettings] =
     useState<ViewportRenderSettings>(INITIAL_RENDER_SETTINGS);
   const [activeMissions, setActiveMissions] = useState<MissionName[]>(ALL_MISSIONS);
-  const [selectedObject, setSelectedObject] = useState<TracedObjectSummary | null>(null);
-  const [trackedTargets, setTrackedTargets] = useState<TracedObjectSummary[]>([]);
-  const [lastClickDiagnostic, setLastClickDiagnostic] = useState<ClickDiagnosticInfo | null>(null);
-  const [activeSpectrum, setActiveSpectrum] = useState<SpectrumPayload | null>(null);
-  const [isSpectrumLoading, setIsSpectrumLoading] = useState<boolean>(false);
   const [globalKnownObjects, setGlobalKnownObjects] = useState<GlobalKnownObjectEntry[]>([]);
-  const [stageAKnownObjects, setStageAKnownObjects] = useState<KnownCelestialObject[] | null>(null);
-  const [objectHighlighterColors, setObjectHighlighterColors] = useState<Record<string, string>>(
-    {},
-  );
-
   const [isBlinkerModalOpen, setIsBlinkerModalOpen] = useState<boolean>(false);
-  const [isSpectraModalOpen, setIsSpectraModalOpen] = useState<boolean>(false);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
   const pendingFocusObjectIdRef = useRef<string | null>(null);
-
-  const knownObjects: KnownCelestialObject[] = useMemo(
-    () => stageAKnownObjects ?? manifest?.catalog_overlays?.known_objects ?? [],
-    [stageAKnownObjects, manifest],
-  );
+  const patchResetBridgeRef = useRef<{
+    clearTracking: () => void;
+    setSpectrum: (spec: SkyExplorerContextValue['activeSpectrum']) => void;
+  }>({
+    clearTracking: () => undefined,
+    setSpectrum: () => undefined,
+  });
 
   useObservatoryWarmup(setGlobalKnownObjects);
+
+  const {
+    activePresetSlug,
+    setActivePresetSlug,
+    coordinates,
+    setCoordinates,
+    manifest,
+    epochBuffers,
+    flagsBuffers,
+    loadingState,
+    knownObjects,
+    objectHighlighterColors,
+    loadPresetBundle,
+    loadLiveCoordinates,
+  } = usePatchLoader({
+    notificationsRef,
+    onResetPatchDependents: () => {
+      patchResetBridgeRef.current.clearTracking();
+    },
+    onStageACheckedIds: (defaultCheckedIds) => {
+      setRenderSettings((prev) => ({
+        ...prev,
+        checkedObjectIds: defaultCheckedIds,
+      }));
+    },
+    onStageBReady: (result, defaultCheckedIds) => {
+      patchResetBridgeRef.current.setSpectrum(result.spectrum);
+      setActiveMissions(ALL_MISSIONS);
+      setRenderSettings((prev) => ({
+        ...prev,
+        activeEpochIndex: 0,
+        passAIndex: 0,
+        passBIndex: Math.max(0, result.manifest.epochs.length - 1),
+        coaddIndices: result.manifest.epochs.map((_, idx) => idx),
+        zoom: 1.0,
+        panX: 0.0,
+        panY: 0.0,
+        checkedObjectIds: defaultCheckedIds,
+      }));
+      patchResetBridgeRef.current.clearTracking();
+    },
+  });
+
+  const {
+    selectedObject,
+    trackedTargets,
+    lastClickDiagnostic,
+    inspectPixelOrCoord,
+    removeTrackedTarget,
+    untrackObjectById,
+    clearTrackedTargets,
+  } = useTargetTracking({
+    epochBuffers,
+    manifest,
+    objectHighlighterColors,
+    activeEpochIndex: renderSettings.activeEpochIndex,
+    wavelengthRangeUm: renderSettings.wavelengthRangeUm,
+    notificationsRef,
+  });
+
+  const {
+    activeSpectrum,
+    setActiveSpectrum,
+    isSpectrumLoading,
+    isSpectraModalOpen,
+    setIsSpectraModalOpen,
+    openSelectedSpectrum,
+    closeSpectraModal,
+  } = useSpectrumInspector({
+    coordinates,
+    selectedObject,
+    notificationsRef,
+  });
+
+  useEffect(() => {
+    patchResetBridgeRef.current = {
+      clearTracking: clearTrackedTargets,
+      setSpectrum: setActiveSpectrum,
+    };
+  }, [clearTrackedTargets, setActiveSpectrum]);
 
   const requestGlobeFocus = useCallback((ra: number, dec: number, fovDeg = 2.0) => {
     setGlobeFocusRequest((prev) => ({
@@ -286,33 +344,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }));
   }, [knownObjects]);
 
-  const removeTrackedTarget = useCallback((trackId: string) => {
-    setTrackedTargets((prev) => {
-      const next = prev.filter((t) => t.trackId !== trackId);
-      setSelectedObject((curr) =>
-        curr?.trackId === trackId ? (next[next.length - 1] ?? null) : curr,
-      );
-      return next;
-    });
-  }, []);
-
-  const untrackObjectById = useCallback((objectId: string) => {
-    setTrackedTargets((prev) => {
-      const next = prev.filter((t) => t.matchedObjectId !== objectId);
-      setSelectedObject((curr) =>
-        curr?.matchedObjectId === objectId ? (next[next.length - 1] ?? null) : curr,
-      );
-      return next;
-    });
-  }, []);
-
-  const clearTrackedTargets = useCallback(() => {
-    setTrackedTargets([]);
-    setSelectedObject(null);
-    setLastClickDiagnostic(null);
-  }, []);
-
-  // Mission-aware non-looping playback timer
   const filteredEpochIndices = useMemo(() => {
     if (!manifest) return [];
     return resolveFilteredEpochIndices(manifest.epochs, activeMissions);
@@ -326,138 +357,19 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setRenderSettings,
     });
 
-  /**
-   * Apply a decoded Stage B patch bundle (manifest, detector planes, hygiene flags,
-   * and optional spectrum) to context state and reset viewport/tracking overlays.
-   *
-   * @param result - Decoded sky patch payload from {@link loadPresetPatchFlow} or {@link loadLiveCoordinatesFlow}.
-   * @param syncCoordinatesFromManifest - Whether to overwrite active sky coordinates from the manifest.
-   * @param preserveStageAColors - Whether to retain existing Stage A `object_id -> color` mappings.
-   */
-  const applyLoadedPatch = useCallback(
-    (
-      result: LoadedPatchResult,
-      syncCoordinatesFromManifest: boolean,
-      preserveStageAColors: boolean,
-    ) => {
-      const nextKnownObjects = result.manifest.catalog_overlays.known_objects ?? [];
-      setStageAKnownObjects(null);
-      setObjectHighlighterColors((prev) =>
-        assignDeterministicHighlighterColors(nextKnownObjects, preserveStageAColors ? prev : {}),
-      );
-      setManifest(result.manifest);
-      setEpochBuffers(result.epochBuffers);
-      setFlagsBuffers(result.flagsBuffers);
-      setActiveSpectrum(result.spectrum);
-      if (syncCoordinatesFromManifest) {
-        setCoordinates({
-          ra: result.manifest.query.ra,
-          dec: result.manifest.query.dec,
-          fovArcmin: result.manifest.query.fov_arcmin,
-        });
-      }
-      setActiveMissions(ALL_MISSIONS);
-      setRenderSettings((prev) => ({
-        ...prev,
-        activeEpochIndex: 0,
-        passAIndex: 0,
-        passBIndex: Math.max(0, result.manifest.epochs.length - 1),
-        coaddIndices: result.manifest.epochs.map((_, idx) => idx),
-        zoom: 1.0,
-        panX: 0.0,
-        panY: 0.0,
-        checkedObjectIds: getDefaultCheckedObjectIds(nextKnownObjects),
-      }));
-      setSelectedObject(null);
-      setTrackedTargets([]);
-      setLastClickDiagnostic(null);
-      setLoadingState({ stage: 'ready', fromClientCache: result.fromClientCache });
-      notificationsRef.current?.finishAsyncTask('sky-patch-load');
-      observatoryLogger.info('patch', 'Sky patch ready for blinking', {
-        gridKey: result.manifest.query.grid_key,
-        mission: result.manifest.data_source_summary?.primary_mission,
-        epochs: result.manifest.epochs.length,
-        fromClientCache: result.fromClientCache,
-      });
-    },
-    [],
-  );
-
-  /**
-   * Shared abortable patch-load runner coordinating `AbortController` cancellation,
-   * task indicator lifecycle, optional state reset, and non-abort error reporting.
-   *
-   * @param options - Task labels, logging callbacks, reset flag, and abortable execution body.
-   * @returns Promise that settles once the load completes, aborts, or reports an error.
-   */
-  const runPatchLoad = useCallback(
-    async (options: {
-      taskMessage: string;
-      errorTitle: string;
-      fallbackErrorMessage: string;
-      resetCurrentPatch?: boolean;
-      logStart: () => void;
-      logError: (errorMessage: string) => void;
-      execute: (signal: AbortSignal) => Promise<void>;
-    }) => {
-      abortControllerRef.current?.abort();
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-      setStageAKnownObjects(null);
-      if (options.resetCurrentPatch) {
-        setObjectHighlighterColors({});
-        setManifest(null);
-        setEpochBuffers(null);
-        setFlagsBuffers(null);
-        setSelectedObject(null);
-        setTrackedTargets([]);
-        setLastClickDiagnostic(null);
-      }
-      options.logStart();
-      notificationsRef.current?.startAsyncTask('sky-patch-load', options.taskMessage, 'progress');
-
-      try {
-        await options.execute(controller.signal);
-      } catch (err) {
-        if ((err as { name?: string } | null)?.name === 'AbortError' || controller.signal.aborted) {
-          return;
-        }
-        notificationsRef.current?.finishAsyncTask('sky-patch-load');
-        const msg = err instanceof Error ? err.message : options.fallbackErrorMessage;
-        options.logError(msg);
-        setLoadingState({ stage: 'error', message: msg });
-        notificationsRef.current?.pushWarning({
-          id: 'patch-load-error',
-          title: options.errorTitle,
-          detail: msg,
-          level: 'error',
-        });
-      }
-    },
-    [],
-  );
-
-  const loadPresetBundle = useCallback(
-    async (slug: string) => {
-      await runPatchLoad({
-        taskMessage: 'Loading target frames...',
-        errorTitle: 'Failed to load preset patch',
-        fallbackErrorMessage: 'Unknown error loading preset',
-        logStart: () =>
-          observatoryLogger.info('patch', 'Loading benchmark preset bundle', { slug }),
-        logError: (error) =>
-          observatoryLogger.error('patch', 'Preset bundle load failed', { slug, error }),
-        execute: async (signal) => {
-          await loadPresetPatchFlow(slug, {
-            cache: defaultClientPatchCache,
-            signal,
-            onStageChange: setLoadingState,
-            onReady: (result) => applyLoadedPatch(result, true, false),
-          });
-        },
-      });
-    },
-    [applyLoadedPatch, runPatchLoad],
+  const playbackValue = useMemo(
+    () => ({
+      isPlaying,
+      isLooping,
+      fps,
+      play,
+      pause,
+      stepForward,
+      stepBackward,
+      toggleLoop,
+      setFps,
+    }),
+    [fps, isLooping, isPlaying, pause, play, setFps, stepBackward, stepForward, toggleLoop],
   );
 
   const selectPreset = useCallback(
@@ -467,64 +379,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setIsSpectraModalOpen(false);
       void loadPresetBundle(slug);
     },
-    [loadPresetBundle, pause],
-  );
-
-  const loadLiveCoordinates = useCallback(
-    async (ra: number, dec: number, fovArcmin: number) => {
-      await runPatchLoad({
-        taskMessage: 'Streaming epoch frames...',
-        errorTitle: 'Sky patch stream interrupted',
-        fallbackErrorMessage: 'Unknown error loading sky patch',
-        resetCurrentPatch: true,
-        logStart: () =>
-          observatoryLogger.info('patch', 'Loading live sky patch', { ra, dec, fovArcmin }),
-        logError: (error) =>
-          observatoryLogger.error('patch', 'Live sky patch stream interrupted', {
-            ra,
-            dec,
-            error,
-          }),
-        execute: async (signal) => {
-          await loadLiveCoordinatesFlow(ra, dec, fovArcmin, {
-            cache: defaultClientPatchCache,
-            signal,
-            onStageChange: setLoadingState,
-            onCatalogsReady: (catData: CatalogsResponse) => {
-              const stageAObjects = catData.catalog_overlays.known_objects ?? [];
-              observatoryLogger.info('catalogs', 'Known objects loaded for patch', {
-                count: stageAObjects.length,
-                ra,
-                dec,
-              });
-              setStageAKnownObjects(stageAObjects);
-              setObjectHighlighterColors(assignDeterministicHighlighterColors(stageAObjects, {}));
-              setRenderSettings((prev) => ({
-                ...prev,
-                checkedObjectIds: getDefaultCheckedObjectIds(stageAObjects),
-              }));
-              notificationsRef.current?.startAsyncTask(
-                'sky-patch-catalogs',
-                'Known objects loaded',
-                'success',
-                2600,
-              );
-              notificationsRef.current?.startAsyncTask(
-                'sky-patch-load',
-                'Streaming epoch frames...',
-                'progress',
-              );
-              setLoadingState({
-                stage: 'loading_cutouts',
-                message: 'Streaming epoch frames...',
-              });
-            },
-            onReady: (result) => applyLoadedPatch(result, false, true),
-          });
-        },
-      });
-    },
-    [applyLoadedPatch, runPatchLoad],
+    [loadPresetBundle, pause, setActivePresetSlug, setIsSpectraModalOpen],
   );
 
   const navigateToCoordinates = useCallback(
@@ -535,7 +390,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setCoordinates({ ra, dec, fovArcmin });
       void loadLiveCoordinates(ra, dec, fovArcmin);
     },
-    [loadLiveCoordinates, pause],
+    [loadLiveCoordinates, pause, setActivePresetSlug, setCoordinates, setIsSpectraModalOpen],
   );
 
   const openBlinkerModal = useCallback(
@@ -548,7 +403,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
       setIsBlinkerModalOpen(true);
     },
-    [navigateToCoordinates, selectPreset],
+    [navigateToCoordinates, selectPreset, setIsSpectraModalOpen],
   );
 
   const closeBlinkerModal = useCallback(() => {
@@ -556,164 +411,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setIsSpectraModalOpen(false);
     setIsBlinkerModalOpen(false);
     observatoryLogger.info('blinker', 'Blinker modal closed');
-  }, [pause]);
-
-  const openSelectedSpectrum = useCallback(
-    async (coords?: { ra: number; dec: number; label?: string }) => {
-      setIsSpectraModalOpen(true);
-      const targetRa = coords?.ra ?? selectedObject?.ra ?? coordinates.ra;
-      const targetDec = coords?.dec ?? selectedObject?.dec ?? coordinates.dec;
-
-      // Reuse already-loaded matching spectrum when clicking near patch center
-      if (
-        activeSpectrum &&
-        Math.abs(activeSpectrum.ra - targetRa) < 0.002 &&
-        Math.abs(activeSpectrum.dec - targetDec) < 0.002
-      ) {
-        return;
-      }
-
-      setIsSpectrumLoading(true);
-      notificationsRef.current?.startAsyncTask(
-        'spectrum-fetch',
-        'Loading 102-band spectrum...',
-        'progress',
-      );
-      observatoryLogger.info('spectrum', 'Fetching 102-band spectrum', {
-        ra: targetRa,
-        dec: targetDec,
-      });
-      try {
-        const params = new URLSearchParams({
-          ra: targetRa.toFixed(5),
-          dec: targetDec.toFixed(5),
-        });
-        if (coords?.label ?? selectedObject?.matchedLabel) {
-          params.set('label', coords?.label ?? selectedObject?.matchedLabel ?? '');
-        }
-        const res = await fetch(`/api/v1/spectrum?${params.toString()}`);
-        if (res.ok) {
-          const payload = (await res.json()) as SpectrumPayload;
-          if (payload && Array.isArray(payload.channels) && payload.channels.length > 0) {
-            setActiveSpectrum(payload);
-            observatoryLogger.info('spectrum', 'Loaded 102-band spectrum', {
-              channels: payload.channels.length,
-              label: payload.source_label,
-            });
-            return;
-          }
-        }
-        throw new Error(`Spectrum endpoint returned status ${res.status}`);
-      } catch (err) {
-        observatoryLogger.warn('spectrum', 'Spectrum request failed', {
-          error: err instanceof Error ? err.message : 'unavailable',
-        });
-        if (!activeSpectrum) {
-          notificationsRef.current?.pushWarning({
-            id: 'spectrum-error',
-            title: '102-band spectrum unavailable',
-            detail:
-              err instanceof Error
-                ? err.message
-                : 'Backend spectrum extractor could not be reached.',
-            level: 'warning',
-          });
-        }
-      } finally {
-        setIsSpectrumLoading(false);
-        notificationsRef.current?.finishAsyncTask('spectrum-fetch');
-      }
-    },
-    [activeSpectrum, coordinates.dec, coordinates.ra, selectedObject],
-  );
-
-  const closeSpectraModal = useCallback(() => {
-    setIsSpectraModalOpen(false);
-  }, []);
-
-  const inspectPixelOrCoord = useCallback(
-    (x: number, y: number, originEpochIndex?: number) => {
-      if (!epochBuffers || !manifest || epochBuffers.length === 0) return;
-      const originEpoch = originEpochIndex ?? renderSettings.activeEpochIndex;
-
-      // Second-click untrack: hitting an already-tracked target removes its Square frame
-      const hitExisting = trackedTargets.find((t) => {
-        const wp = t.waypoints[originEpoch] ??
-          t.waypoints[t.originEpochIndex] ?? {
-            x: t.originCentroidX,
-            y: t.originCentroidY,
-          };
-        return Math.hypot(wp.x - x, wp.y - y) <= 10;
-      });
-      if (hitExisting) {
-        removeTrackedTarget(hitExisting.trackId);
-        setLastClickDiagnostic(null);
-        return;
-      }
-
-      const result = detectAndTrackBodiesAtClick({
-        clickX: x,
-        clickY: y,
-        originEpochIndex: originEpoch,
-        epochBuffers,
-        manifest,
-        wavelengthRangeUm: renderSettings.wavelengthRangeUm,
-      });
-
-      setLastClickDiagnostic({
-        clickX: x,
-        clickY: y,
-        epochIndex: originEpoch,
-        status: result.status,
-        message: result.message,
-        tracksAdded: result.tracks.length,
-      });
-
-      if (result.status === 'no_body_found' || result.tracks.length === 0) {
-        notificationsRef.current?.pushWarning({
-          id: 'no-body-clicked',
-          title: 'No source detected at cursor',
-          detail: result.message,
-          level: 'warning',
-        });
-        return;
-      }
-
-      observatoryLogger.info('tracking', 'Tracked target(s) on canvas click', {
-        status: result.status,
-        tracksAdded: result.tracks.length,
-        labels: result.tracks.map((t) => t.matchedLabel || t.groupId),
-      });
-
-      // Preserve the known object's assigned marker color when converting in-place to Square
-      const colorMatchedTracks = result.tracks.map((track) => {
-        if (track.matchedObjectId && objectHighlighterColors[track.matchedObjectId]) {
-          return { ...track, color: objectHighlighterColors[track.matchedObjectId] };
-        }
-        return track;
-      });
-
-      setTrackedTargets((prev) => {
-        const merged = mergeTrackedTargets(prev, colorMatchedTracks);
-        const primary =
-          merged.find((t) => t.groupId === colorMatchedTracks[0].groupId) ??
-          merged[merged.length - 1];
-        if (primary) {
-          setSelectedObject(primary);
-        }
-        return merged;
-      });
-    },
-    [
-      epochBuffers,
-      manifest,
-      objectHighlighterColors,
-      removeTrackedTarget,
-      renderSettings.activeEpochIndex,
-      renderSettings.wavelengthRangeUm,
-      trackedTargets,
-    ],
-  );
+  }, [pause, setIsSpectraModalOpen]);
 
   const focusAndTrackKnownObject = useCallback(
     (obj: KnownCelestialObject | GlobalKnownObjectEntry, targetSlug?: string) => {
@@ -740,7 +438,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         return;
       }
 
-      // On the 3D globe: fly smoothly to the target coordinates
       requestGlobeFocus(obj.ra, obj.dec, 2.2);
       if (validPresetSlug) {
         selectPreset(validPresetSlug);
@@ -755,6 +452,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       renderSettings.activeEpochIndex,
       requestGlobeFocus,
       selectPreset,
+      setCoordinates,
     ],
   );
 
@@ -768,6 +466,16 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const epPos = targetObj.epoch_positions?.[0] ?? targetObj;
     inspectPixelOrCoord(epPos.x, epPos.y, 0);
   }, [loadingState.stage, manifest, epochBuffers, knownObjects, inspectPixelOrCoord]);
+
+  const frustumValue = useMemo<SkyFrustumContextValue>(
+    () => ({
+      skyFrustum,
+      setSkyFrustum,
+      globeFocusRequest,
+      requestGlobeFocus,
+    }),
+    [globeFocusRequest, requestGlobeFocus, skyFrustum],
+  );
 
   const value: SkyExplorerContextValue = useMemo(
     () => ({
@@ -789,17 +497,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       uncheckAllKnownObjects,
       resetDefaultKnownObjects,
       focusAndTrackKnownObject,
-      playback: {
-        isPlaying,
-        isLooping,
-        fps,
-        play,
-        pause,
-        stepForward,
-        stepBackward,
-        toggleLoop,
-        setFps,
-      },
+      playback: playbackValue,
       selectedObject,
       trackedTargets,
       lastClickDiagnostic,
@@ -813,8 +511,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       activeMissions,
       filteredEpochIndices,
       toggleMissionFilter,
-      skyFrustum,
-      setSkyFrustum,
+      getSkyFrustum,
       isBlinkerModalOpen,
       openBlinkerModal,
       closeBlinkerModal,
@@ -822,7 +519,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       openSelectedSpectrum,
       closeSpectraModal,
       untrackObjectById,
-      globeFocusRequest,
       requestGlobeFocus,
     }),
     [
@@ -844,15 +540,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       uncheckAllKnownObjects,
       resetDefaultKnownObjects,
       focusAndTrackKnownObject,
-      isPlaying,
-      isLooping,
-      fps,
-      play,
-      pause,
-      stepForward,
-      stepBackward,
-      toggleLoop,
-      setFps,
+      playbackValue,
       selectedObject,
       trackedTargets,
       lastClickDiagnostic,
@@ -866,7 +554,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       activeMissions,
       filteredEpochIndices,
       toggleMissionFilter,
-      skyFrustum,
+      getSkyFrustum,
       isBlinkerModalOpen,
       openBlinkerModal,
       closeBlinkerModal,
@@ -874,12 +562,15 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       openSelectedSpectrum,
       closeSpectraModal,
       untrackObjectById,
-      globeFocusRequest,
       requestGlobeFocus,
     ],
   );
 
-  return <SkyExplorerContext.Provider value={value}>{children}</SkyExplorerContext.Provider>;
+  return (
+    <SkyFrustumContext.Provider value={frustumValue}>
+      <SkyExplorerContext.Provider value={value}>{children}</SkyExplorerContext.Provider>
+    </SkyFrustumContext.Provider>
+  );
 };
 
 /**
@@ -892,6 +583,20 @@ export function useSkyExplorer(): SkyExplorerContextValue {
   const ctx = useContext(SkyExplorerContext);
   if (!ctx) {
     throw new Error('useSkyExplorer must be used inside a SkyExplorerProvider');
+  }
+  return ctx;
+}
+
+/**
+ * Access the isolated high-frequency 3D globe frustum & focus context.
+ *
+ * @returns Active {@link SkyFrustumContextValue}.
+ * @throws {Error} When invoked outside a {@link SkyExplorerProvider}.
+ */
+export function useSkyFrustum(): SkyFrustumContextValue {
+  const ctx = useContext(SkyFrustumContext);
+  if (!ctx) {
+    throw new Error('useSkyFrustum must be used inside a SkyExplorerProvider');
   }
   return ctx;
 }

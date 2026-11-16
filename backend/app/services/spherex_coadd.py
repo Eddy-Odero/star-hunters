@@ -1,8 +1,8 @@
 """Adaptive epoch clustering and six-detector SPHEREx image co-addition.
 
 The module consumes cleaned :class:`SpherexCutout` objects produced by
-``spherex_ingest`` (ISS-04), reprojects them onto one shared TAN WCS grid,
-and combines valid pixels using inverse-variance weights.
+``spherex_fits`` / ``spherex_ingest``, reprojects them onto one shared TAN WCS
+grid, and combines valid pixels using inverse-variance weights.
 """
 
 from __future__ import annotations
@@ -15,14 +15,17 @@ import numpy as np
 from astropy.wcs import WCS
 from reproject import reproject_interp
 
-from app.services.spherex_ingest import (
-    FLAG_BAD_REFERENCE,
-    SpherexCutout,
-    SpherexValidationError,
+from app.models.contracts import (
+    BINARY_DETECTOR_FLOAT32_BYTES,
+    BINARY_FLAGS_UINT8_BYTES,
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    NUM_DETECTORS,
 )
+from app.services.spherex_fits import SpherexCutout, SpherexValidationError
+from app.services.spherex_flags import FLAG_BAD_REFERENCE
+from app.utils.astronomy import build_tan_wcs_header
 
-GRID_SIZE = 256
-DETECTOR_COUNT = 6
 DEFAULT_EPOCH_GAP_DAYS = 60.0
 
 
@@ -58,6 +61,7 @@ class SpherexCoaddResult:
 
     @property
     def data_source_summary(self) -> dict[str, Any]:
+        """Build a manifest-compatible data source provenance summary."""
         return {
             "primary_mission": "SPHEREx",
             "has_multi_epoch_spherex": self.has_multi_epoch_spherex,
@@ -72,6 +76,7 @@ class SpherexCoaddResult:
 
 
 def _validate_cutouts(cutouts: Sequence[SpherexCutout]) -> list[SpherexCutout]:
+    """Validate shapes and MJD timestamps, returning cutouts sorted by MJD."""
     valid: list[SpherexCutout] = []
     for cutout in cutouts:
         try:
@@ -108,12 +113,22 @@ def cluster_spherex_epochs(
 ) -> list[list[SpherexCutout]]:
     """Cluster cutouts into comparison epochs using their observation MJDs.
 
-    Gaps greater than ``gap_days`` separate survey-pass clusters. For a
-    baseline between one and ``gap_days`` days, the earliest and latest
-    observations are separated into two comparison groups. A longer but
-    densely sampled baseline with no large individual gap is also split at
-    its temporal midpoint so that distinct observing periods are not hidden
-    inside one epoch.
+    Gaps greater than ``gap_days`` separate survey-pass clusters. For a baseline
+    between one and ``gap_days`` days, the earliest and latest observations are
+    separated into two comparison groups. A longer but densely sampled baseline
+    with no large individual gap is also split at its temporal midpoint so that
+    distinct observing periods are not hidden inside one epoch.
+
+    Args:
+        cutouts: Sequence of processed :class:`SpherexCutout` instances.
+        gap_days: Minimum inter-exposure gap (days) separating survey passes.
+
+    Returns:
+        List of cutout clusters ordered chronologically.
+
+    Raises:
+        SpherexValidationError: If ``gap_days`` is not positive and finite.
+        SpherexCoaddError: If any cutout has invalid shape or MJD metadata.
     """
     if not np.isfinite(gap_days) or gap_days <= 0:
         raise SpherexValidationError("Epoch gap threshold must be a positive finite number.")
@@ -149,9 +164,22 @@ def build_target_wcs_header(
     ra: float,
     dec: float,
     fov_deg: float,
-    grid_size: int = GRID_SIZE,
+    grid_size: int = GRID_WIDTH,
 ) -> dict[str, Any]:
-    """Build the canonical north-up 2-D TAN WCS shared by every epoch."""
+    """Build the canonical north-up 2D FITS TAN WCS shared by every epoch.
+
+    Args:
+        ra: Field center Right Ascension in degrees (``0 <= ra < 360``).
+        dec: Field center Declination in degrees (``-90 <= dec <= 90``).
+        fov_deg: Field of view in degrees.
+        grid_size: Output square grid dimension (must equal ``GRID_WIDTH``).
+
+    Returns:
+        FITS WCS header dictionary with ``CRPIX1=CRPIX2=128.5``.
+
+    Raises:
+        SpherexValidationError: If coordinates, FOV, or grid size are invalid.
+    """
     values = np.asarray([ra, dec, fov_deg], dtype=np.float64)
     if not np.all(np.isfinite(values)):
         raise SpherexValidationError("RA, Dec and field of view must be finite numbers.")
@@ -159,30 +187,22 @@ def build_target_wcs_header(
         raise SpherexValidationError("Right Ascension must be between 0 and 360 degrees.")
     if not -90.0 <= dec <= 90.0:
         raise SpherexValidationError("Declination must be between -90 and 90 degrees.")
-    if fov_deg <= 0.0 or grid_size != GRID_SIZE:
+    if fov_deg <= 0.0 or grid_size != GRID_WIDTH:
         raise SpherexValidationError("Field of view must be positive and grid size must be 256.")
 
-    pixel_scale = float(fov_deg) / float(grid_size)
-    return {
-        "NAXIS": 2,
-        "NAXIS1": grid_size,
-        "NAXIS2": grid_size,
-        "CTYPE1": "RA---TAN",
-        "CTYPE2": "DEC--TAN",
-        "CUNIT1": "deg",
-        "CUNIT2": "deg",
-        "CRVAL1": float(ra),
-        "CRVAL2": float(dec),
-        "CRPIX1": (grid_size + 1.0) / 2.0,
-        "CRPIX2": (grid_size + 1.0) / 2.0,
-        "CDELT1": -pixel_scale,
-        "CDELT2": pixel_scale,
-        "RADESYS": "ICRS",
-        "EQUINOX": 2000.0,
-    }
+    return build_tan_wcs_header(
+        ra=ra,
+        dec=dec,
+        fov_arcmin=float(fov_deg) * 60.0,
+        crpix=(grid_size + 1.0) / 2.0,
+        grid_width=grid_size,
+        grid_height=grid_size,
+        fits_keywords=True,
+    )
 
 
 def _detector_index(cutout: SpherexCutout) -> int:
+    """Parse a 0-based detector index (0..5) from ``cutout.bandpass``."""
     bandpass = str(cutout.bandpass).strip().upper()
     if not bandpass.startswith("SPHEREX-D"):
         raise SpherexCoaddError(f"Unsupported SPHEREx detector identifier: {cutout.bandpass!r}.")
@@ -191,12 +211,13 @@ def _detector_index(cutout: SpherexCutout) -> int:
     except (IndexError, ValueError) as exc:
         message = f"Invalid SPHEREx detector identifier: {cutout.bandpass!r}."
         raise SpherexCoaddError(message) from exc
-    if not 1 <= detector <= DETECTOR_COUNT:
+    if not 1 <= detector <= NUM_DETECTORS:
         raise SpherexCoaddError(f"Detector must be numbered 1 through 6, got {detector}.")
     return detector - 1
 
 
 def _source_wcs(cutout: SpherexCutout) -> WCS:
+    """Extract a validated celestial Astropy WCS from a cutout's header."""
     try:
         source_wcs = WCS(cutout.header).celestial
     except Exception as exc:
@@ -214,6 +235,7 @@ def _reproject_cutout(
     cutout: SpherexCutout,
     target_wcs: WCS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Reproject one cutout's image, variance, and flags onto ``target_wcs``."""
     image = np.asarray(cutout.clean_image, dtype=np.float32)
     variance = np.asarray(cutout.variance, dtype=np.float32)
     flags = np.asarray(cutout.flags_mask, dtype=np.uint8)
@@ -222,8 +244,9 @@ def _reproject_cutout(
     valid = np.isfinite(image) & np.isfinite(variance) & (variance > 0.0) & (flags == 0)
     masked_image = image.astype(np.float64, copy=True)
     masked_image[~valid] = np.nan
+    shape_out = (GRID_HEIGHT, GRID_WIDTH)
     projected_image, image_footprint = reproject_interp(
-        (masked_image, source_wcs), target_wcs, shape_out=(GRID_SIZE, GRID_SIZE), order="bilinear"
+        (masked_image, source_wcs), target_wcs, shape_out=shape_out, order="bilinear"
     )
     # Nearest-neighbour variance avoids inventing a lower variance by
     # interpolating independent input-pixel variances as ordinary intensities.
@@ -232,13 +255,13 @@ def _reproject_cutout(
     projected_variance, variance_footprint = reproject_interp(
         (masked_variance, source_wcs),
         target_wcs,
-        shape_out=(GRID_SIZE, GRID_SIZE),
+        shape_out=shape_out,
         order="nearest-neighbor",
     )
     projected_flags, flags_footprint = reproject_interp(
         (flags, source_wcs),
         target_wcs,
-        shape_out=(GRID_SIZE, GRID_SIZE),
+        shape_out=shape_out,
         order="nearest-neighbor",
     )
 
@@ -261,21 +284,33 @@ def coadd_spherex_epoch(
     target_wcs_header: dict[str, Any],
     epoch_id: str = "pass_1",
 ) -> SpherexEpochCoadd:
-    """Reproject and inverse-variance co-add one epoch onto the target grid."""
+    """Reproject and inverse-variance co-add one epoch onto the target grid.
+
+    Args:
+        cutouts: Cutouts belonging to a single temporal epoch.
+        target_wcs_header: Shared FITS TAN WCS header dictionary.
+        epoch_id: Identifier assigned to the co-added epoch (e.g. ``"pass_1"``).
+
+    Returns:
+        :class:`SpherexEpochCoadd` with packed ``float32`` cube and ``uint8`` mask.
+
+    Raises:
+        SpherexCoaddError: If ``cutouts`` is empty or output sizes mismatch.
+    """
     if not cutouts:
         raise SpherexCoaddError("Cannot co-add an empty SPHEREx epoch.")
 
     target_wcs = WCS(target_wcs_header).celestial
-    detector_numerator = np.zeros((DETECTOR_COUNT, GRID_SIZE, GRID_SIZE), dtype=np.float64)
+    detector_numerator = np.zeros((NUM_DETECTORS, GRID_HEIGHT, GRID_WIDTH), dtype=np.float64)
     detector_weight = np.zeros_like(detector_numerator)
-    combined_flags = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
+    combined_flags = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
     available: set[int] = set()
 
     for cutout in cutouts:
         detector = _detector_index(cutout)
         image, variance, flags, valid = _reproject_cutout(cutout, target_wcs)
         combined_flags |= flags
-        weights = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float64)
+        weights = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.float64)
         weights[valid] = 1.0 / variance[valid]
         detector_numerator[detector] += np.where(valid, image * weights, 0.0)
         detector_weight[detector] += weights
@@ -296,11 +331,9 @@ def coadd_spherex_epoch(
     detector_buffer = detector_data.tobytes(order="C")
     flags_buffer = combined_flags.tobytes(order="C")
 
-    expected_detector_bytes = DETECTOR_COUNT * GRID_SIZE * GRID_SIZE * 4
-    expected_flag_bytes = GRID_SIZE * GRID_SIZE
-    if len(detector_buffer) != expected_detector_bytes:
+    if len(detector_buffer) != BINARY_DETECTOR_FLOAT32_BYTES:
         raise SpherexCoaddError("Packed detector buffer has an unexpected byte length.")
-    if len(flags_buffer) != expected_flag_bytes:
+    if len(flags_buffer) != BINARY_FLAGS_UINT8_BYTES:
         raise SpherexCoaddError("Packed flags buffer has an unexpected byte length.")
 
     mjds = np.asarray([float(item.mjd_obs) for item in cutouts], dtype=np.float64)
@@ -326,7 +359,19 @@ def coadd_spherex_epochs(
     fov_deg: float,
     gap_days: float = DEFAULT_EPOCH_GAP_DAYS,
 ) -> SpherexCoaddResult:
-    """Cluster cleaned cutouts and co-add every epoch on one canonical grid."""
+    """Cluster cleaned cutouts and co-add every epoch on one canonical grid.
+
+    Args:
+        cutouts: Sequence of cleaned :class:`SpherexCutout` objects.
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_deg: Field of view in degrees.
+        gap_days: Minimum inter-exposure gap (days) separating epochs.
+
+    Returns:
+        :class:`SpherexCoaddResult` summarizing all co-added epochs and whether
+        WISE fallback is required.
+    """
     ordered = _validate_cutouts(cutouts)
     clusters = cluster_spherex_epochs(ordered, gap_days=gap_days)
     target_header = build_target_wcs_header(ra, dec, fov_deg)
@@ -342,9 +387,3 @@ def coadd_spherex_epochs(
         needs_wise_fallback=not multi_epoch,
         baseline_days=max(0.0, baseline),
     )
-
-
-# Explicit aliases make the service convenient to call from existing routes.
-cluster_epochs = cluster_spherex_epochs
-build_tan_wcs_header = build_target_wcs_header
-coadd_epochs = coadd_spherex_epochs

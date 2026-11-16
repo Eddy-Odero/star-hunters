@@ -1,14 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNotifications } from '../context/NotificationContext';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
-import {
-  computeViewportViewBox,
-  formatImageProvenanceBadge,
-  type ContrastStretch,
-} from '../types/contracts';
+import { useResizableSplit } from '../hooks/useResizableSplit';
+import type { ContrastStretch } from '../types/contracts';
 import type { DetailsCalloutOrigin } from '../utils/calloutPlacement';
 import { extractAvailableMissions } from '../utils/knownObjectSelection';
-import { formatRaDecCompact } from '../utils/observatoryMath';
+import { formatImageProvenanceBadge, formatRaDecCompact } from '../utils/observatoryMath';
+import { computeViewportViewBox } from '../utils/wcsViewport';
 import { SpectraModal } from './SpectraModal';
 import { BlinkerCalloutOverlay } from './blinker/BlinkerCalloutOverlay';
 import { BlinkerCanvasViewport } from './blinker/BlinkerCanvasViewport';
@@ -22,20 +20,13 @@ import {
   type CanvasFrameRect,
 } from './blinker/calloutBuilder';
 
-const BLINKER_SIDEBAR_COLLAPSED_KEY = 'sh_blinker_sidebar_collapsed_v1';
-const BLINKER_SIDEBAR_WIDTH_KEY = 'sh_blinker_sidebar_width_v1';
-const BLINKER_SPLIT_RATIO_KEY = 'sh_blinker_split_ratio_v1';
-
-function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const val = Number(window.localStorage.getItem(key));
-    return Number.isFinite(val) && val >= min && val <= max ? val : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
+/**
+ * Centered multi-epoch Blinker modal combining the resizable controls & known-objects
+ * sidebar, zoomed/panned 256x256 scientific pixel viewport, non-occluding object
+ * details callout card, playback transport toolbar, and docked 102-band Spectra drawer.
+ *
+ * @returns Rendered Blinker modal dialog, or `null` when closed.
+ */
 export const BlinkerModal: React.FC = () => {
   const { startAsyncTask } = useNotifications();
   const {
@@ -122,22 +113,18 @@ export const BlinkerModal: React.FC = () => {
     [currentCalloutScopeKey],
   );
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return window.localStorage.getItem(BLINKER_SIDEBAR_COLLAPSED_KEY) === 'true';
-    } catch {
-      return false;
-    }
-  });
-  const [sidebarWidth, setSidebarWidth] = useState<number>(() =>
-    readStoredNumber(BLINKER_SIDEBAR_WIDTH_KEY, 292, 240, 420),
-  );
-  const [splitRatio, setSplitRatio] = useState<number>(() =>
-    readStoredNumber(BLINKER_SPLIT_RATIO_KEY, 0.56, 0.25, 0.75),
-  );
-  const [controlsFolded, setControlsFolded] = useState<boolean>(false);
-  const [objectsFolded, setObjectsFolded] = useState<boolean>(false);
+  const {
+    sidebarCollapsed,
+    sidebarWidth,
+    splitRatio,
+    controlsFolded,
+    objectsFolded,
+    toggleSidebarCollapsed,
+    toggleControlsFold,
+    toggleObjectsFold,
+    startSidebarWidthResize,
+    startSplitRatioResize,
+  } = useResizableSplit();
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasFrameRef = useRef<HTMLDivElement | null>(null);
@@ -278,69 +265,6 @@ export const BlinkerModal: React.FC = () => {
     provenanceShortLabel: provenance.shortLabel,
   })}${manifest ? ` · ${formatRaDecCompact(manifest.query.ra, manifest.query.dec)}` : ''}`;
 
-  const toggleSidebarCollapsed = () => {
-    setSidebarCollapsed((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(BLINKER_SIDEBAR_COLLAPSED_KEY, String(next));
-      } catch {
-        // Ignore storage errors
-      }
-      return next;
-    });
-  };
-
-  const startSidebarWidthResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
-    const startW = sidebarWidth;
-    let latestW = startW;
-    const onMove = (ev: PointerEvent) => {
-      latestW = Math.max(240, Math.min(420, Math.round(startW + (ev.clientX - startX))));
-      setSidebarWidth(latestW);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      try {
-        window.localStorage.setItem(BLINKER_SIDEBAR_WIDTH_KEY, String(latestW));
-      } catch {
-        // Ignore storage errors
-      }
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-
-  const startSplitRatioResize = (
-    e: React.PointerEvent<HTMLDivElement>,
-    sidebarEl: HTMLElement | null,
-  ) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!sidebarEl) return;
-    const totalH = Math.max(160, sidebarEl.getBoundingClientRect().height);
-    const startY = e.clientY;
-    const startRatio = splitRatio;
-    let latestRatio = startRatio;
-    const onMove = (ev: PointerEvent) => {
-      latestRatio = Math.max(0.25, Math.min(0.75, startRatio + (ev.clientY - startY) / totalH));
-      setSplitRatio(latestRatio);
-    };
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      try {
-        window.localStorage.setItem(BLINKER_SPLIT_RATIO_KEY, latestRatio.toFixed(3));
-      } catch {
-        // Ignore storage errors
-      }
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-  };
-
   return (
     <div className="modal-backdrop" role="presentation" data-testid="blinker-modal-backdrop">
       <div
@@ -390,8 +314,8 @@ export const BlinkerModal: React.FC = () => {
               splitRatio={splitRatio}
               controlsFolded={controlsFolded}
               objectsFolded={objectsFolded}
-              onToggleControlsFold={() => setControlsFolded((p) => !p)}
-              onToggleObjectsFold={() => setObjectsFolded((p) => !p)}
+              onToggleControlsFold={toggleControlsFold}
+              onToggleObjectsFold={toggleObjectsFold}
               onStartSidebarWidthResize={startSidebarWidthResize}
               onStartSplitRatioResize={startSplitRatioResize}
               renderSettings={renderSettings}

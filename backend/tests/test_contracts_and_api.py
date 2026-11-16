@@ -12,13 +12,7 @@ from unittest.mock import patch
 import jsonschema
 import numpy as np
 
-from app.main import (
-    StarHuntersBackendService,
-    build_sky_patch_manifest_payload,
-    build_spectrum_payload,
-    compute_zenith_icrs,
-    generate_synthetic_epoch_frames,
-)
+from app.main import app, create_app
 from app.models.contracts import (
     BINARY_DETECTOR_FLOAT16_BYTES,
     BINARY_DETECTOR_FLOAT32_BYTES,
@@ -35,8 +29,15 @@ from app.models.contracts import (
     validate_sky_patch_manifest,
     validate_spectrum_payload,
 )
+from app.services.backend_service import StarHuntersBackendService
 from app.services.spatial_cache import SpatialSqliteCache, compute_grid_key
 from app.services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
+from app.services.synthetic_patch import (
+    build_sky_patch_manifest_payload,
+    build_spectrum_payload,
+    generate_synthetic_epoch_frames,
+)
+from app.services.zenith_bridge import compute_zenith_icrs
 
 
 class TestPhase0ContractsAndBackend(unittest.TestCase):
@@ -341,12 +342,7 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         )
 
     def test_forced_spectrum_service_and_api_return_102_channels(self) -> None:
-        try:
-            from fastapi.testclient import TestClient
-        except ImportError:  # pragma: no cover
-            self.skipTest("FastAPI TestClient is unavailable.")
-
-        import app.main as main_module
+        from fastapi.testclient import TestClient
 
         ra, dec = 133.7951, -7.2451
         cutouts = [
@@ -359,27 +355,24 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             for detector in range(1, 7)
         ]
 
-        with (
-            patch(
-                "app.services.spherex_ingest.ingest_spherex_cutouts",
-                return_value=cutouts,
-            ),
-            patch.object(main_module, "backend_service", self.service),
-        ):
-            service_payload = self.service.get_forced_spectrum(ra, dec)
-            client = TestClient(main_module.app)
-            response = client.get(
-                "/api/v1/spectrum",
-                params={"ra": ra, "dec": dec},
-            )
-            labeled_response = client.get(
-                "/api/v1/spectrum",
-                params={"ra": ra, "dec": dec, "label": "WISE J0855-0714"},
-            )
-            unlabeled_after_labeled = client.get(
-                "/api/v1/spectrum",
-                params={"ra": ra, "dec": dec},
-            )
+        service = StarHuntersBackendService(
+            cache=self.cache,
+            spherex_cutout_fetcher=lambda **_kwargs: cutouts,
+        )
+        service_payload = service.get_forced_spectrum(ra, dec)
+        client = TestClient(create_app(service))
+        response = client.get(
+            "/api/v1/spectrum",
+            params={"ra": ra, "dec": dec},
+        )
+        labeled_response = client.get(
+            "/api/v1/spectrum",
+            params={"ra": ra, "dec": dec, "label": "WISE J0855-0714"},
+        )
+        unlabeled_after_labeled = client.get(
+            "/api/v1/spectrum",
+            params={"ra": ra, "dec": dec},
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["source_label"], "Selected sky position")
@@ -531,49 +524,44 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
             compute_zenith_icrs(lat=0.0, lon=195.0)
 
         # HTTP endpoint validation: out-of-range lat/lon returns 400 Bad Request
-        try:
-            from fastapi.testclient import TestClient
-        except ImportError:  # pragma: no cover
-            return
-        import app.main as main_module
+        from fastapi.testclient import TestClient
 
-        with patch.object(main_module, "backend_service", self.service):
-            client = TestClient(main_module.app)
-            self.assertEqual(
-                client.get("/api/v1/earth-to-sky", params={"lat": 95.0, "lon": 0.0}).status_code,
-                400,
-            )
-            self.assertEqual(
-                client.get("/api/v1/earth-to-sky", params={"lat": 0.0, "lon": -185.0}).status_code,
-                400,
-            )
-            ok_resp = client.get("/api/v1/earth-to-sky")
-            self.assertEqual(ok_resp.status_code, 200)
-            ok_payload = ok_resp.json()
-            validate_earth_to_sky_response(ok_payload)
-            self.assertTrue(ok_payload["earth"]["is_fallback_capital"])
-            self.assertTrue(ok_payload["earth"]["city_name"])
-            self.assertTrue(ok_payload["earth"]["country"])
+        client = TestClient(create_app(self.service))
+        self.assertEqual(
+            client.get("/api/v1/earth-to-sky", params={"lat": 95.0, "lon": 0.0}).status_code,
+            400,
+        )
+        self.assertEqual(
+            client.get("/api/v1/earth-to-sky", params={"lat": 0.0, "lon": -185.0}).status_code,
+            400,
+        )
+        ok_resp = client.get("/api/v1/earth-to-sky")
+        self.assertEqual(ok_resp.status_code, 200)
+        ok_payload = ok_resp.json()
+        validate_earth_to_sky_response(ok_payload)
+        self.assertTrue(ok_payload["earth"]["is_fallback_capital"])
+        self.assertTrue(ok_payload["earth"]["city_name"])
+        self.assertTrue(ok_payload["earth"]["country"])
 
-            # Verify time alias fallback when iso_time is omitted, and iso_time precedence
-            alias_resp = client.get(
-                "/api/v1/earth-to-sky",
-                params={"lat": -0.0917, "lon": 34.7680, "time": "2026-11-14T16:21:00Z"},
-            )
-            self.assertEqual(alias_resp.status_code, 200)
-            self.assertEqual(alias_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
+        # Verify time alias fallback when iso_time is omitted, and iso_time precedence
+        alias_resp = client.get(
+            "/api/v1/earth-to-sky",
+            params={"lat": -0.0917, "lon": 34.7680, "time": "2026-11-14T16:21:00Z"},
+        )
+        self.assertEqual(alias_resp.status_code, 200)
+        self.assertEqual(alias_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
 
-            precedence_resp = client.get(
-                "/api/v1/earth-to-sky",
-                params={
-                    "lat": -0.0917,
-                    "lon": 34.7680,
-                    "iso_time": "2026-11-14T16:21:00Z",
-                    "time": "2026-01-01T00:00:00Z",
-                },
-            )
-            self.assertEqual(precedence_resp.status_code, 200)
-            self.assertEqual(precedence_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
+        precedence_resp = client.get(
+            "/api/v1/earth-to-sky",
+            params={
+                "lat": -0.0917,
+                "lon": 34.7680,
+                "iso_time": "2026-11-14T16:21:00Z",
+                "time": "2026-01-01T00:00:00Z",
+            },
+        )
+        self.assertEqual(precedence_resp.status_code, 200)
+        self.assertEqual(precedence_resp.json()["earth"]["iso_time"], "2026-11-14T16:21:00Z")
 
     def test_highlighter_palette_fuzzy_search_and_pinned_cache(self) -> None:
         # At least 16 distinct highlighter colors
@@ -612,94 +600,90 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         self.assertIsNotNone(pin_cache.get_manifest(m_custom2["query"]["grid_key"]))
 
     def test_fastapi_progressive_endpoints_gzip_binary_streaming_and_admin_clear(self) -> None:
-        try:
-            from fastapi.middleware.gzip import GZipMiddleware
-            from fastapi.testclient import TestClient
-        except ImportError:  # pragma: no cover
-            self.skipTest("FastAPI TestClient is unavailable.")
+        from fastapi.middleware.gzip import GZipMiddleware
+        from fastapi.testclient import TestClient
 
-        import app.main as main_module
+        test_app = create_app(self.service)
 
         # Verify GZipMiddleware is configured on the FastAPI app
         self.assertTrue(
-            any(m.cls is GZipMiddleware for m in main_module.app.user_middleware),
+            any(m.cls is GZipMiddleware for m in test_app.user_middleware),
             "GZipMiddleware must be registered on FastAPI app",
         )
 
-        with patch.object(main_module, "backend_service", self.service):
-            client = TestClient(main_module.app)
+        client = TestClient(test_app)
 
-            # 1. /api/v1/catalogs
-            cat_resp = client.get(
-                "/api/v1/catalogs",
-                params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
-            )
-            self.assertEqual(cat_resp.status_code, 200)
-            self.assertEqual(cat_resp.headers.get("cache-control"), "public, max-age=3600")
-            validate_catalogs_response(cat_resp.json())
+        # 1. /api/v1/catalogs
+        cat_resp = client.get(
+            "/api/v1/catalogs",
+            params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
+        )
+        self.assertEqual(cat_resp.status_code, 200)
+        self.assertEqual(cat_resp.headers.get("cache-control"), "public, max-age=3600")
+        validate_catalogs_response(cat_resp.json())
 
-            # 2. /api/v1/sky-patch
-            patch_resp = client.get(
-                "/api/v1/sky-patch",
-                params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
-            )
-            self.assertEqual(patch_resp.status_code, 200)
-            self.assertEqual(patch_resp.headers.get("cache-control"), "public, max-age=3600")
-            manifest = patch_resp.json()
-            validate_sky_patch_manifest(manifest)
-            grid_key = manifest["query"]["grid_key"]
+        # 2. /api/v1/sky-patch
+        patch_resp = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 133.7951, "dec": -7.2451, "fov": 5.0, "live_catalogs": False},
+        )
+        self.assertEqual(patch_resp.status_code, 200)
+        self.assertEqual(patch_resp.headers.get("cache-control"), "public, max-age=3600")
+        manifest = patch_resp.json()
+        validate_sky_patch_manifest(manifest)
+        grid_key = manifest["query"]["grid_key"]
 
-            # 3. /api/v1/frames/{grid_key}/pass_1.bin?precision=float16 (786,432 bytes)
-            f16_resp = client.get(
-                f"/api/v1/frames/{grid_key}/pass_1.bin",
-                params={"precision": "float16"},
-            )
-            self.assertEqual(f16_resp.status_code, 200)
-            self.assertEqual(len(f16_resp.content), 786_432)
-            self.assertEqual(f16_resp.headers.get("x-binary-dtype"), "float16")
-            self.assertEqual(
-                f16_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
-            )
+        # 3. /api/v1/frames/{grid_key}/pass_1.bin?precision=float16 (786,432 bytes)
+        f16_resp = client.get(
+            f"/api/v1/frames/{grid_key}/pass_1.bin",
+            params={"precision": "float16"},
+        )
+        self.assertEqual(f16_resp.status_code, 200)
+        self.assertEqual(len(f16_resp.content), 786_432)
+        self.assertEqual(f16_resp.headers.get("x-binary-dtype"), "float16")
+        self.assertEqual(
+            f16_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
+        )
 
-            # 4. /api/v1/frames/{grid_key}/pass_1.bin?precision=float32 (1,572,864 bytes)
-            f32_resp = client.get(
-                f"/api/v1/frames/{grid_key}/pass_1.bin",
-                params={"precision": "float32"},
-            )
-            self.assertEqual(f32_resp.status_code, 200)
-            self.assertEqual(len(f32_resp.content), 1_572_864)
-            self.assertEqual(f32_resp.headers.get("x-binary-dtype"), "float32")
-            self.assertEqual(
-                f32_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
-            )
+        # 4. /api/v1/frames/{grid_key}/pass_1.bin?precision=float32 (1,572,864 bytes)
+        f32_resp = client.get(
+            f"/api/v1/frames/{grid_key}/pass_1.bin",
+            params={"precision": "float32"},
+        )
+        self.assertEqual(f32_resp.status_code, 200)
+        self.assertEqual(len(f32_resp.content), 1_572_864)
+        self.assertEqual(f32_resp.headers.get("x-binary-dtype"), "float32")
+        self.assertEqual(
+            f32_resp.headers.get("cache-control"), "public, max-age=31536000, immutable"
+        )
 
-            # 5. /api/v1/frames/{grid_key}/pass_1_flags.bin (uint8)
-            flags_resp = client.get(f"/api/v1/frames/{grid_key}/pass_1_flags.bin")
-            self.assertEqual(flags_resp.status_code, 200)
-            self.assertEqual(len(flags_resp.content), BINARY_FLAGS_UINT8_BYTES)
-            self.assertEqual(flags_resp.headers.get("x-binary-dtype"), "uint8")
+        # 5. /api/v1/frames/{grid_key}/pass_1_flags.bin (uint8)
+        flags_resp = client.get(f"/api/v1/frames/{grid_key}/pass_1_flags.bin")
+        self.assertEqual(flags_resp.status_code, 200)
+        self.assertEqual(len(flags_resp.content), BINARY_FLAGS_UINT8_BYTES)
+        self.assertEqual(flags_resp.headers.get("x-binary-dtype"), "uint8")
 
-            # 6. /api/v1/earth-to-sky
-            e2s_resp = client.get("/api/v1/earth-to-sky")
-            self.assertEqual(e2s_resp.status_code, 200)
-            validate_earth_to_sky_response(e2s_resp.json())
+        # 6. /api/v1/earth-to-sky
+        e2s_resp = client.get("/api/v1/earth-to-sky")
+        self.assertEqual(e2s_resp.status_code, 200)
+        validate_earth_to_sky_response(e2s_resp.json())
 
-            # 7. POST /api/v1/admin/clear-cache (403 without valid token, 200 with valid token)
-            self.assertEqual(client.post("/api/v1/admin/clear-cache").status_code, 403)
-            self.assertEqual(
-                client.post(
-                    "/api/v1/admin/clear-cache",
-                    headers={"X-Admin-Token": "wrong-token"},
-                ).status_code,
-                403,
-            )
-            clear_resp = client.post(
+        # 7. POST /api/v1/admin/clear-cache (403 without valid token, 200 with valid token)
+        self.assertEqual(client.post("/api/v1/admin/clear-cache").status_code, 403)
+        self.assertEqual(
+            client.post(
                 "/api/v1/admin/clear-cache",
-                headers={"X-Admin-Token": self.service.admin_token},
-            )
-            self.assertEqual(clear_resp.status_code, 200)
-            self.assertEqual(clear_resp.json(), {"status": "cleared"})
-            self.assertIsNone(self.cache.get_manifest(grid_key))
+                headers={"X-Admin-Token": "wrong-token"},
+            ).status_code,
+            403,
+        )
+        clear_resp = client.post(
+            "/api/v1/admin/clear-cache",
+            headers={"X-Admin-Token": self.service.admin_token},
+        )
+        self.assertEqual(clear_resp.status_code, 200)
+        self.assertEqual(clear_resp.json(), {"status": "cleared"})
+        self.assertIsNone(self.cache.get_manifest(grid_key))
 
     def test_dockerfile_fly_toml_and_unified_spa_serving(self) -> None:
         import tomllib
@@ -724,8 +708,6 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
         frontend_dist = repo_root / "frontend" / "dist"
         if (frontend_dist / "index.html").is_file():
             from fastapi.testclient import TestClient
-
-            from app.main import app
 
             self.assertIsNotNone(app)
             with TestClient(app) as client:

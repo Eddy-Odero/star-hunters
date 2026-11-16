@@ -40,6 +40,13 @@ const TOUR_STEPS: ReadonlyArray<TourStep> = [
   },
 ];
 
+/**
+ * Five-step interactive spotlight tour overlay guiding first-time users across
+ * the 3D sky globe, search/zenith menu, known-objects panel, Blinker controls,
+ * and 102-band spectrum inspector.
+ *
+ * @returns Rendered spotlight mask and tour card, or `null` when closed.
+ */
 export const SpotlightTourOverlay: React.FC = () => {
   const { tourOpen, tourStepIndex, setTourStepIndex, closeTour } = useNotifications();
   const { isBlinkerModalOpen = false, openBlinkerModal, closeBlinkerModal } = useSkyExplorer();
@@ -98,7 +105,6 @@ export const SpotlightTourOverlay: React.FC = () => {
   }
 
   const activeTargetRect = targetRect;
-
   const isLast = tourStepIndex >= TOUR_STEPS.length - 1;
 
   const cutLeft = activeTargetRect ? Math.max(4, Math.floor(activeTargetRect.left - 4)) : 0;
@@ -125,65 +131,26 @@ export const SpotlightTourOverlay: React.FC = () => {
   return (
     <>
       {activeTargetRect && cutW > 0 && cutH > 0 && (
-        <div
-          aria-hidden="true"
-          style={{
-            position: 'fixed',
-            inset: 0,
-            pointerEvents: 'none',
-            zIndex: 47,
-          }}
-        >
+        <div aria-hidden="true" className="tour-backdrop-layer">
           <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              top: 0,
-              right: 0,
-              height: cutTop,
-              background: 'rgba(0, 0, 0, 0.56)',
-            }}
+            className="tour-backdrop-mask"
+            style={{ left: 0, top: 0, right: 0, height: cutTop }}
           />
           <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              top: cutBottom,
-              right: 0,
-              bottom: 0,
-              background: 'rgba(0, 0, 0, 0.56)',
-            }}
+            className="tour-backdrop-mask"
+            style={{ left: 0, top: cutBottom, right: 0, bottom: 0 }}
           />
           <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              top: cutTop,
-              width: cutLeft,
-              height: cutH,
-              background: 'rgba(0, 0, 0, 0.56)',
-            }}
+            className="tour-backdrop-mask"
+            style={{ left: 0, top: cutTop, width: cutLeft, height: cutH }}
           />
           <div
-            style={{
-              position: 'fixed',
-              left: cutRight,
-              top: cutTop,
-              right: 0,
-              height: cutH,
-              background: 'rgba(0, 0, 0, 0.56)',
-            }}
+            className="tour-backdrop-mask"
+            style={{ left: cutRight, top: cutTop, right: 0, height: cutH }}
           />
           <div
-            style={{
-              position: 'fixed',
-              left: cutLeft,
-              top: cutTop,
-              width: cutW,
-              height: cutH,
-              borderRadius: 14,
-              border: '2px solid rgba(251, 191, 36, 0.88)',
-            }}
+            className="tour-spotlight-ring"
+            style={{ left: cutLeft, top: cutTop, width: cutW, height: cutH }}
           />
         </div>
       )}
@@ -202,15 +169,8 @@ export const SpotlightTourOverlay: React.FC = () => {
               : cardTop,
         }}
       >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 8,
-          }}
-        >
-          <span className="mono" style={{ fontSize: 11, color: 'var(--accent-amber-bright)' }}>
+        <div className="tour-card-header">
+          <span className="mono tour-step-counter">
             STEP {tourStepIndex + 1} / {TOUR_STEPS.length}
           </span>
           <button
@@ -223,19 +183,10 @@ export const SpotlightTourOverlay: React.FC = () => {
           </button>
         </div>
 
-        <h3 style={{ margin: '0 0 6px', fontSize: 15, fontWeight: 600 }}>{step.title}</h3>
-        <p
-          style={{
-            margin: '0 0 14px',
-            fontSize: 13,
-            lineHeight: 1.5,
-            color: 'var(--text-secondary)',
-          }}
-        >
-          {step.body}
-        </p>
+        <h3 className="tour-card-title">{step.title}</h3>
+        <p className="tour-card-body">{step.body}</p>
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="tour-card-footer">
           <button
             type="button"
             className="hud-btn-secondary"

@@ -6,14 +6,18 @@
  */
 
 import type {
+  DataSourceSummary,
   GlobalKnownObjectEntry,
+  ImageProvenanceBadge,
   KnownCelestialObject,
   SkyViewportFrustum,
 } from '../types/contracts.ts';
 import { isMovingSolarSystemObject } from './knownObjectSelection.ts';
 
+/** Hollow marker shape vocabulary enforcing zero-occlusion visual hierarchy. */
 export type MarkerShapeKind = 'triangle' | 'diamond' | 'square';
 
+/** Individual decoded bit flag from a SPHEREx 8-bit pixel hygiene mask. */
 export interface DecodedHygieneBit {
   bit: number;
   code: string;
@@ -22,6 +26,7 @@ export interface DecodedHygieneBit {
   severity: 'critical' | 'warning';
 }
 
+/** Full decoded hygiene flag summary for a hovered pixel. */
 export interface DecodedHygieneMask {
   flagByte: number;
   isFlagged: boolean;
@@ -30,6 +35,7 @@ export interface DecodedHygieneMask {
   summary: string;
 }
 
+/** Viewport edge anchor assigned by magnetic HUD panel snapping. */
 export type EdgeAnchor =
   | 'top-left'
   | 'top-right'
@@ -41,15 +47,18 @@ export type EdgeAnchor =
   | 'right'
   | 'free';
 
+/** Clamped coordinates and magnetic edge anchor for a dragged HUD panel. */
 export interface PanelSnapResult {
   x: number;
   y: number;
   edgeAnchor: EdgeAnchor;
 }
 
+/** Parsed search bar input representing sky coordinates, free-text query, or empty. */
 export type ParsedSkySearch =
   { kind: 'coords'; ra: number; dec: number } | { kind: 'text'; query: string } | { kind: 'empty' };
 
+/** Preset benchmark showcase targets exposed in the Known Objects jump selector. */
 export const BENCHMARK_TARGET_OPTIONS: ReadonlyArray<{
   slug: string;
   label: string;
@@ -104,11 +113,27 @@ export const BENCHMARK_TARGET_OPTIONS: ReadonlyArray<{
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
 
+/**
+ * Wrap a Right Ascension angle in degrees into the canonical half-open interval `[0, 360)`.
+ *
+ * @param raDeg - Right Ascension in decimal degrees.
+ * @returns Wrapped Right Ascension in `[0, 360)`.
+ */
 export function wrapRaDeg(raDeg: number): number {
   const mod = raDeg % 360;
   return mod < 0 ? mod + 360 : mod;
 }
 
+/**
+ * Compute great-circle angular separation in degrees between two ICRS points
+ * using the spherical law of cosines.
+ *
+ * @param ra1Deg - First point Right Ascension in degrees.
+ * @param dec1Deg - First point Declination in degrees.
+ * @param ra2Deg - Second point Right Ascension in degrees.
+ * @param dec2Deg - Second point Declination in degrees.
+ * @returns Angular separation in degrees `[0, 180]`.
+ */
 export function angularSeparationDeg(
   ra1Deg: number,
   dec1Deg: number,
@@ -126,6 +151,11 @@ export function angularSeparationDeg(
  * Filter known objects against the active 3D night-sky globe frustum.
  * Wide hemispheres clamp cleanly to ~90° horizon radius so back-of-sphere
  * targets stay excluded while nearby targets in the viewport remain selectable.
+ *
+ * @param ra - Object Right Ascension in degrees.
+ * @param dec - Object Declination in degrees.
+ * @param frustum - Active 3D globe camera frustum.
+ * @returns `true` if the object lies within the visible frustum radius.
  */
 export function isObjectInSkyFrustum(
   ra: number,
@@ -142,6 +172,12 @@ export function isObjectInSkyFrustum(
 
 /**
  * Filter active sky-patch objects against the zoomed/panned 256x256 viewBox.
+ *
+ * @param x - Object horizontal pixel coordinate.
+ * @param y - Object vertical pixel coordinate.
+ * @param viewBox - Active zoomed viewport bounds in 256x256 image space.
+ * @param marginPx - Extra pixel margin around the viewBox edges.
+ * @returns `true` if `(x, y)` falls inside the padded viewBox.
  */
 export function isObjectInPatchViewBox(
   x: number,
@@ -163,21 +199,13 @@ export function isObjectInPatchViewBox(
   );
 }
 
-export function quantizeGridCenter(
-  raDeg: number,
-  decDeg: number,
-  gridStepDeg = 0.05,
-): { raQ: number; decQ: number } {
-  const normRa = wrapRaDeg(raDeg);
-  const clampedDec = Math.max(-90, Math.min(90, decDeg));
-  const raQ = wrapRaDeg(Number((Math.round(normRa / gridStepDeg) * gridStepDeg).toFixed(2)));
-  const decQ = Number((Math.round(clampedDec / gridStepDeg) * gridStepDeg).toFixed(2));
-  return { raQ, decQ };
-}
-
 /**
  * Deferred stable partition: checked objects rise to the top of the list
  * while preserving the existing relative order within checked and unchecked groups.
+ *
+ * @param objects - Candidate objects in their current display order.
+ * @param checkedIds - Object IDs currently checked in the UI.
+ * @returns Partitioned array with checked items first.
  */
 export function sortKnownObjectsCheckedFirst<T extends { object_id: string }>(
   objects: readonly T[],
@@ -227,6 +255,12 @@ const KNOWN_HYGIENE_BITS: ReadonlyArray<DecodedHygieneBit> = [
   },
 ];
 
+/**
+ * Decode an 8-bit SPHEREx pixel hygiene bitmask into structured severity and flag details.
+ *
+ * @param flagByte - Unsigned 8-bit hygiene mask byte.
+ * @returns Decoded {@link DecodedHygieneMask} summary.
+ */
 export function decodeHygieneFlagMask(flagByte: number): DecodedHygieneMask {
   const mask = Number.isFinite(flagByte) ? Math.max(0, Math.floor(flagByte)) & 0xff : 0;
   if (mask === 0) {
@@ -268,6 +302,13 @@ export function decodeHygieneFlagMask(flagByte: number): DecodedHygieneMask {
 /**
  * Clamp a floating HUD panel within viewport safe margins and magnetically snap
  * to edges when dragged within `snapThreshold` pixels.
+ *
+ * @param rawPos - Unclamped `{ x, y }` panel top-left coordinates.
+ * @param panelSize - Panel dimensions `{ width, height }`.
+ * @param viewportSize - Browser viewport dimensions `{ width, height }`.
+ * @param margin - Safe edge margin in pixels (defaults to `16`).
+ * @param snapThreshold - Snap distance in pixels (defaults to `24`).
+ * @returns Clamped `{ x, y, edgeAnchor }` snap result.
  */
 export function computeMagneticSnap(
   rawPos: { x: number; y: number },
@@ -313,6 +354,16 @@ export function computeMagneticSnap(
   return { x: Math.round(x), y: Math.round(y), edgeAnchor };
 }
 
+/**
+ * Re-resolve a persisted HUD panel position against a resized viewport using its
+ * saved magnetic edge anchor.
+ *
+ * @param saved - Persisted coordinates and optional edge anchor.
+ * @param panelSize - Current panel dimensions `{ width, height }`.
+ * @param viewportSize - Current browser viewport dimensions `{ width, height }`.
+ * @param margin - Safe edge margin in pixels (defaults to `16`).
+ * @returns Re-anchored and clamped {@link PanelSnapResult}.
+ */
 export function resolvePositionFromAnchor(
   saved: { x: number; y: number; edgeAnchor?: EdgeAnchor },
   panelSize: { width: number; height: number },
@@ -337,6 +388,9 @@ export function resolvePositionFromAnchor(
 /**
  * Parse search bar queries: supports decimal `RA, Dec` or `RA Dec`, HMS/DMS
  * sexagesimal pairs (`08:55:10.8 -07:14:42`), or catalog object name text.
+ *
+ * @param raw - Raw user search string.
+ * @returns Discriminated {@link ParsedSkySearch} result.
  */
 export function parseSkySearchInput(raw: string): ParsedSkySearch {
   const trimmed = raw.trim();
@@ -374,7 +428,12 @@ export function parseSkySearchInput(raw: string): ParsedSkySearch {
 }
 
 /**
- * Compute gnomonic TAN sky polygon corners for a SPHEREx 5'x5' cell centered at (raDeg, decDeg).
+ * Compute gnomonic TAN sky polygon corners for a SPHEREx 5'x5' cell centered at `(raDeg, decDeg)`.
+ *
+ * @param raDeg - Cell center Right Ascension in decimal degrees.
+ * @param decDeg - Cell center Declination in decimal degrees.
+ * @param fovArcmin - Angular cell width in arcminutes (defaults to `5.0`).
+ * @returns Four `[ra, dec]` corner pairs in degrees.
  */
 export function computeSpherExReticleCorners(
   raDeg: number,
@@ -405,9 +464,13 @@ export function computeSpherExReticleCorners(
 
 /**
  * Strictly enforce the 3-shape zero-occlusion marker vocabulary:
- *   - 'square'   -> actively tracked target
- *   - 'diamond'  -> known moving Solar System body
- *   - 'triangle' -> known catalog star / brown dwarf / nebula / galaxy
+ *   - `'square'`   -> actively tracked target
+ *   - `'diamond'`  -> known moving Solar System body
+ *   - `'triangle'` -> known catalog star / brown dwarf / nebula / galaxy
+ *
+ * @param obj - Cataloged celestial object entry.
+ * @param isTracked - Whether the object is currently click-tracked.
+ * @returns Canonical {@link MarkerShapeKind}.
  */
 export function getMarkerShapeKind(
   obj: Pick<
@@ -420,7 +483,63 @@ export function getMarkerShapeKind(
   return isMovingSolarSystemObject(obj as KnownCelestialObject) ? 'diamond' : 'triangle';
 }
 
+/**
+ * Format full-text ICRS sky coordinate readout without abbreviations.
+ *
+ * @param ra - Right Ascension in decimal degrees.
+ * @param dec - Declination in decimal degrees.
+ * @returns Full-name formatted coordinate string.
+ */
 export function formatRaDecCompact(ra: number, dec: number): string {
   const sign = dec >= 0 ? '+' : '';
   return `Right Ascension ${ra.toFixed(4)}°, Declination ${sign}${dec.toFixed(4)}°`;
+}
+
+/**
+ * Format a {@link DataSourceSummary} into a UI provenance tier, full badge label,
+ * and compact short label distinguishing Primary, Extension, and Simulated imagery.
+ *
+ * @param summary - Optional patch data-source summary from the manifest.
+ * @returns Resolved {@link ImageProvenanceBadge}.
+ */
+export function formatImageProvenanceBadge(
+  summary?: DataSourceSummary | null,
+): ImageProvenanceBadge {
+  if (!summary) {
+    return {
+      tier: 'primary',
+      label: 'SPHEREx Primary Archive',
+      shortLabel: 'SPHEREx (Primary)',
+    };
+  }
+  const tier =
+    summary.provenance_tier ??
+    (summary.primary_mission === 'Simulated'
+      ? 'simulated'
+      : summary.primary_mission === 'SPHEREx'
+        ? 'primary'
+        : 'extension');
+
+  if (tier === 'simulated' || summary.primary_mission === 'Simulated') {
+    return {
+      tier: 'simulated',
+      label: summary.survey_name || 'Simulated Multi-Band Baseline',
+      shortLabel: 'Simulated Baseline',
+    };
+  }
+
+  if (tier === 'primary' || summary.primary_mission === 'SPHEREx') {
+    return {
+      tier: 'primary',
+      label: summary.survey_name || 'SPHEREx Archival (Primary)',
+      shortLabel: 'SPHEREx (Primary)',
+    };
+  }
+
+  const label = summary.survey_name || `${summary.primary_mission} Archival (Extension)`;
+  return {
+    tier: 'extension',
+    label,
+    shortLabel: `${summary.primary_mission} (Extension)`,
+  };
 }

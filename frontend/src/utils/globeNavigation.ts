@@ -1,13 +1,32 @@
-import { quantizeGridCenter, wrapRaDeg } from './observatoryMath.ts';
+/**
+ * 3D Night-Sky Globe navigation, HiPS Level-of-Detail resilience hierarchy,
+ * progressive click-to-zoom actions, and 0.05-degree visible sky-panel grid helpers.
+ *
+ * Kept React-free so Node 24's `node --test` executes this module directly.
+ */
 
+import { wrapRaDeg } from './observatoryMath.ts';
+import { quantizeGridCenter } from './wcsViewport.ts';
+
+/** Minimum interactive Aladin/fallback globe field-of-view in degrees. */
 export const MIN_GLOBE_FOV_DEG = 0.25;
+
+/** Maximum wide-field globe field-of-view in degrees. */
 export const MAX_GLOBE_FOV_DEG = 160.0;
+
+/** FoV threshold above which a globe click zooms to medium scale (`8°`). */
 export const TWO_STAGE_CLICK_FOV_DEG = 15.0;
+
+/** FoV threshold at or below which quantized `0.05°` sky panels become interactive. */
 export const PANEL_GRID_FOV_DEG = 2.5;
+
+/** Angular spacing (degrees) between quantized sky-panel grid centers. */
 export const PANEL_GRID_STEP_DEG = 0.05;
 
+/** Supported Aladin Lite spherical map projections. */
 export type GlobeProjection = 'SIN' | 'AIT' | 'MOL' | 'STG' | 'ZEA';
 
+/** Projection options rendered in the globe controls dock. */
 export const SUPPORTED_GLOBE_PROJECTIONS: ReadonlyArray<{
   id: GlobeProjection;
   label: string;
@@ -19,22 +38,39 @@ export const SUPPORTED_GLOBE_PROJECTIONS: ReadonlyArray<{
   { id: 'ZEA', label: 'ZEA (Equal-Area)' },
 ];
 
+/** Progressive HiPS survey Level-of-Detail tier selected by globe FoV. */
 export type GlobeLodTier = 'allwise' | '2mass' | 'spherex_deep';
 
+/** IRSA AllWISE wide-field infrared HiPS endpoint. */
 export const IRSA_WISE_HIPS_URL =
   'https://irsa.ipac.caltech.edu/data/hips/CDS/AllWISE/RGB-W4-W2-W1';
+
+/** IRSA 2MASS high-resolution near-infrared HiPS endpoint. */
 export const IRSA_2MASS_HIPS_URL = 'https://irsa.ipac.caltech.edu/data/hips/CDS/2MASS/Color';
+
+/** Primary CDS SPHEREx QR2 color HiPS endpoint. */
 export const CDS_SPHEREX_COLOR_HIPS_URL = 'https://alasky.cds.unistra.fr/SPHEREx/color';
+
+/** Mirror CDS SPHEREx QR2 color HiPS endpoint. */
 export const CDS_MIRROR_SPHEREX_COLOR_HIPS_URL = 'https://alaskybis.cds.unistra.fr/SPHEREx/color';
+
+/** IRSA SPHEREx all-sky cube HiPS endpoint. */
 export const IRSA_SPHEREX_CUBE_HIPS_URL =
   'https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube';
 
+/**
+ * Select the HiPS Level-of-Detail survey tier appropriate for the active FoV.
+ *
+ * @param fovDeg - Active globe field-of-view in degrees.
+ * @returns Selected {@link GlobeLodTier}.
+ */
 export function resolveGlobeLodTier(fovDeg: number): GlobeLodTier {
   if (fovDeg > 12.0) return 'allwise';
   if (fovDeg > 5.0) return '2mass';
   return 'spherex_deep';
 }
 
+/** Resolved deep-sky HiPS endpoint and provenance label. */
 export interface DeepHiPSResolution {
   url: string;
   label: string;
@@ -45,6 +81,9 @@ export interface DeepHiPSResolution {
  * Probe SPHEREx HiPS endpoints along the canonical resilience hierarchy
  * (CDS QR2 primary -> CDS QR2 mirror -> IRSA SPHEREx DR1 cube) and fall back
  * gracefully to 2MASS High-Res so deep zoom never turns black during outages.
+ *
+ * @param probeFn - Optional URL reachability probe injected by unit tests.
+ * @returns Resolved {@link DeepHiPSResolution} endpoint metadata.
  */
 export async function resolveBestDeepSkyHiPS(
   probeFn?: (url: string) => Promise<boolean>,
@@ -104,6 +143,7 @@ export async function resolveBestDeepSkyHiPS(
   };
 }
 
+/** Progressive globe click stage determined by the active FoV. */
 export type GlobeClickStageAction = 'zoom_medium' | 'zoom_panels' | 'open_panel';
 
 /**
@@ -111,6 +151,9 @@ export type GlobeClickStageAction = 'zoom_medium' | 'zoom_panels' | 'open_panel'
  *  - Wide sky (> 15 deg FoV): click focuses & zooms to medium scale (8 deg FoV).
  *  - Medium zoom (2.5 to 15 deg FoV): click zooms to 1.6 deg FoV where 0.05 deg sky panels appear.
  *  - Panel view (<= 2.5 deg FoV): click selects and opens the clicked visible sky panel.
+ *
+ * @param fovDeg - Active globe field-of-view in degrees.
+ * @returns Click action stage for the current zoom level.
  */
 export function resolveGlobeClickAction(fovDeg: number): GlobeClickStageAction {
   if (fovDeg > TWO_STAGE_CLICK_FOV_DEG) return 'zoom_medium';
@@ -118,17 +161,39 @@ export function resolveGlobeClickAction(fovDeg: number): GlobeClickStageAction {
   return 'open_panel';
 }
 
+/**
+ * Return the target FoV in degrees for a progressive zoom click stage.
+ *
+ * @param action - Zoom action (`'zoom_medium'` or `'zoom_panels'`).
+ * @returns Target FoV in degrees (`8.0` or `1.6`).
+ */
 export function targetFovForClickAction(
   action: Exclude<GlobeClickStageAction, 'open_panel'>,
 ): number {
   return action === 'zoom_medium' ? 8.0 : 1.6;
 }
 
+/**
+ * Clamp a requested globe field-of-view to `[MIN_GLOBE_FOV_DEG, MAX_GLOBE_FOV_DEG]`,
+ * defaulting to `70°` for non-finite or non-positive inputs.
+ *
+ * @param fovDeg - Requested FoV in degrees.
+ * @returns Clamped FoV in degrees.
+ */
 export function clampGlobeFov(fovDeg: number): number {
   if (!Number.isFinite(fovDeg) || fovDeg <= 0) return 70.0;
   return Math.max(MIN_GLOBE_FOV_DEG, Math.min(MAX_GLOBE_FOV_DEG, fovDeg));
 }
 
+/**
+ * Step the globe camera coordinates by one cardinal pan increment scaled to `fovDeg`.
+ *
+ * @param ra - Current Right Ascension in degrees.
+ * @param dec - Current Declination in degrees.
+ * @param fovDeg - Active FoV in degrees.
+ * @param dir - Cardinal pan direction (`'north' | 'south' | 'east' | 'west'`).
+ * @returns Wrapped and clamped `{ ra, dec }` coordinates.
+ */
 export function stepPanCoordinates(
   ra: number,
   dec: number,
@@ -149,6 +214,7 @@ export function stepPanCoordinates(
   return { ra: wrapRaDeg(ra - stepDeg / cosDec), dec };
 }
 
+/** Quantized `0.05°` sky-panel grid cell center around the globe camera. */
 export interface VisibleGridPanelCell {
   key: string;
   raQ: number;
@@ -157,7 +223,14 @@ export interface VisibleGridPanelCell {
 
 /**
  * Enumerate quantized 0.05-deg sky panel centers around the camera frustum
- * when zoomed in to <= PANEL_GRID_FOV_DEG.
+ * when zoomed in to `<= PANEL_GRID_FOV_DEG`.
+ *
+ * @param centerRa - Camera Right Ascension in degrees.
+ * @param centerDec - Camera Declination in degrees.
+ * @param fovDeg - Active FoV in degrees.
+ * @param stepDeg - Grid quantization step in degrees (defaults to `0.05`).
+ * @param maxRadiusSteps - Maximum step radius in either axis (defaults to `6`).
+ * @returns Array of {@link VisibleGridPanelCell} entries (empty when zoomed out).
  */
 export function buildVisibleSkyPanels(
   centerRa: number,
