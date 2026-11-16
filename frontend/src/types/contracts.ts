@@ -512,6 +512,7 @@ export interface SkyExplorerContextValue {
   inspectPixelOrCoord: (x: number, y: number, originEpochIndex?: number) => void;
   // Observatory redesign controls (mission filter, globe frustum, modals, untracking)
   activeMissions?: MissionName[];
+  filteredEpochIndices?: number[];
   toggleMissionFilter?: (mission: MissionName) => void;
   skyFrustum?: SkyViewportFrustum;
   setSkyFrustum?: (frustum: SkyViewportFrustum) => void;

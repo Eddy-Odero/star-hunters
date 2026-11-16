@@ -196,6 +196,8 @@ export const KnownObjectsPanel: React.FC = () => {
         isFolded ? 'is-folded' : ''
       }`}
       style={{ left: x, top: y }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
     >
       <div className="hud-drag-handle" {...dragHandleProps}>
         <div className="hud-title-group">

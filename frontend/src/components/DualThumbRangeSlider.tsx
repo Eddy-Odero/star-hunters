@@ -11,6 +11,7 @@ export interface DualThumbRangeSliderProps {
   formatReadout: (low: number, high: number) => string;
   lowAriaLabel?: string;
   highAriaLabel?: string;
+  variant?: 'spectrum' | 'plain';
   testId?: string;
 }
 
@@ -32,6 +33,7 @@ export const DualThumbRangeSlider: React.FC<DualThumbRangeSliderProps> = ({
   formatReadout,
   lowAriaLabel,
   highAriaLabel,
+  variant = 'plain',
   testId,
 }) => {
   const railRef = useRef<HTMLDivElement | null>(null);
@@ -116,9 +118,25 @@ export const DualThumbRangeSlider: React.FC<DualThumbRangeSliderProps> = ({
         onPointerUp={handleTrackPointerUp}
         onPointerCancel={handleTrackPointerUp}
       >
-        <div ref={railRef} className="dual-slider-rail">
+        <div
+          ref={railRef}
+          className={`dual-slider-rail ${
+            variant === 'spectrum' ? 'dual-slider-rail--spectrum' : ''
+          }`}
+        >
+          {variant === 'spectrum' && lowPct > 0 && (
+            <div className="dual-slider-dim-mask" style={{ left: 0, width: `${lowPct}%` }} />
+          )}
+          {variant === 'spectrum' && highPct < 100 && (
+            <div
+              className="dual-slider-dim-mask"
+              style={{ left: `${highPct}%`, width: `${Math.max(0, 100 - highPct)}%` }}
+            />
+          )}
           <div
-            className="dual-slider-active-range"
+            className={`dual-slider-active-range ${
+              variant === 'spectrum' ? 'is-spectrum' : 'is-plain'
+            }`}
             style={{
               left: `${lowPct}%`,
               width: `${Math.max(2, highPct - lowPct)}%`,

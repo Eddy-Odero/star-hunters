@@ -79,9 +79,43 @@ body,
 }
 
 .aladin-host {
+  position: relative;
   width: 100%;
   height: 100%;
   background: var(--sky-black);
+}
+
+.aladin-host > div,
+.aladin-host .aladin-container {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Defensive suppression of Aladin Lite overlapping chrome while keeping its logo clear in bottom-right */
+.aladin-host .aladin-zoomControl,
+.aladin-host .aladin-fov,
+.aladin-host .aladin-projection-control,
+.aladin-host .aladin-location,
+.aladin-host .aladin-coo,
+.aladin-host .aladin-share-control,
+.aladin-host .aladin-settings-control,
+.aladin-host .aladin-simbad-pointer-control,
+.aladin-host .aladin-status-bar,
+.aladin-host .aladin-context-menu,
+.aladin-host .aladin-box.aladin-coo,
+.aladin-host .aladin-box.aladin-location,
+.aladin-host .aladin-popup-container {
+  display: none !important;
+}
+
+.aladin-host .aladin-logo,
+.aladin-host .aladin-attribution {
+  right: 14px !important;
+  bottom: 12px !important;
+  left: auto !important;
+  top: auto !important;
+  z-index: 9 !important;
+  opacity: 0.84;
 }
 
 .globe-fallback-canvas {
@@ -102,6 +136,21 @@ body,
   z-index: 4;
 }
 
+.globe-cursor-tooltip {
+  position: fixed;
+  z-index: 14;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(11, 15, 23, 0.9);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(56, 189, 248, 0.36);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.72);
+  font-size: 10.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
 .globe-telemetry-chip {
   position: fixed;
   left: 16px;
@@ -109,15 +158,40 @@ body,
   z-index: 12;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 12px;
+  gap: 8px;
+  padding: 6px 12px;
   border-radius: 999px;
   background: var(--surface-obsidian);
   backdrop-filter: blur(14px);
   border: 1px solid var(--border-hairline);
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-secondary);
-  pointer-events: none;
+  pointer-events: auto;
+}
+
+.telemetry-coord-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+}
+
+.telemetry-coord-input {
+  width: 78px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(5, 8, 15, 0.8);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-align: right;
+  outline: none;
+}
+
+.telemetry-coord-input:focus {
+  border-color: var(--accent-cyan);
 }
 
 .globe-telemetry-chip strong {
@@ -138,6 +212,7 @@ body,
   z-index: 12;
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 6px 8px;
   border-radius: 12px;
@@ -766,41 +841,83 @@ select:focus-visible {
 }
 
 .blinker-header {
-  height: 48px;
+  min-height: 54px;
+  height: auto;
   flex-shrink: 0;
-  padding: 0 16px;
+  padding: 6px 14px;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  background: rgba(11, 15, 23, 0.92);
+  gap: 12px;
+  background: rgba(11, 15, 23, 0.94);
   border-bottom: 1px solid var(--border-hairline);
 }
 
 .blinker-header-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .blinker-section-label {
   text-align: center;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  line-height: 1.2;
+  gap: 2px;
+  line-height: 1.25;
 }
 
 .blinker-section-title {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blinker-section-sub-marquee {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  outline: none;
 }
 
 .blinker-section-sub {
+  display: inline-block;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.blinker-section-sub-marquee:hover,
+.blinker-section-sub-marquee:focus-within {
+  overflow-x: auto;
+  text-overflow: clip;
+  scrollbar-width: none;
+}
+
+.blinker-section-sub-marquee:hover .blinker-section-sub,
+.blinker-section-sub-marquee:focus-within .blinker-section-sub {
+  animation: blinkerSubReveal 9s linear infinite alternate;
+}
+
+@keyframes blinkerSubReveal {
+  0%,
+  18% {
+    transform: translateX(0);
+  }
+  82%,
+  100% {
+    transform: translateX(min(0px, calc(100% - 100vw)));
+  }
 }
 
 .blinker-header-right {
@@ -808,6 +925,7 @@ select:focus-visible {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .blinker-stage {
@@ -816,15 +934,118 @@ select:focus-visible {
   min-height: 0;
   background: #000000;
   display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.blinker-sidebar {
+  position: relative;
+  flex-shrink: 0;
+  min-width: 240px;
+  max-width: 420px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(11, 15, 23, 0.94);
+  border-right: 1px solid var(--border-hairline);
+  z-index: 4;
+  overflow: hidden;
+}
+
+.blinker-section-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 36px;
+  overflow: hidden;
+}
+
+.blinker-section-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 11px;
+  background: rgba(15, 23, 42, 0.72);
+  border-bottom: 1px solid var(--border-hairline);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+}
+
+.blinker-section-header:hover {
+  background: rgba(30, 41, 59, 0.82);
+}
+
+.blinker-section-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.blinker-section-body--objects {
+  gap: 8px;
+  overflow: hidden;
+}
+
+.blinker-split-resizer {
+  height: 5px;
+  flex-shrink: 0;
+  background: rgba(148, 163, 184, 0.14);
+  border-top: 1px solid var(--border-hairline);
+  border-bottom: 1px solid var(--border-hairline);
+  cursor: row-resize;
+  transition: background-color 140ms ease;
+}
+
+.blinker-split-resizer:hover {
+  background: rgba(56, 189, 248, 0.45);
+}
+
+.blinker-sidebar-resizer {
+  width: 5px;
+  flex-shrink: 0;
+  background: rgba(148, 163, 184, 0.1);
+  border-right: 1px solid var(--border-hairline);
+  cursor: col-resize;
+  transition: background-color 140ms ease;
+  z-index: 5;
+}
+
+.blinker-sidebar-resizer:hover {
+  background: rgba(56, 189, 248, 0.45);
+}
+
+.blinker-canvas-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: #000000;
+  display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  padding: 10px 14px 58px;
 }
 
 .blinker-canvas-frame {
   position: relative;
   height: min(530px, 100%);
-  width: min(530px, 100%);
+  width: auto;
+  max-width: 100%;
   aspect-ratio: 1 / 1;
   background: #000000;
   cursor: crosshair;
@@ -848,62 +1069,36 @@ select:focus-visible {
   overflow: visible;
 }
 
-/* Blinker Top-Left Controls Card (Frame 1 - 291px) */
-.blinker-controls-card {
+.blinker-loading-throbber {
   position: absolute;
-  top: 14px;
-  left: 14px;
-  width: 296px;
-  max-width: calc(100% - 28px);
+  inset: 0;
   z-index: 6;
-  background: var(--surface-obsidian);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border-hairline);
-  border-radius: 12px;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.72);
-  overflow: hidden;
-}
-
-.blinker-controls-body {
-  padding: 10px 12px 12px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-height: calc(100vh - 220px);
-  overflow-y: auto;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  text-align: center;
+  background: rgba(5, 8, 15, 0.72);
+  backdrop-filter: blur(4px);
 }
 
-.blinker-controls-tabs {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  padding: 3px;
-  border-radius: 8px;
-  background: rgba(5, 8, 15, 0.9);
-  border: 1px solid var(--border-hairline);
-}
-
-.blinker-controls-tab-btn {
-  padding: 5px 8px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-muted);
-  transition:
-    background-color 140ms ease,
-    color 140ms ease;
-}
-
-.blinker-controls-tab-btn.active {
-  background: rgba(245, 158, 11, 0.16);
-  color: var(--accent-amber-bright);
+.blinker-spinner-ring {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 3px solid rgba(56, 189, 248, 0.22);
+  border-top-color: var(--accent-cyan);
+  animation: spinSlow 0.9s linear infinite;
 }
 
 .blinker-inline-objects-list {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  max-height: 290px;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -912,9 +1107,13 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
   border-radius: 999px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
   border: 1px solid var(--border-hairline);
@@ -1042,6 +1241,27 @@ select:focus-visible {
   height: 5px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.24);
+  overflow: hidden;
+}
+
+.dual-slider-rail--spectrum {
+  height: 7px;
+  background: linear-gradient(
+    90deg,
+    #3b82f6 0%,
+    #22d3ee 28%,
+    #10b981 50%,
+    #f59e0b 75%,
+    #ef4444 100%
+  );
+}
+
+.dual-slider-dim-mask {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(5, 8, 15, 0.74);
+  z-index: 1;
 }
 
 .dual-slider-active-range {
@@ -1049,12 +1269,22 @@ select:focus-visible {
   top: 0;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, var(--accent-amber), var(--accent-cyan));
+}
+
+.dual-slider-active-range.is-plain {
+  background: rgba(56, 189, 248, 0.75);
+}
+
+.dual-slider-active-range.is-spectrum {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  z-index: 2;
 }
 
 .dual-slider-thumb {
   position: absolute;
   top: 50%;
+  z-index: 3;
   width: 14px;
   height: 14px;
   margin-left: -7px;
@@ -1076,7 +1306,7 @@ select:focus-visible {
   transform: scale(1.12);
 }
 
-/* Callout Card (Frame 34 - 288x87px) */
+/* Callout Card (Frame 34 - translucent frosted glass) */
 .callout-card {
   position: absolute;
   width: 316px;
@@ -1086,11 +1316,11 @@ select:focus-visible {
   z-index: 7;
   padding: 10px 12px;
   border-radius: 12px;
-  background: rgba(11, 15, 23, 0.56);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
-  backdrop-filter: blur(18px) saturate(1.35);
+  background: rgba(11, 15, 23, 0.34);
+  -webkit-backdrop-filter: blur(14px) saturate(1.28);
+  backdrop-filter: blur(14px) saturate(1.28);
   border: 1px solid rgba(148, 163, 184, 0.34);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -1225,9 +1455,9 @@ select:focus-visible {
 
 .async-toast-stack {
   position: fixed;
-  right: 70px;
-  bottom: 16px;
-  z-index: 42;
+  right: 68px;
+  bottom: 58px;
+  z-index: 46;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1252,7 +1482,7 @@ select:focus-visible {
 .help-fab-btn {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  bottom: 58px;
   z-index: 42;
   width: 40px;
   height: 40px;
@@ -1358,18 +1588,30 @@ select:focus-visible {
     height: auto;
     padding: 8px 10px;
     gap: 6px;
-    grid-template-columns: auto 1fr auto;
-  }
-
-  .blinker-controls-card {
-    position: static;
-    width: 100%;
-    margin-bottom: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .blinker-stage {
     flex-direction: column;
-    padding: 8px;
+    overflow-y: auto;
+  }
+
+  .blinker-sidebar {
+    width: 100% !important;
+    min-width: 100%;
+    max-width: 100%;
+    max-height: 240px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .blinker-sidebar-resizer {
+    display: none;
+  }
+
+  .blinker-canvas-stage {
+    padding: 8px 8px 56px;
+    min-height: 300px;
   }
 
   .callout-card {
