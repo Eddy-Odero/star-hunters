@@ -466,6 +466,69 @@ class TestDownloadsAndFallback(unittest.TestCase):
         self.assertEqual([c.bandpass for c in cutouts], ["SPHEREx-D1", "SPHEREx-D2"])
         self.assertTrue(all(c.source == "synthetic" for c in cutouts))
 
+    def test_ingest_retains_partial_cutouts_on_single_503_failure(self) -> None:
+        obs_list = [
+            ingest.SpherexObservation(
+                uri=f"artifact/{bp}.fits",
+                bandpass=bp,
+                time_bounds_lower="2026-01-01T00:00:00Z",
+                mjd_obs=61000.0,
+            )
+            for bp in ("SPHEREx-D1", "SPHEREx-D2", "SPHEREx-D6")
+        ]
+        d1_path = Path(self.temp_dir.name) / "d1.fits"
+        d2_path = Path(self.temp_dir.name) / "d2.fits"
+        ingest.write_synthetic_spherex_fits(d1_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D1")
+        ingest.write_synthetic_spherex_fits(d2_path, ra=147.0, dec=13.3, bandpass="SPHEREx-D2")
+        d1_bytes = d1_path.read_bytes()
+        d2_bytes = d2_path.read_bytes()
+
+        def _mock_download(uri: str, **_kwargs: object) -> bytes:
+            if "D6" in uri:
+                raise ingest.SpherexDownloadError(
+                    "503 Server Error: Service Unavailable for url: https://irsa.ipac.caltech.edu/..."
+                )
+            return d1_bytes if "D1" in uri else d2_bytes
+
+        with (
+            mock.patch.object(ingest, "query_observations", return_value=obs_list),
+            mock.patch.object(ingest, "download_cutout", side_effect=_mock_download),
+        ):
+            cutouts = ingest.ingest_spherex_cutouts(
+                ra=147.0,
+                dec=13.3,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=False,
+            )
+
+        self.assertEqual([c.bandpass for c in cutouts], ["SPHEREx-D1", "SPHEREx-D2"])
+
+    def test_ingest_503_circuit_breaker_fails_fast(self) -> None:
+        obs_list = [
+            ingest.SpherexObservation(
+                uri=f"artifact/obs_{idx}.fits",
+                bandpass=f"SPHEREx-D{(idx % 6) + 1}",
+                time_bounds_lower="2026-01-01T00:00:00Z",
+                mjd_obs=61000.0 + idx,
+            )
+            for idx in range(18)
+        ]
+
+        def _always_503(uri: str, **_kwargs: object) -> bytes:
+            raise ingest.SpherexDownloadError(f"503 Server Error: Service Unavailable for {uri}")
+
+        with (
+            mock.patch.object(ingest, "query_observations", return_value=obs_list),
+            mock.patch.object(ingest, "download_cutout", side_effect=_always_503),
+        ):
+            with self.assertRaises(ingest.SpherexDownloadError):
+                ingest.ingest_spherex_cutouts(
+                    ra=147.0,
+                    dec=13.3,
+                    fov_arcmin=5.0,
+                    allow_synthetic_fallback=False,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

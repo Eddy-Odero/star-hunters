@@ -142,41 +142,42 @@ export const DualThumbRangeSlider: React.FC<DualThumbRangeSliderProps> = ({
               width: `${Math.max(2, highPct - lowPct)}%`,
             }}
           />
-          <button
-            type="button"
-            role="slider"
-            className="dual-slider-thumb"
-            style={{ left: `${lowPct}%` }}
-            aria-label={lowAriaLabel ?? `${label} minimum`}
-            aria-valuemin={min}
-            aria-valuemax={max - minGap}
-            aria-valuenow={low}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              activeThumbRef.current = 'low';
-              e.currentTarget.parentElement?.parentElement?.setPointerCapture(e.pointerId);
-            }}
-            onKeyDown={handleKeyDown('low')}
-            data-testid={testId ? `${testId}-low` : undefined}
-          />
-          <button
-            type="button"
-            role="slider"
-            className="dual-slider-thumb is-high"
-            style={{ left: `${highPct}%` }}
-            aria-label={highAriaLabel ?? `${label} maximum`}
-            aria-valuemin={min + minGap}
-            aria-valuemax={max}
-            aria-valuenow={high}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              activeThumbRef.current = 'high';
-              e.currentTarget.parentElement?.parentElement?.setPointerCapture(e.pointerId);
-            }}
-            onKeyDown={handleKeyDown('high')}
-            data-testid={testId ? `${testId}-high` : undefined}
-          />
         </div>
+
+        <button
+          type="button"
+          role="slider"
+          className="dual-slider-thumb"
+          style={{ left: `${lowPct}%` }}
+          aria-label={lowAriaLabel ?? `${label} minimum`}
+          aria-valuemin={min}
+          aria-valuemax={max - minGap}
+          aria-valuenow={low}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            activeThumbRef.current = 'low';
+            e.currentTarget.parentElement?.setPointerCapture(e.pointerId);
+          }}
+          onKeyDown={handleKeyDown('low')}
+          data-testid={testId ? `${testId}-low` : undefined}
+        />
+        <button
+          type="button"
+          role="slider"
+          className="dual-slider-thumb"
+          style={{ left: `${highPct}%` }}
+          aria-label={highAriaLabel ?? `${label} maximum`}
+          aria-valuemin={min + minGap}
+          aria-valuemax={max}
+          aria-valuenow={high}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            activeThumbRef.current = 'high';
+            e.currentTarget.parentElement?.setPointerCapture(e.pointerId);
+          }}
+          onKeyDown={handleKeyDown('high')}
+          data-testid={testId ? `${testId}-high` : undefined}
+        />
       </div>
     </div>
   );

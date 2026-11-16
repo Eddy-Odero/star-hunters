@@ -1547,10 +1547,16 @@ class StarHuntersBackendService:
                             target_wcs_header=target_header,
                         )
 
-                try:
-                    cutouts = fut_spherex.result()
-                except Exception as exc:
-                    fallback_errors.append(f"SPHEREx:{type(exc).__name__}")
+                wait_futures([fut_spherex], timeout=22.0)
+                if fut_spherex.done():
+                    try:
+                        cutouts = fut_spherex.result()
+                    except Exception as exc:
+                        fallback_errors.append(f"SPHEREx:{type(exc).__name__}")
+                        cutouts = []
+                else:
+                    fallback_errors.append("SPHEREx:TimeoutError")
+                    fut_spherex.cancel()
                     cutouts = []
 
                 coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
@@ -1587,7 +1593,7 @@ class StarHuntersBackendService:
                                 target_wcs_header=target_header,
                             )
                         else:
-                            wise = fut_wise.result()
+                            wise = fut_wise.result(timeout=15.0)
                         wise_data_name = "wise_fallback.bin"
                         wise_flags_name = "wise_fallback_flags.bin"
                         actual_frames[wise_data_name] = wise.detector_buffer
@@ -1664,7 +1670,7 @@ class StarHuntersBackendService:
                                 target_wcs_header=target_header,
                             )
                         else:
-                            sv_epochs = fut_skyview.result()
+                            sv_epochs = fut_skyview.result(timeout=15.0)
                         sv_entries: list[dict[str, Any]] = []
                         sv_frames: dict[str, bytes] = {}
                         sv_mjds: list[float] = []
