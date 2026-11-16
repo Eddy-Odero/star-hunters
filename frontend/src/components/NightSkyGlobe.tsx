@@ -146,7 +146,14 @@ export const NightSkyGlobe: React.FC = () => {
     if (currentSurveyUrlRef.current !== url) {
       currentSurveyUrlRef.current = url;
       aladinThrottlerRef.current?.wake();
-      aladinInstanceRef.current?.setImageSurvey?.(url);
+      try {
+        aladinInstanceRef.current?.setImageSurvey?.(url);
+      } catch (err) {
+        observatoryLogger.warn('globe', 'Aladin setImageSurvey failed', {
+          survey: label,
+          error: err instanceof Error ? err.message : 'unknown',
+        });
+      }
       observatoryLogger.info('globe', 'Globe background sky survey switched', {
         survey: label,
         fovDeg: Number(viewStateRef.current.fovDeg.toFixed(2)),
@@ -206,8 +213,14 @@ export const NightSkyGlobe: React.FC = () => {
       });
       if (driveAladin && aladinInstanceRef.current) {
         aladinThrottlerRef.current?.wake();
-        aladinInstanceRef.current.gotoRaDec(wrappedRa, clampedDec);
-        aladinInstanceRef.current.setFoV?.(clampedFov);
+        try {
+          aladinInstanceRef.current.gotoRaDec(wrappedRa, clampedDec);
+          aladinInstanceRef.current.setFoV?.(clampedFov);
+        } catch (err) {
+          observatoryLogger.warn('globe', 'Aladin camera update failed', {
+            error: err instanceof Error ? err.message : 'unknown',
+          });
+        }
       }
     },
     [setSkyFrustum, updateLodForFov],
@@ -281,8 +294,14 @@ export const NightSkyGlobe: React.FC = () => {
 
         const syncFromAladin = () => {
           throttler.wake();
-          const pos = instance.getRaDec?.();
-          const rawFov = instance.getFoV?.();
+          let pos: [number, number] | undefined;
+          let rawFov: [number, number] | number | undefined;
+          try {
+            pos = instance.getRaDec?.();
+            rawFov = instance.getFoV?.();
+          } catch {
+            return;
+          }
           const parsedFov = Array.isArray(rawFov)
             ? Number(rawFov[0])
             : typeof rawFov === 'number'
@@ -292,6 +311,7 @@ export const NightSkyGlobe: React.FC = () => {
           const fovDeg = clampGlobeFov(parsedFov);
           const ra = pos ? wrapRaDeg(Number(pos[0])) : viewStateRef.current.ra;
           const dec = pos ? Number(pos[1]) : viewStateRef.current.dec;
+          if (!Number.isFinite(ra) || !Number.isFinite(dec)) return;
           const prev = viewStateRef.current;
           if (
             Math.abs(prev.ra - ra) < 1e-4 &&
@@ -340,11 +360,15 @@ export const NightSkyGlobe: React.FC = () => {
   const projectWorldPoint = useCallback(
     (ra: number, dec: number, width: number, height: number): { px: number; py: number } | null => {
       if (aladinReady && !aladinFailed && aladinInstanceRef.current?.world2pix) {
-        const px = aladinInstanceRef.current.world2pix(ra, dec);
-        if (px && Number.isFinite(px[0]) && Number.isFinite(px[1])) {
-          return { px: px[0], py: px[1] };
+        try {
+          const px = aladinInstanceRef.current.world2pix(ra, dec);
+          if (px && Number.isFinite(px[0]) && Number.isFinite(px[1])) {
+            return { px: px[0], py: px[1] };
+          }
+          return null;
+        } catch {
+          // Fall back to analytic SIN projection if Aladin WASM rejects transient coordinates
         }
-        return null;
       }
       const view = viewStateRef.current;
       const p = projectSkySin(ra, dec, view.ra, view.dec, view.fovDeg, width, height);
@@ -359,12 +383,16 @@ export const NightSkyGlobe: React.FC = () => {
     const x = clientX - rect.left;
     const y = clientY - rect.top;
 
-    if (aladinReady && aladinInstanceRef.current?.pix2world) {
-      const res = aladinInstanceRef.current.pix2world(x, y);
-      if (res && Number.isFinite(res[0]) && Number.isFinite(res[1])) {
-        return { world: { ra: wrapRaDeg(res[0]), dec: res[1] }, rect };
+    if (aladinReady && !aladinFailed && aladinInstanceRef.current?.pix2world) {
+      try {
+        const res = aladinInstanceRef.current.pix2world(x, y);
+        if (res && Number.isFinite(res[0]) && Number.isFinite(res[1])) {
+          return { world: { ra: wrapRaDeg(res[0]), dec: res[1] }, rect };
+        }
+        return null;
+      } catch {
+        // Fall back to analytic SIN inverse projection if Aladin pix2world throws transiently
       }
-      return null;
     }
     const world = unprojectSkySin(
       x,
@@ -508,6 +536,9 @@ export const NightSkyGlobe: React.FC = () => {
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (isBlinkerModalOpen) return;
+    if (dragRef.current.active) {
+      aladinThrottlerRef.current?.wake();
+    }
     clearCursorTooltipTimer();
     setCursorTooltip(null);
 
@@ -611,6 +642,12 @@ export const NightSkyGlobe: React.FC = () => {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return undefined;
+    // Aladin's catalogCanvas calls stopPropagation() on wheel & mousedown; wake in capture phase
+    // so wheel zoom and clicks over Aladin always resume 60 FPS rendering immediately.
+    const wakeOnInputCapture = (e: Event) => {
+      if (isBlinkerModalOpen || isInteractiveOverlayTarget(e.target)) return;
+      aladinThrottlerRef.current?.wake();
+    };
     const onWheel = (e: WheelEvent) => {
       if (isBlinkerModalOpen) return;
       aladinThrottlerRef.current?.wake();
@@ -620,8 +657,21 @@ export const NightSkyGlobe: React.FC = () => {
       const nextFov = clampGlobeFov(viewStateRef.current.fovDeg * (e.deltaY > 0 ? 1.18 : 0.84));
       applyCameraState(viewStateRef.current.ra, viewStateRef.current.dec, nextFov, false);
     };
+    const clearDragState = () => {
+      dragRef.current.active = false;
+    };
+    el.addEventListener('wheel', wakeOnInputCapture, { capture: true, passive: true });
+    el.addEventListener('pointerdown', wakeOnInputCapture, { capture: true, passive: true });
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    window.addEventListener('pointerup', clearDragState);
+    window.addEventListener('pointercancel', clearDragState);
+    return () => {
+      el.removeEventListener('wheel', wakeOnInputCapture, { capture: true });
+      el.removeEventListener('pointerdown', wakeOnInputCapture, { capture: true });
+      el.removeEventListener('wheel', onWheel);
+      window.removeEventListener('pointerup', clearDragState);
+      window.removeEventListener('pointercancel', clearDragState);
+    };
   }, [aladinFailed, aladinReady, applyCameraState, isBlinkerModalOpen]);
 
   const handleGlobeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -673,6 +723,9 @@ export const NightSkyGlobe: React.FC = () => {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={() => {
+          dragRef.current.active = false;
+        }}
         onPointerLeave={() => {
           dragRef.current.active = false;
           clearCursorTooltipTimer();
