@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { wrapRaDeg } from '../../utils/observatoryMath';
+import { getSurveyArchivalEra, wrapRaDeg } from '../../utils/observatoryMath';
 
 interface GlobeTelemetryBarProps {
   ra: number;
@@ -122,8 +122,8 @@ export const GlobeTelemetryBar: React.FC<GlobeTelemetryBarProps> = ({
       <span className="mono">FoV {fovDeg.toFixed(1)}°</span>
       <span className="globe-telemetry-lod">
         <span className="globe-telemetry-divider" />
-        <span>
-          Sky Map: <strong>{activeSurveyLabel}</strong>
+        <span title="All-sky background mosaics are archival stacked surveys (not live sky feeds) and exclude moving planets.">
+          Sky Map: <strong>{activeSurveyLabel}</strong> · {getSurveyArchivalEra(activeSurveyLabel)}
         </span>
       </span>
       {isPanelGridVisible && (

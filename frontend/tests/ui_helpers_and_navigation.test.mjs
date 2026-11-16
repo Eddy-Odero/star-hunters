@@ -40,6 +40,7 @@ import {
   isMovingSolarSystemObject,
   isWavelengthPresetActive,
   objectClassBadgeLabel,
+  pickClosestEpochIndex,
   pickDistinctHighlighterColors,
   pickNearestAllowedEpoch,
   resolveFilteredEpochIndices,
@@ -51,9 +52,13 @@ import {
   angularSeparationDeg,
   computeMagneticSnap,
   decodeHygieneFlagMask,
+  formatBlinkerSubtitle,
+  formatEpochDateShort,
   formatImageProvenanceBadge,
   formatRaDecCompact,
+  formatRelativeDataAge,
   getMarkerShapeKind,
+  getSurveyArchivalEra,
   isObjectInPatchViewBox,
   isObjectInSkyFrustum,
   parseSkySearchInput,
@@ -772,4 +777,45 @@ test('attachAladinIdleThrottler forwards finite rAF timestamps and recovers from
   assert.equal(scheduledFrames.length, 1);
   scheduledFrames.shift()(583.34);
   assert.deepEqual(receivedTimestamps, [16.67, 33.34, 550.0, 583.34]);
+});
+
+test('Epoch timestamps, relative age, archival survey eras, closest epoch picker, and coadd subtitle dates', () => {
+  assert.equal(formatEpochDateShort('2025-05-06T02:33:29Z'), '2025-05-06');
+  assert.equal(formatEpochDateShort(null), 'n/a');
+
+  const fixedNow = Date.parse('2026-11-20T00:00:00Z');
+  assert.equal(formatRelativeDataAge('2026-11-20T00:00:00Z', fixedNow), 'today');
+  assert.equal(formatRelativeDataAge('2026-11-10T00:00:00Z', fixedNow), '10 d ago');
+  assert.equal(formatRelativeDataAge('2026-05-20T00:00:00Z', fixedNow), '6 mo ago');
+  assert.equal(formatRelativeDataAge('2025-05-06T00:00:00Z', fixedNow), '1.5 yr ago');
+
+  assert.equal(getSurveyArchivalEra('AllWISE Wide (IRSA)'), '2010–2011 archive');
+  assert.equal(getSurveyArchivalEra('2MASS High-Res (IRSA)'), '1997–2001 archive');
+  assert.equal(getSurveyArchivalEra('SPHEREx QR2 Color (CDS)'), '2025–2026 archive');
+  assert.equal(getSurveyArchivalEra('Unknown Sky Survey'), 'Archival mosaic');
+
+  const sampleEpochs = [
+    { mjd: 60801.1, iso_date: '2025-05-06T02:33:29Z', mission: 'SPHEREx' },
+    { mjd: 60987.2, iso_date: '2025-11-08T04:31:52Z', mission: 'SPHEREx' },
+    { mjd: 61171.1, iso_date: '2026-05-11T02:18:44Z', mission: 'SPHEREx' },
+  ];
+  assert.equal(pickClosestEpochIndex(sampleEpochs, 60990.0), 1);
+  assert.equal(pickClosestEpochIndex(sampleEpochs, 61170.0), 2);
+  assert.equal(pickClosestEpochIndex([], 60990.0), 0);
+
+  const coaddSubtitle = formatBlinkerSubtitle({
+    manifest: {
+      epochs: sampleEpochs,
+    },
+    renderSettings: {
+      mode: 'coadd',
+      activeEpochIndex: 0,
+      passAIndex: 0,
+      passBIndex: 2,
+      coaddIndices: [0, 1, 2],
+    },
+    provenanceShortLabel: 'SPHEREx (Primary)',
+  });
+  assert.ok(coaddSubtitle.includes('2025-05-06 to 2026-05-11'));
+  assert.ok(coaddSubtitle.includes('SPHEREx (Primary)'));
 });

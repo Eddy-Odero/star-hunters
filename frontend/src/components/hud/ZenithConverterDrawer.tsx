@@ -67,6 +67,7 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
     dec: number;
     constellation?: string;
     city?: string | null;
+    isoTime?: string;
   } | null>(null);
   const [isConverting, setIsConverting] = useState<boolean>(false);
 
@@ -126,6 +127,7 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
           dec: data.zenith_icrs.dec,
           constellation: data.zenith_icrs.constellation,
           city: data.earth.city_name,
+          isoTime: data.earth.iso_time,
         });
         onFocusCoordinates?.(data.zenith_icrs.ra, data.zenith_icrs.dec, 12.0);
         return;
@@ -137,6 +139,7 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
         ra: approx.ra,
         dec: approx.dec,
         city: selectedCityName,
+        isoTime,
       });
       onFocusCoordinates?.(approx.ra, approx.dec, 12.0);
     } finally {
@@ -157,6 +160,11 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
         </span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Earth → ICRS</span>
       </div>
+
+      <p className="zenith-archival-note">
+        Calculates overhead sky coordinates for your city &amp; UTC time. Sky maps and cutouts are
+        archival survey snapshots, not live sky views.
+      </p>
 
       <div className="zenith-field">
         <label htmlFor="zenith-city-select">Observatory City Preset</label>
@@ -227,6 +235,11 @@ export const ZenithConverterDrawer: React.FC<ZenithConverterDrawerProps> = ({
             <span className="mono">{formatRaDecCompact(zenithResult.ra, zenithResult.dec)}</span>
           </span>
           {zenithResult.constellation && <span>Constellation: {zenithResult.constellation}</span>}
+          {zenithResult.isoTime && (
+            <span className="mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              Target UTC: {zenithResult.isoTime.slice(0, 16).replace('T', ' ')} (archival images)
+            </span>
+          )}
         </div>
       )}
     </form>

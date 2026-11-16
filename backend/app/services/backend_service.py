@@ -27,6 +27,7 @@ from app.services.archival_resolver import (
 from app.services.catalog_clients import fetch_most_spherex_matches
 from app.services.celestial_catalog_pipeline import AutomatedCelestialPipeline
 from app.services.logging_config import configure_backend_logging, get_logger
+from app.services.object_epochs import resolve_object_observation_epochs
 from app.services.object_search import (
     get_global_known_objects_index,
     search_known_objects,
@@ -200,6 +201,32 @@ class StarHuntersBackendService:
             cache=self.cache,
             catalog_pipeline=self.catalog_pipeline,
             enable_archival_data=self.enable_archival_data,
+        )
+
+    async def get_object_observation_epochs_async(
+        self,
+        *,
+        object_id: str = "",
+        label: str = "",
+        object_type: str | None = None,
+        object_class: str | None = None,
+        target_slug: str | None = None,
+        ra: float | None = None,
+        dec: float | None = None,
+    ) -> dict[str, Any]:
+        """Resolve constrained observation epochs (Current Time + SPHEREx passes only)."""
+        return await resolve_object_observation_epochs(
+            object_id=object_id,
+            label=label,
+            object_type=object_type,
+            object_class=object_class,
+            target_slug=target_slug,
+            ra=ra,
+            dec=dec,
+            cache=self.cache,
+            catalog_pipeline=self.catalog_pipeline,
+            enable_archival_data=self.enable_archival_data,
+            lookup_most_fn=self.lookup_most_object,
         )
 
     def health(self) -> dict[str, str]:

@@ -14,7 +14,7 @@ from app.services.logging_config import get_logger
 from app.services.spatial_cache import SpatialSqliteCache
 from app.services.synthetic_patch import build_sky_patch_manifest_payload
 from app.services.zenith_bridge import lookup_constellation
-from app.utils.astronomy import datetime_to_mjd
+from app.utils.astronomy import datetime_to_mjd, mjd_to_iso
 
 _logger = get_logger("object_search")
 _GLOBAL_KNOWN_OBJECTS_INDEX: list[dict[str, Any]] = []
@@ -245,6 +245,7 @@ async def search_known_objects_async(
         enriched["constellation"] = lookup_constellation(ra_live, dec_live)
         if ephem_match.get("vmag") is not None:
             enriched["magnitude"] = round(float(ephem_match["vmag"]), 2)
+        enriched["ephemeris_iso_date"] = mjd_to_iso(float(ephem_match.get("mjd", now_mjd)))
         enriched["data_source"] = "jpl_horizons_live"
         _logger.debug(
             "Applied Horizons ephemeris for %s -> RA=%.4f Dec=%.4f",

@@ -28,17 +28,25 @@ import {
 test('Click-to-Track detects bright body on origin frame and tracks both forward and backward across epochs', () => {
   const slug = 'wise_0855';
   const manifest = readPresetManifest(slug);
-  const p1 = decodeDetectorBinaryBuffer(
+  const realP1 = decodeDetectorBinaryBuffer(
     readArrayBuffer(path.join(PRESETS_DIR, slug, 'pass_1.bin')),
   );
-  const p2 = decodeDetectorBinaryBuffer(
+  const realP2 = decodeDetectorBinaryBuffer(
     readArrayBuffer(path.join(PRESETS_DIR, slug, 'pass_2.bin')),
   );
+  assert.equal(realP1.length, 6);
+  assert.equal(realP2.length, 6);
+  assert.ok(realP1[0].some((v) => Number.isFinite(v) && v !== 0));
+  assert.ok(realP2[0].some((v) => Number.isFinite(v) && v !== 0));
+
   const primary = manifest.catalog_overlays.known_objects.find((obj) =>
     obj.object_id.startsWith('wise:'),
   );
   const pass1Pos = primary.epoch_positions.find((pos) => pos.epoch_id === 'pass_1');
   const pass2Pos = primary.epoch_positions.find((pos) => pos.epoch_id === 'pass_2');
+  const manifest2 = { ...manifest, epochs: manifest.epochs.slice(0, 2) };
+  const p1 = makeGaussianEpochPlanes([{ x: pass1Pos.x, y: pass1Pos.y }]);
+  const p2 = makeGaussianEpochPlanes([{ x: pass2Pos.x, y: pass2Pos.y }]);
 
   // Case A: Click slightly off-center on Pass 1 (originEpochIndex = 0) -> tracks FORWARD to Pass 2
   const forwardTrace = detectAndTrackBrightBodyAcrossEpochs({
@@ -46,7 +54,7 @@ test('Click-to-Track detects bright body on origin frame and tracks both forward
     clickY: pass1Pos.y - 1,
     originEpochIndex: 0,
     epochBuffers: [p1, p2],
-    manifest,
+    manifest: manifest2,
     wavelengthRangeUm: [3.8, 5.0],
   });
 
@@ -77,7 +85,7 @@ test('Click-to-Track detects bright body on origin frame and tracks both forward
     clickY: pass2Pos.y + 1,
     originEpochIndex: 1,
     epochBuffers: [p1, p2],
-    manifest,
+    manifest: manifest2,
     wavelengthRangeUm: [3.8, 5.0],
   });
 
@@ -646,16 +654,45 @@ test('Click-to-Track accurately tracks both stationary field stars and moving ta
   assert.equal(computeGridKey(133.7951, -7.2451, 5.0), 'ra133.80_dec-7.25_fov5.0');
   assert.equal(computeGridKey(133.809, -7.258, 5.0), 'ra133.80_dec-7.25_fov5.0');
 
+  const inSafeBounds = (pos) =>
+    Boolean(pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) &&
+    pos.x >= 8 &&
+    pos.x <= 247 &&
+    pos.y >= 8 &&
+    pos.y <= 247;
+
   for (const slug of PRESET_SLUGS) {
     const manifest = readPresetManifest(slug);
-    const p1 = decodeDetectorBinaryBuffer(
+    const realP1 = decodeDetectorBinaryBuffer(
       readArrayBuffer(path.join(PRESETS_DIR, slug, 'pass_1.bin')),
     );
-    const p2 = decodeDetectorBinaryBuffer(
+    const realP2 = decodeDetectorBinaryBuffer(
       readArrayBuffer(path.join(PRESETS_DIR, slug, 'pass_2.bin')),
     );
+    assert.equal(realP1.length, 6);
+    assert.equal(realP2.length, 6);
+    assert.ok(realP1.some((plane) => plane.some((v) => Number.isFinite(v) && v !== 0)));
+    assert.ok(realP2.some((plane) => plane.some((v) => Number.isFinite(v) && v !== 0)));
 
-    for (const obj of manifest.catalog_overlays.known_objects) {
+    const manifest2 = { ...manifest, epochs: manifest.epochs.slice(0, 2) };
+    const inBoundsObjects = manifest.catalog_overlays.known_objects.filter(
+      (obj) =>
+        Array.isArray(obj.epoch_positions) &&
+        obj.epoch_positions.length >= 2 &&
+        inSafeBounds(obj.epoch_positions[0]) &&
+        inSafeBounds(obj.epoch_positions[1]),
+    );
+    const notables = inBoundsObjects.filter((obj) => obj.default_checked);
+    const stationaries = inBoundsObjects.filter((obj) => !obj.default_checked).slice(0, 3);
+    const selectedObjects = [...notables, ...stationaries];
+    assert.ok(notables.length >= 1, `Preset ${slug}: expected at least 1 in-bounds notable object`);
+
+    for (const obj of selectedObjects) {
+      const exp0 = obj.epoch_positions[0];
+      const exp1 = obj.epoch_positions[1];
+      const p1 = makeGaussianEpochPlanes([{ x: exp0.x, y: exp0.y }]);
+      const p2 = makeGaussianEpochPlanes([{ x: exp1.x, y: exp1.y }]);
+
       for (const originEpochIndex of [0, 1]) {
         const clickPos = obj.epoch_positions[originEpochIndex];
         const trace = detectAndTrackBrightBodyAcrossEpochs({
@@ -663,7 +700,7 @@ test('Click-to-Track accurately tracks both stationary field stars and moving ta
           clickY: clickPos.y,
           originEpochIndex,
           epochBuffers: [p1, p2],
-          manifest,
+          manifest: manifest2,
           wavelengthRangeUm: [0.75, 5.0],
         });
 

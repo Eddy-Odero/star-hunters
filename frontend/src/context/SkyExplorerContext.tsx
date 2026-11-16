@@ -24,6 +24,7 @@ import {
   clearCheckedObjectIds,
   extractAvailableMissions,
   getDefaultCheckedObjectIds,
+  pickClosestEpochIndex,
   pickNearestAllowedEpoch,
   resolveFilteredEpochIndices,
   selectAllObjectIds,
@@ -114,6 +115,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isBlinkerModalOpen, setIsBlinkerModalOpen] = useState<boolean>(false);
 
   const pendingFocusObjectIdRef = useRef<string | null>(null);
+  const preferredEpochMjdRef = useRef<number | null>(null);
   const patchResetBridgeRef = useRef<{
     clearTracking: () => void;
     setSpectrum: (spec: SkyExplorerContextValue['activeSpectrum']) => void;
@@ -152,11 +154,17 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     onStageBReady: (result, defaultCheckedIds) => {
       patchResetBridgeRef.current.setSpectrum(result.spectrum);
       setActiveMissions(ALL_MISSIONS);
+      const preferredMjd = preferredEpochMjdRef.current;
+      preferredEpochMjdRef.current = null;
+      const targetIdx =
+        preferredMjd !== null && result.manifest.epochs.length > 0
+          ? pickClosestEpochIndex(result.manifest.epochs, preferredMjd)
+          : 0;
       setRenderSettings((prev) => ({
         ...prev,
-        activeEpochIndex: 0,
+        activeEpochIndex: targetIdx,
         passAIndex: 0,
-        passBIndex: Math.max(0, result.manifest.epochs.length - 1),
+        passBIndex: targetIdx > 0 ? targetIdx : Math.max(0, result.manifest.epochs.length - 1),
         coaddIndices: result.manifest.epochs.map((_, idx) => idx),
         zoom: 1.0,
         panX: 0.0,
@@ -374,8 +382,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   );
 
   const selectPreset = useCallback(
-    (slug: string) => {
+    (slug: string, preferredEpochMjd?: number) => {
       pause();
+      preferredEpochMjdRef.current =
+        preferredEpochMjd !== undefined && Number.isFinite(preferredEpochMjd)
+          ? preferredEpochMjd
+          : null;
       setActivePresetSlug(slug);
       setIsSpectraModalOpen(false);
       void loadPresetBundle(slug);
@@ -384,8 +396,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   );
 
   const navigateToCoordinates = useCallback(
-    (ra: number, dec: number, fovArcmin = 5.0) => {
+    (ra: number, dec: number, fovArcmin = 5.0, preferredEpochMjd?: number) => {
       pause();
+      preferredEpochMjdRef.current =
+        preferredEpochMjd !== undefined && Number.isFinite(preferredEpochMjd)
+          ? preferredEpochMjd
+          : null;
       setActivePresetSlug(null);
       setIsSpectraModalOpen(false);
       setCoordinates({ ra, dec, fovArcmin });

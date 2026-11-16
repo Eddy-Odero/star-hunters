@@ -2,7 +2,11 @@ import React, { useMemo, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { DEFAULT_MOLECULAR_BANDS, type MolecularFeature } from '../types/contracts';
 import { downloadSpectrumCsv } from '../utils/csvExport';
-import { formatImageProvenanceBadge, formatRaDecCompact } from '../utils/observatoryMath';
+import {
+  formatEpochDateShort,
+  formatImageProvenanceBadge,
+  formatRaDecCompact,
+} from '../utils/observatoryMath';
 import { ChevronIcon, CloseIcon, DownloadIcon, SpinnerIcon } from './icons/ObservatoryIcons';
 import { SpectraPlotSvg, type SpectraPlotGeometry } from './spectra/SpectraPlotSvg';
 
@@ -137,7 +141,17 @@ export const SpectraModal: React.FC = () => {
             {activeSpectrum
               ? `${formatRaDecCompact(activeSpectrum.ra, activeSpectrum.dec)} · Flux (${
                   activeSpectrum.units?.flux ?? 'MJy/sr'
-                })`
+                })${
+                  manifest?.epochs && manifest.epochs.length > 0
+                    ? ` · Captured ${formatEpochDateShort(manifest.epochs[0].iso_date)}${
+                        manifest.epochs.length > 1
+                          ? ` – ${formatEpochDateShort(
+                              manifest.epochs[manifest.epochs.length - 1].iso_date,
+                            )}`
+                          : ''
+                      }`
+                    : ''
+                }`
               : 'Loading forced-photometry spectrum...'}
           </span>
         </div>

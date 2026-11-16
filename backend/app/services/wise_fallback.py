@@ -108,7 +108,9 @@ class WiseFallbackResult:
             "has_multi_epoch_spherex": False,
             "uses_wise_fallback": True,
             "baseline_days": max(self.baseline_days, baseline),
-            "status_note": f"WISE/NEOWISE W1/W2 fallback ({self.exposure_count} exposure(s))",
+            "status_note": (
+                f"Latest WISE/NEOWISE W1/W2 supplemental exposure ({self.exposure_count} cataloged)"
+            ),
         }
 
 

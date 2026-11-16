@@ -10,7 +10,9 @@ import type {
   GlobalKnownObjectEntry,
   ImageProvenanceBadge,
   KnownCelestialObject,
+  SkyPatchManifest,
   SkyViewportFrustum,
+  ViewportRenderSettings,
 } from '../types/contracts.ts';
 import { isMovingSolarSystemObject } from './knownObjectSelection.ts';
 
@@ -542,4 +544,109 @@ export function formatImageProvenanceBadge(
     label,
     shortLabel: `${summary.primary_mission} (Extension)`,
   };
+}
+
+/**
+ * Format an ISO-8601 timestamp into a concise `YYYY-MM-DD` date string.
+ *
+ * @param isoDate - Optional ISO-8601 timestamp string.
+ * @returns Short date string or `'n/a'` when missing/unparseable.
+ */
+export function formatEpochDateShort(isoDate?: string | null): string {
+  if (!isoDate || typeof isoDate !== 'string') return 'n/a';
+  const trimmed = isoDate.trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+    return trimmed.slice(0, 10);
+  }
+  const parsed = Date.parse(trimmed);
+  if (!Number.isFinite(parsed)) return 'n/a';
+  return new Date(parsed).toISOString().slice(0, 10);
+}
+
+/**
+ * Format a concise human-readable age relative to `nowMs` for an ISO-8601 date.
+ *
+ * @param isoDate - Optional ISO-8601 capture timestamp.
+ * @param nowMs - Optional reference epoch milliseconds (defaults to `Date.now()`).
+ * @returns Relative age text such as `'today'`, `'12 d ago'`, `'5 mo ago'`, or `'1.4 yr ago'`.
+ */
+export function formatRelativeDataAge(isoDate?: string | null, nowMs = Date.now()): string {
+  if (!isoDate || typeof isoDate !== 'string') return '';
+  const parsed = Date.parse(isoDate);
+  if (!Number.isFinite(parsed) || !Number.isFinite(nowMs)) return '';
+  const diffDays = Math.round((nowMs - parsed) / 86_400_000);
+  if (diffDays <= 0) return 'today';
+  if (diffDays < 30) return `${diffDays} d ago`;
+  if (diffDays < 365) return `${Math.max(1, Math.round(diffDays / 30.4375))} mo ago`;
+  return `${(diffDays / 365.25).toFixed(1)} yr ago`;
+}
+
+/**
+ * Map a 3D globe HiPS background survey label to its archival capture era.
+ *
+ * @param surveyLabel - Active sky survey label shown in the globe telemetry bar.
+ * @returns Concise archival survey era string.
+ */
+export function getSurveyArchivalEra(surveyLabel: string): string {
+  const low = surveyLabel.toLowerCase();
+  if (low.includes('allwise') || low.includes('wise')) return '2010–2011 archive';
+  if (low.includes('2mass')) return '1997–2001 archive';
+  if (low.includes('spherex')) return '2025–2026 archive';
+  return 'Archival mosaic';
+}
+
+/**
+ * Format the dynamic Blinker modal header subtitle for blink, subtract, and co-add modes.
+ *
+ * @param params - Active manifest, render settings, and provenance short label.
+ * @returns Formatted header subtitle string including pass dates and mission provenance.
+ */
+export function formatBlinkerSubtitle(params: {
+  manifest: Pick<SkyPatchManifest, 'epochs'> | null;
+  renderSettings: Pick<
+    ViewportRenderSettings,
+    'mode' | 'activeEpochIndex' | 'passAIndex' | 'passBIndex' | 'coaddIndices'
+  >;
+  provenanceShortLabel: string;
+}): string {
+  const { manifest, renderSettings, provenanceShortLabel } = params;
+  if (!manifest) return 'Loading calibrated infrared planes...';
+  const totalEpochs = manifest.epochs.length;
+  const activeEpoch =
+    manifest.epochs[Math.min(renderSettings.activeEpochIndex, Math.max(0, totalEpochs - 1))];
+  const passAEpoch = manifest.epochs[renderSettings.passAIndex];
+  const passBEpoch = manifest.epochs[renderSettings.passBIndex];
+
+  if (renderSettings.mode === 'subtract') {
+    return `Diff: Pass ${renderSettings.passBIndex + 1} (${formatEpochDateShort(
+      passBEpoch?.iso_date,
+    )}, ${passBEpoch?.mission ?? 'SPHEREx'}) - Pass ${
+      renderSettings.passAIndex + 1
+    } (${formatEpochDateShort(passAEpoch?.iso_date)}, ${passAEpoch?.mission ?? 'SPHEREx'})`;
+  }
+  if (renderSettings.mode === 'coadd') {
+    const count = renderSettings.coaddIndices.length || totalEpochs;
+    const indices =
+      renderSettings.coaddIndices.length > 0
+        ? renderSettings.coaddIndices
+        : manifest.epochs.map((_, i) => i);
+    const firstEpoch = manifest.epochs[Math.min(...indices)] ?? passAEpoch ?? manifest.epochs[0];
+    const lastEpoch =
+      manifest.epochs[Math.max(...indices)] ?? passBEpoch ?? manifest.epochs[totalEpochs - 1];
+    const startDate = formatEpochDateShort(firstEpoch?.iso_date);
+    const endDate = formatEpochDateShort(lastEpoch?.iso_date);
+    const dateSpan =
+      startDate !== 'n/a' && endDate !== 'n/a'
+        ? startDate === endDate
+          ? startDate
+          : `${startDate} to ${endDate}`
+        : `#${renderSettings.passAIndex + 1}-#${renderSettings.passBIndex + 1}`;
+    return `Co-Added Stack (${count} passes: ${dateSpan}) · ${provenanceShortLabel}`;
+  }
+  const activeDate = formatEpochDateShort(activeEpoch?.iso_date);
+  const age = formatRelativeDataAge(activeEpoch?.iso_date);
+  const datePart = age ? `${activeDate} (${age})` : activeDate;
+  return `Pass ${renderSettings.activeEpochIndex + 1}/${totalEpochs} · ${datePart} · ${
+    activeEpoch?.mission ?? provenanceShortLabel
+  }`;
 }

@@ -82,7 +82,8 @@ export const LandingCurtainOverlay: React.FC<{
         <h1 className="curtain-title">Star Hunters</h1>
         <p className="curtain-subtitle">
           Hunting moving celestial bodies, ultra-cold brown dwarfs, interstellar visitors, and
-          Planet X across NASA SPHEREx&rsquo;s 102 infrared bands and WISE/NEOWISE archives.
+          Planet X across NASA SPHEREx&rsquo;s 102 infrared bands (with archival WISE/NEOWISE
+          fallback).
         </p>
 
         <div className="curtain-status-box">

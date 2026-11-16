@@ -30,6 +30,7 @@ from app.models.contracts import (
     validate_spectrum_payload,
 )
 from app.services.backend_service import StarHuntersBackendService
+from app.services.object_epochs import cluster_most_matches_into_passes
 from app.services.spatial_cache import SpatialSqliteCache, compute_grid_key
 from app.services.spectrum_extractor import SpectrumExtractionError, extract_forced_spectrum
 from app.services.synthetic_patch import (
@@ -302,6 +303,7 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
 
         payload = extract_forced_spectrum(ra, dec, list(reversed(cutouts)), "Test source")
         parsed = validate_spectrum_payload(payload)
+        self.assertEqual(parsed.spectrum_origin, "SPHEREx 102-Band Forced Photometry")
         self.assertEqual(len(parsed.channels), 102)
         self.assertAlmostEqual(parsed.channels[0].wavelength_um, 0.75)
         self.assertAlmostEqual(parsed.channels[-1].wavelength_um, 5.0)
@@ -329,6 +331,10 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
 
         parsed = validate_spectrum_payload(
             extract_forced_spectrum(ra, dec, cutouts, "Six detector bands")
+        )
+        self.assertEqual(
+            parsed.spectrum_origin,
+            "SPHEREx Detector-Band Forced Photometry (Interpolated 102-Grid)",
         )
         self.assertEqual(len(parsed.channels), 102)
         self.assertAlmostEqual(parsed.channels[0].wavelength_um, 0.75)
@@ -719,6 +725,146 @@ class TestPhase0ContractsAndBackend(unittest.TestCase):
                 self.assertEqual(root_resp.status_code, 200)
                 self.assertIn("text/html", root_resp.headers.get("content-type", ""))
                 self.assertEqual(client.get("/health").status_code, 200)
+
+    def test_forced_spectrum_skips_fully_flagged_cutout_when_other_cutouts_are_valid(self) -> None:
+        ra, dec = 133.7951, -7.2451
+        valid_cutouts = [
+            self._make_spectral_cutout(
+                ra,
+                dec,
+                bandpass=f"SPHEREx-D{detector}",
+                source_flux=5.0 + detector,
+            )
+            for detector in range(1, 7)
+        ]
+        bad_cutout = self._make_spectral_cutout(ra, dec, bandpass="SPHEREx-D1", source_flux=5.0)
+        bad_cutout.flags_mask.fill(1)
+
+        parsed = validate_spectrum_payload(
+            extract_forced_spectrum(ra, dec, [bad_cutout, *valid_cutouts], "Partial bad cutout")
+        )
+        self.assertEqual(len(parsed.channels), 102)
+        self.assertEqual(
+            parsed.spectrum_origin,
+            "SPHEREx Detector-Band Forced Photometry (Interpolated 102-Grid)",
+        )
+
+    def test_object_epochs_clustering_and_api_endpoint(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from fastapi.testclient import TestClient
+
+        from app.utils.astronomy import datetime_to_mjd
+
+        # 1. cluster_most_matches_into_passes groups exposures >15d apart & picks median MJD coords
+        clustered = cluster_most_matches_into_passes(
+            [
+                {"ra": 1.1, "dec": -1.1, "mjd_start": 60841.0},
+                {"ra": 1.2, "dec": -1.2, "mjd_start": 60842.0},
+                {"ra": 1.3, "dec": -1.3, "mjd_start": 60843.0},
+                {"ra": 359.4, "dec": -2.4, "mjd_start": 61020.0},
+            ]
+        )
+        self.assertEqual(len(clustered), 2)
+        self.assertEqual(clustered[0]["epoch_key"], "spherex_pass_1")
+        self.assertEqual(clustered[0]["ra"], 1.2)
+        self.assertEqual(clustered[0]["exposure_count"], 3)
+        self.assertEqual(clustered[1]["epoch_key"], "spherex_pass_2")
+        self.assertEqual(clustered[1]["ra"], 359.4)
+
+        now_mjd = datetime_to_mjd()
+        self.cache.upsert_ephemeris_points(
+            [
+                {
+                    "naif_id": "699",
+                    "body_name": "Saturn",
+                    "body_class": "planet",
+                    "mjd": now_mjd,
+                    "ra": 355.1234,
+                    "dec": -3.4567,
+                    "vmag": 0.8,
+                    "source": "jpl_horizons_test",
+                }
+            ]
+        )
+
+        async def _fake_most(obj_name: str) -> dict[str, object]:
+            if obj_name.lower() == "saturn":
+                return {
+                    "query_name": "Saturn",
+                    "status": "ok",
+                    "matches": [
+                        {"ra": 1.7387, "dec": -1.6102, "mjd_start": 60841.77},
+                        {"ra": 356.2, "dec": -3.1, "mjd_start": 61005.25},
+                    ],
+                }
+            return {"query_name": obj_name, "status": "no_match", "matches": []}
+
+        client = TestClient(create_app(self.service))
+        with patch.object(
+            self.service, "lookup_most_object", new=AsyncMock(side_effect=_fake_most)
+        ):
+            saturn_resp = client.get(
+                "/api/v1/catalogs/object-epochs",
+                params={
+                    "object_id": "horizons:699",
+                    "label": "Saturn",
+                    "object_type": "solar_system",
+                    "object_class": "planet",
+                    "ra": 355.8,
+                    "dec": -2.9,
+                },
+            )
+            self.assertEqual(saturn_resp.status_code, 200)
+            sat_data = saturn_resp.json()
+            self.assertTrue(sat_data["is_solar_system"])
+            self.assertEqual(sat_data["passes_status"], "ok")
+            self.assertEqual(
+                [e["kind"] for e in sat_data["epochs"]],
+                ["current", "spherex_pass", "spherex_pass"],
+            )
+            self.assertFalse(sat_data["epochs"][0]["can_view_in_blinker"])
+            self.assertAlmostEqual(sat_data["epochs"][0]["ra"], 355.1234, places=3)
+            self.assertTrue(sat_data["epochs"][1]["can_view_in_blinker"])
+            self.assertAlmostEqual(sat_data["epochs"][1]["ra"], 1.7387, places=4)
+
+            mars_resp = client.get(
+                "/api/v1/catalogs/object-epochs",
+                params={
+                    "object_id": "horizons:499",
+                    "label": "Mars",
+                    "object_type": "solar_system",
+                    "object_class": "planet",
+                    "ra": 115.2,
+                    "dec": 23.4,
+                },
+            )
+            self.assertEqual(mars_resp.status_code, 200)
+            mars_data = mars_resp.json()
+            self.assertEqual(mars_data["passes_status"], "no_spherex_passes")
+            self.assertEqual([e["kind"] for e in mars_data["epochs"]], ["current"])
+
+        wise_resp = client.get(
+            "/api/v1/catalogs/object-epochs",
+            params={
+                "object_id": "wise:J085510.83-071442.5",
+                "label": "WISE 0855-0714",
+                "object_type": "brown_dwarf_candidate",
+                "target_slug": "wise_0855",
+                "ra": 133.7951,
+                "dec": -7.2451,
+            },
+        )
+        self.assertEqual(wise_resp.status_code, 200)
+        wise_data = wise_resp.json()
+        self.assertFalse(wise_data["is_solar_system"])
+        self.assertEqual(wise_data["epochs"][0]["kind"], "current")
+        self.assertTrue(wise_data["epochs"][0]["can_view_in_blinker"])
+        self.assertEqual(wise_data["passes_status"], "ok")
+        self.assertGreaterEqual(
+            sum(1 for ep in wise_data["epochs"] if ep["kind"] == "spherex_pass"),
+            2,
+        )
 
 
 if __name__ == "__main__":

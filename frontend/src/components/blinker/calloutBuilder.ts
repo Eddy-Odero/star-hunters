@@ -4,7 +4,6 @@ import {
   type KnownCelestialObject,
   type SkyPatchManifest,
   type TracedObjectSummary,
-  type ViewportRenderSettings,
 } from '../../types/contracts';
 import {
   computeSmartCalloutLayout,
@@ -16,7 +15,13 @@ import {
   formatMagnitude,
   formatProperMotion,
 } from '../../utils/knownObjectSelection';
-import { formatRaDecCompact } from '../../utils/observatoryMath';
+import {
+  formatBlinkerSubtitle,
+  formatEpochDateShort,
+  formatRaDecCompact,
+} from '../../utils/observatoryMath';
+
+export { formatBlinkerSubtitle };
 
 export type CalloutRef = { kind: 'tracked'; trackId: string } | { kind: 'known'; objectId: string };
 
@@ -87,6 +92,9 @@ export function buildCalloutDetailAndGeometry(params: {
   if (!activeCalloutRef || !manifest) return null;
 
   const targetNameLower = manifest.target_metadata.name.trim().toLowerCase();
+  const activeEpoch =
+    manifest.epochs[Math.min(activeEpochIndex, Math.max(0, manifest.epochs.length - 1))];
+  const activeDateShort = formatEpochDateShort(activeEpoch?.iso_date);
   let detail: CalloutDetail | null = null;
 
   if (activeCalloutRef.kind === 'tracked') {
@@ -118,6 +126,9 @@ export function buildCalloutDetailAndGeometry(params: {
       if (knownMatch?.data_source) {
         notesParts.push(`Catalog provenance: ${knownMatch.data_source}`);
       }
+      if (activeDateShort !== 'n/a') {
+        notesParts.push(`Frame captured: ${activeDateShort}`);
+      }
       if (notesParts.length === 0 && manifest.target_metadata.description) {
         notesParts.push(
           `Field: ${manifest.target_metadata.name}. ${manifest.target_metadata.description}`,
@@ -128,7 +139,7 @@ export function buildCalloutDetailAndGeometry(params: {
         title,
         subtitle: `${formatRaDecCompact(track.ra, track.dec)} · Constellation: ${
           manifest.target_metadata.constellation || 'n/a'
-        }`,
+        } · Captured ${activeDateShort}`,
         description: notesParts.join(' '),
         catalogBadge: track.matchedCatalog ? track.matchedCatalog.toUpperCase() : 'CANDIDATE',
         ra: track.ra,
@@ -172,12 +183,17 @@ export function buildCalloutDetailAndGeometry(params: {
         notesParts.push(`Parallax: ${obj.parallax_mas.toFixed(1)} mas`);
       }
       if (obj.data_source) notesParts.push(`Source: ${obj.data_source}`);
+      if (obj.catalog === 'jpl_horizons' || obj.object_id.startsWith('ephem:')) {
+        notesParts.push(`Predicted ephemeris for ${activeDateShort}`);
+      } else if (activeDateShort !== 'n/a') {
+        notesParts.push(`Frame captured: ${activeDateShort}`);
+      }
 
       detail = {
         title: obj.label,
         subtitle: `${formatRaDecCompact(epPos.ra, epPos.dec)} · Constellation: ${
           manifest.target_metadata.constellation || 'n/a'
-        }`,
+        } · Captured ${activeDateShort}`,
         description:
           notesParts.length > 0
             ? notesParts.join(' · ')
@@ -258,35 +274,4 @@ export function buildCalloutDetailAndGeometry(params: {
 
 export function isImagePointInBounds(x: number, y: number): boolean {
   return x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT;
-}
-
-export function formatBlinkerSubtitle(params: {
-  manifest: SkyPatchManifest | null;
-  renderSettings: ViewportRenderSettings;
-  provenanceShortLabel: string;
-}): string {
-  const { manifest, renderSettings, provenanceShortLabel } = params;
-  if (!manifest) return 'Loading calibrated infrared planes...';
-  const totalEpochs = manifest.epochs.length;
-  const activeEpoch =
-    manifest.epochs[Math.min(renderSettings.activeEpochIndex, Math.max(0, totalEpochs - 1))];
-  const passAEpoch = manifest.epochs[renderSettings.passAIndex];
-  const passBEpoch = manifest.epochs[renderSettings.passBIndex];
-
-  if (renderSettings.mode === 'subtract') {
-    return `Diff: Pass ${renderSettings.passBIndex + 1} (${
-      passBEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
-    }, ${passBEpoch?.mission ?? 'SPHEREx'}) - Pass ${renderSettings.passAIndex + 1} (${
-      passAEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
-    }, ${passAEpoch?.mission ?? 'SPHEREx'})`;
-  }
-  if (renderSettings.mode === 'coadd') {
-    const count = renderSettings.coaddIndices.length || totalEpochs;
-    return `Co-Added Stack (${count} passes: #${renderSettings.passAIndex + 1}-#${
-      renderSettings.passBIndex + 1
-    }) · ${provenanceShortLabel}`;
-  }
-  return `Pass ${renderSettings.activeEpochIndex + 1}/${totalEpochs} · ${
-    activeEpoch?.iso_date?.slice(0, 10) ?? 'n/a'
-  } · ${activeEpoch?.mission ?? provenanceShortLabel}`;
 }

@@ -161,6 +161,30 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
             "results": results,
         }
 
+    @fastapi_app.get("/api/v1/catalogs/object-epochs")
+    @fastapi_app.get("/api/catalogs/object-epochs")
+    async def get_catalog_object_epochs(
+        response: Response,
+        object_id: str = Query(""),
+        label: str = Query(..., min_length=1),
+        object_type: str | None = Query(None),
+        object_class: str | None = Query(None),
+        target_slug: str | None = Query(None),
+        ra: float | None = Query(None, ge=0.0, le=360.0),
+        dec: float | None = Query(None, ge=-90.0, le=90.0),
+    ) -> dict[str, Any]:
+        """Return constrained epochs (Current Time + SPHEREx passes only) for a target."""
+        response.headers["Cache-Control"] = "public, max-age=1800"
+        return await active_service.get_object_observation_epochs_async(
+            object_id=object_id,
+            label=label,
+            object_type=object_type,
+            object_class=object_class,
+            target_slug=target_slug,
+            ra=ra,
+            dec=dec,
+        )
+
     @fastapi_app.get("/api/v1/solar-system/in-fov")
     @fastapi_app.get("/api/solar-system/in-fov")
     async def solar_system_in_fov(

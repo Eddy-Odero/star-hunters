@@ -245,6 +245,32 @@ export interface GlobalKnownObjectEntry extends KnownCelestialObject {
   patch_ra?: number;
   patch_dec?: number;
   match_score?: number;
+  ephemeris_iso_date?: string | null;
+}
+
+/** Constrained epoch option (Current Time or SPHEREx pass date) for a searchable object. */
+export interface ObjectObservationEpoch {
+  epoch_key: string;
+  kind: 'current' | 'spherex_pass';
+  label: string;
+  iso_date: string;
+  mjd: number;
+  ra: number;
+  dec: number;
+  constellation: string;
+  source: string;
+  exposure_count?: number | null;
+  can_view_in_blinker: boolean;
+  note: string;
+}
+
+/** Response returned by `/api/v1/catalogs/object-epochs`. */
+export interface ObjectObservationEpochsResponse {
+  object_id: string;
+  label: string;
+  is_solar_system: boolean;
+  passes_status: string;
+  epochs: ObjectObservationEpoch[];
 }
 
 /** Gaia DR3 astrometric overlay source record. */
@@ -500,8 +526,13 @@ export interface SkyExplorerContextValue {
   clearTrackedTargets: () => void;
   activeSpectrum: SpectrumPayload | null;
   isSpectrumLoading: boolean;
-  selectPreset: (slug: string) => void;
-  navigateToCoordinates: (ra: number, dec: number, fovArcmin?: number) => void;
+  selectPreset: (slug: string, preferredEpochMjd?: number) => void;
+  navigateToCoordinates: (
+    ra: number,
+    dec: number,
+    fovArcmin?: number,
+    preferredEpochMjd?: number,
+  ) => void;
   retryActivePatch?: () => void;
   inspectPixelOrCoord: (x: number, y: number, originEpochIndex?: number) => void;
   activeMissions?: MissionName[];

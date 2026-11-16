@@ -331,21 +331,34 @@ def extract_forced_spectrum(
         raise SpectrumExtractionError("At least one SPHEREx cutout is required.")
 
     measured: list[tuple[float | None, int, float, float, bool]] = []
+    last_error: SpectrumExtractionError | None = None
     for cutout in cutouts:
-        detector = _detector_number(cutout)
-        wavelength = _optional_wavelength_um(cutout.header)
-        flux, variance, flagged = _aperture_measurement(cutout, ra, dec)
+        try:
+            detector = _detector_number(cutout)
+            wavelength = _optional_wavelength_um(cutout.header)
+            flux, variance, flagged = _aperture_measurement(cutout, ra, dec)
+        except SpectrumExtractionError as exc:
+            last_error = exc
+            continue
         measured.append((wavelength, detector, flux, variance, flagged))
+
+    if not measured:
+        raise last_error or SpectrumExtractionError(
+            "Aperture or local background annulus has no valid pixels."
+        )
 
     channels = _direct_channels(measured)
     if channels is None:
         channels = _interpolated_channels(_collapse_to_detector_samples(measured))
+        spectrum_origin = "SPHEREx Detector-Band Forced Photometry (Interpolated 102-Grid)"
+    else:
+        spectrum_origin = "SPHEREx 102-Band Forced Photometry"
 
     payload = {
         "ra": float(ra),
         "dec": float(dec),
         "source_label": source_label,
-        "spectrum_origin": "SPHEREx 102-Band Forced Photometry",
+        "spectrum_origin": spectrum_origin,
         "units": {"wavelength": "um", "flux": "MJy/sr"},
         "channels": channels,
         "molecular_features": [dict(feature) for feature in DEFAULT_MOLECULAR_FEATURES],

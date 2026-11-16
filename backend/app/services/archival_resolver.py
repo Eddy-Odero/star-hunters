@@ -373,10 +373,11 @@ class ArchivalResolver:
                             "uses_wise_fallback": True,
                             "baseline_days": max(float(wise.baseline_days), float(baseline_days)),
                             "status_note": (
-                                f"WISE/NEOWISE W1/W2 fallback; {len(coadd.epochs)} SPHEREx epoch(s)"
+                                f"Supplemental latest WISE/NEOWISE W1/W2 fallback; "
+                                f"{len(coadd.epochs)} SPHEREx epoch(s)"
                             ),
                             "provenance_tier": "extension",
-                            "survey_name": "WISE / NEOWISE W1-W2",
+                            "survey_name": "WISE / NEOWISE W1-W2 (Supplemental)",
                         }
                         out_manifest["epochs"] = epoch_entries
                         frames = actual_frames

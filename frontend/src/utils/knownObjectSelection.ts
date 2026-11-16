@@ -343,6 +343,30 @@ export function pickNearestAllowedEpoch(
 }
 
 /**
+ * Pick the epoch index whose Modified Julian Date is closest to `targetMjd`.
+ *
+ * @param epochs - Ordered manifest epochs containing `mjd`.
+ * @param targetMjd - Target Modified Julian Date.
+ * @returns Zero-based index of the closest epoch, or `0` when empty/non-finite.
+ */
+export function pickClosestEpochIndex(
+  epochs: ReadonlyArray<{ mjd: number }>,
+  targetMjd: number,
+): number {
+  if (!epochs || epochs.length === 0 || !Number.isFinite(targetMjd)) return 0;
+  let bestIdx = 0;
+  let bestDist = Math.abs(epochs[0].mjd - targetMjd);
+  for (let i = 1; i < epochs.length; i += 1) {
+    const dist = Math.abs(epochs[i].mjd - targetMjd);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+/**
  * Compute a normalized `[0.0, 1.0]` fuzzy match score between a user query and a candidate string.
  * Supports exact/prefix/substring match, multi-word token prefix match, ordered subsequence
  * (`"w0855"` -> `"WISE 0855-0714"`), and bounded Levenshtein edit distance (`"barnrd"` -> `"Barnard's Star"`).

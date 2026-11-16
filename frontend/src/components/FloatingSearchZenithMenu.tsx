@@ -1,16 +1,27 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { useOptionalNotifications } from '../context/NotificationContext';
 import { useDraggablePanel } from '../hooks/useDraggablePanel';
-import { type GlobalKnownObjectEntry } from '../types/contracts';
-import { fuzzySearchKnownObjects } from '../utils/knownObjectSelection';
+import type {
+  GlobalKnownObjectEntry,
+  ObjectObservationEpoch,
+  ObjectObservationEpochsResponse,
+} from '../types/contracts';
+import { fuzzySearchKnownObjects, isMovingSolarSystemObject } from '../utils/knownObjectSelection';
 import {
   angularSeparationDeg,
   BENCHMARK_TARGET_OPTIONS,
+  formatRaDecCompact,
   parseSkySearchInput,
 } from '../utils/observatoryMath';
 import { observatoryLogger } from '../utils/observatoryLogger';
-import { ChevronIcon, CompassZenithIcon, DragGripIcon, SearchIcon } from './icons/ObservatoryIcons';
+import {
+  ChevronIcon,
+  CloseIcon,
+  CompassZenithIcon,
+  DragGripIcon,
+  SearchIcon,
+} from './icons/ObservatoryIcons';
 import { ZenithConverterDrawer } from './hud/ZenithConverterDrawer';
 
 /**
@@ -26,6 +37,7 @@ export const FloatingSearchZenithMenu: React.FC = () => {
     requestGlobeFocus,
     navigateToCoordinates,
     selectPreset,
+    openBlinkerModal,
     getSkyFrustum,
   } = useSkyExplorer();
   const notifications = useOptionalNotifications();
@@ -49,6 +61,16 @@ export const FloatingSearchZenithMenu: React.FC = () => {
     query: string;
     results: GlobalKnownObjectEntry[];
   }>({ query: '', results: [] });
+  const [selectedSearchTarget, setSelectedSearchTarget] = useState<GlobalKnownObjectEntry | null>(
+    null,
+  );
+  const [targetEpochs, setTargetEpochs] = useState<ObjectObservationEpoch[]>([]);
+  const [selectedEpochKey, setSelectedEpochKey] = useState<string>('current');
+  const [passesStatus, setPassesStatus] = useState<string | null>(null);
+  const [epochsLoading, setEpochsLoading] = useState<boolean>(false);
+  const epochsAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => epochsAbortRef.current?.abort(), []);
 
   useEffect(() => {
     const q = searchText.trim();
@@ -96,6 +118,41 @@ export const FloatingSearchZenithMenu: React.FC = () => {
     return fuzzySearchKnownObjects(Array.from(byId.values()), q).slice(0, 6);
   }, [globalKnownObjects, liveSearchState, searchText]);
 
+  const activeEpochOption = useMemo(
+    () => targetEpochs.find((ep) => ep.epoch_key === selectedEpochKey) ?? targetEpochs[0] ?? null,
+    [selectedEpochKey, targetEpochs],
+  );
+
+  const applyEpochSelection = (
+    entry: GlobalKnownObjectEntry,
+    epoch: ObjectObservationEpoch,
+    openInBlinker = true,
+  ) => {
+    setSelectedEpochKey(epoch.epoch_key);
+    const solarSystem = isMovingSolarSystemObject(entry) || entry.object_id.startsWith('horizons:');
+    if (epoch.kind === 'current') {
+      requestGlobeFocus?.(epoch.ra, epoch.dec, solarSystem ? 4.0 : 2.2);
+      if (!solarSystem) {
+        if (entry.target_slug && !entry.target_slug.startsWith('all_sky')) {
+          selectPreset(entry.target_slug);
+        } else {
+          navigateToCoordinates(epoch.ra, epoch.dec, 5.0);
+        }
+      }
+      return;
+    }
+
+    requestGlobeFocus?.(epoch.ra, epoch.dec, 2.2);
+    if (!solarSystem && entry.target_slug && !entry.target_slug.startsWith('all_sky')) {
+      selectPreset(entry.target_slug, epoch.mjd);
+    } else {
+      navigateToCoordinates(epoch.ra, epoch.dec, 5.0, epoch.mjd);
+    }
+    if (openInBlinker) {
+      openBlinkerModal?.();
+    }
+  };
+
   const handleSelectSuggestion = (entry: GlobalKnownObjectEntry) => {
     observatoryLogger.info('search', 'Selected target from search', {
       label: entry.label,
@@ -105,12 +162,75 @@ export const FloatingSearchZenithMenu: React.FC = () => {
     });
     setSearchText(entry.label);
     setSearchFocused(false);
-    requestGlobeFocus?.(entry.ra, entry.dec, 2.2);
-    if (entry.target_slug && !entry.target_slug.startsWith('all_sky')) {
-      selectPreset(entry.target_slug);
-    } else {
-      navigateToCoordinates(entry.ra, entry.dec, 5.0);
+
+    const solarSystem = isMovingSolarSystemObject(entry) || entry.object_id.startsWith('horizons:');
+    const nowIso = entry.ephemeris_iso_date ?? new Date().toISOString();
+    const fallbackCurrentEpoch: ObjectObservationEpoch = {
+      epoch_key: 'current',
+      kind: 'current',
+      label: `Current Time (Now · ${nowIso.slice(0, 10)})`,
+      iso_date: nowIso,
+      mjd: 0,
+      ra: entry.ra,
+      dec: entry.dec,
+      constellation: entry.constellation ?? '',
+      source: entry.data_source ?? 'catalog_reference',
+      can_view_in_blinker: !solarSystem,
+      note: solarSystem
+        ? 'Predicted current sky position (JPL Horizons). Background sky maps are archival; pick a SPHEREx pass date to view in Blinker.'
+        : 'Sky coordinates for this target; Blinker displays archival multi-pass SPHEREx cutouts.',
+    };
+
+    setSelectedSearchTarget(entry);
+    setTargetEpochs([fallbackCurrentEpoch]);
+    setSelectedEpochKey('current');
+    setPassesStatus(null);
+    requestGlobeFocus?.(entry.ra, entry.dec, solarSystem ? 4.0 : 2.2);
+    if (!solarSystem) {
+      if (entry.target_slug && !entry.target_slug.startsWith('all_sky')) {
+        selectPreset(entry.target_slug);
+      } else {
+        navigateToCoordinates(entry.ra, entry.dec, 5.0);
+      }
     }
+
+    epochsAbortRef.current?.abort();
+    const controller = new AbortController();
+    epochsAbortRef.current = controller;
+    setEpochsLoading(true);
+    const params = new URLSearchParams({
+      object_id: entry.object_id,
+      label: entry.label,
+      ra: String(entry.ra),
+      dec: String(entry.dec),
+    });
+    if (entry.object_type) params.set('object_type', entry.object_type);
+    if (entry.object_class) params.set('object_class', entry.object_class);
+    if (entry.target_slug) params.set('target_slug', entry.target_slug);
+
+    void fetch(`/api/v1/catalogs/object-epochs?${params.toString()}`, {
+      signal: controller.signal,
+    })
+      .then(async (res) => {
+        if (!res.ok) return;
+        const payload = (await res.json()) as ObjectObservationEpochsResponse;
+        if (Array.isArray(payload.epochs) && payload.epochs.length > 0) {
+          setTargetEpochs(payload.epochs);
+          setPassesStatus(payload.passes_status);
+          const cur = payload.epochs[0];
+          if (cur && cur.kind === 'current') {
+            requestGlobeFocus?.(cur.ra, cur.dec, payload.is_solar_system ? 4.0 : 2.2);
+          }
+        }
+      })
+      .catch(() => {
+        // Offline / aborted requests retain fallback current-epoch descriptor.
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setEpochsLoading(false);
+        }
+      });
   };
 
   const handleSearchSubmit = (e: React.FormEvent) => {
@@ -278,6 +398,84 @@ export const FloatingSearchZenithMenu: React.FC = () => {
               </span>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Constrained Observation Time Picker (Current Time + SPHEREx Passes only) */}
+      {selectedSearchTarget && targetEpochs.length > 0 && (
+        <div
+          className="search-epoch-card"
+          data-testid="search-target-epoch-card"
+          data-no-drag="true"
+        >
+          <div className="search-epoch-card-header">
+            <span className="search-epoch-card-title" title={selectedSearchTarget.label}>
+              {selectedSearchTarget.label}
+            </span>
+            <button
+              type="button"
+              className="hud-icon-btn"
+              aria-label="Close target observation time selector"
+              onClick={() => {
+                epochsAbortRef.current?.abort();
+                setSelectedSearchTarget(null);
+              }}
+              style={{ width: 22, height: 22 }}
+            >
+              <CloseIcon size={12} />
+            </button>
+          </div>
+
+          <div className="zenith-field">
+            <label htmlFor="search-target-epoch-select">
+              Observation Time (Current or SPHEREx Pass Dates)
+            </label>
+            <select
+              id="search-target-epoch-select"
+              data-testid="search-target-epoch-select"
+              className="hud-select"
+              style={{ width: '100%' }}
+              value={selectedEpochKey}
+              disabled={epochsLoading && targetEpochs.length <= 1}
+              onChange={(e) => {
+                const chosen = targetEpochs.find((ep) => ep.epoch_key === e.target.value);
+                if (chosen) {
+                  applyEpochSelection(selectedSearchTarget, chosen, chosen.kind === 'spherex_pass');
+                }
+              }}
+            >
+              {targetEpochs.map((ep) => (
+                <option key={ep.epoch_key} value={ep.epoch_key}>
+                  {ep.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {activeEpochOption && (
+            <div className="search-epoch-meta">
+              <span className="mono" style={{ color: 'var(--text-primary)' }}>
+                {formatRaDecCompact(activeEpochOption.ra, activeEpochOption.dec)}
+              </span>
+              <span>{activeEpochOption.note}</span>
+              {epochsLoading && <span>Checking SPHEREx pass intersections…</span>}
+              {!epochsLoading && passesStatus === 'no_spherex_passes' && (
+                <span>No SPHEREx archival pass intersections found yet for this target.</span>
+              )}
+            </div>
+          )}
+
+          {activeEpochOption && activeEpochOption.can_view_in_blinker && (
+            <button
+              type="button"
+              className="hud-btn-primary"
+              data-testid="open-epoch-in-blinker-btn"
+              style={{ width: '100%', justifyContent: 'center' }}
+              onClick={() => applyEpochSelection(selectedSearchTarget, activeEpochOption, true)}
+            >
+              Open in Blinker ({activeEpochOption.iso_date.slice(0, 10)})
+            </button>
+          )}
         </div>
       )}
 

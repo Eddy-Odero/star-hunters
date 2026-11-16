@@ -17,8 +17,10 @@
     "primary_mission": "SPHEREx",
     "has_multi_epoch_spherex": true,
     "uses_wise_fallback": false,
-    "baseline_days": 182.7,
-    "status_note": "2 SPHEREx survey passes (6-month baseline)"
+    "baseline_days": 378.5763575230012,
+    "status_note": "3 real SPHEREx archival pass(es)",
+    "provenance_tier": "primary",
+    "survey_name": "SPHEREx IRSA Archival"
   },
   "wcs": {
     "width": 256,
@@ -41,10 +43,26 @@
       "epoch_id": "pass_1",
       "label": "Pass 1 (SPHEREx)",
       "mission": "SPHEREx",
-      "mjd": 60810.5,
-      "iso_date": "2025-05-15T12:00:00Z",
+      "mjd": 60792.915653507,
+      "iso_date": "2025-04-27T21:58:32Z",
       "detectors_data_url": "/presets/cw_leonis/pass_1.bin",
       "flags_mask_url": "/presets/cw_leonis/pass_1_flags.bin",
+      "available_detectors": [
+        1,
+        2,
+        4,
+        5
+      ],
+      "binary_dtype": "float32"
+    },
+    {
+      "epoch_id": "pass_2",
+      "label": "Pass 2 (SPHEREx)",
+      "mission": "SPHEREx",
+      "mjd": 60996.906979022,
+      "iso_date": "2025-11-17T21:46:02Z",
+      "detectors_data_url": "/presets/cw_leonis/pass_2.bin",
+      "flags_mask_url": "/presets/cw_leonis/pass_2_flags.bin",
       "available_detectors": [
         1,
         2,
@@ -56,18 +74,17 @@
       "binary_dtype": "float32"
     },
     {
-      "epoch_id": "pass_2",
-      "label": "Pass 2 (SPHEREx)",
+      "epoch_id": "pass_3",
+      "label": "Pass 3 (SPHEREx)",
       "mission": "SPHEREx",
-      "mjd": 60993.2,
-      "iso_date": "2025-11-14T04:48:00Z",
-      "detectors_data_url": "/presets/cw_leonis/pass_2.bin",
-      "flags_mask_url": "/presets/cw_leonis/pass_2_flags.bin",
+      "mjd": 61171.49201103,
+      "iso_date": "2026-05-11T11:48:29Z",
+      "detectors_data_url": "/presets/cw_leonis/pass_3.bin",
+      "flags_mask_url": "/presets/cw_leonis/pass_3_flags.bin",
       "available_detectors": [
         1,
         2,
         3,
-        4,
         5,
         6
       ],
@@ -93,7 +110,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.9892,
             "dec": 13.2788,
             "x": 128.0,
@@ -101,13 +118,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
             "ra": 146.9892,
             "dec": 13.2788,
             "x": 128.01,
             "y": 128.0
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 146.98919,
+            "dec": 13.2788,
+            "x": 128.03,
+            "y": 128.0
           }
-        ]
+        ],
+        "object_class": "variable_star"
       },
       {
         "object_id": "gaia:614425140759778304",
@@ -125,7 +151,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.96351,
             "dec": 13.30902,
             "x": 204.8,
@@ -133,13 +159,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.96351,
+            "dec": 13.30902,
+            "x": 204.8,
+            "y": 220.83
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.96351,
             "dec": 13.30902,
             "x": 204.8,
             "y": 220.83
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425140759539584",
@@ -157,7 +192,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.97109,
             "dec": 13.30893,
             "x": 182.16,
@@ -165,13 +200,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.97109,
+            "dec": 13.30893,
+            "x": 182.16,
+            "y": 220.57
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.97109,
             "dec": 13.30893,
             "x": 182.16,
             "y": 220.57
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425346918018048",
@@ -189,7 +233,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99413,
             "dec": 13.31548,
             "x": 113.27,
@@ -197,13 +241,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99413,
+            "dec": 13.31548,
+            "x": 113.27,
+            "y": 240.68
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99413,
             "dec": 13.31548,
             "x": 113.27,
             "y": 240.68
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377896119283712",
@@ -221,7 +274,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99158,
             "dec": 13.26928,
             "x": 120.87,
@@ -229,13 +282,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99158,
+            "dec": 13.26928,
+            "x": 120.87,
+            "y": 98.75
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99158,
             "dec": 13.26928,
             "x": 120.87,
             "y": 98.75
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614378308436141824",
@@ -253,7 +315,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.00629,
             "dec": 13.29323,
             "x": 76.9,
@@ -261,13 +323,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.00629,
+            "dec": 13.29323,
+            "x": 76.9,
+            "y": 172.33
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.00629,
             "dec": 13.29323,
             "x": 76.9,
             "y": 172.33
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377827399807872",
@@ -285,7 +356,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99295,
             "dec": 13.25194,
             "x": 116.79,
@@ -293,13 +364,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99295,
+            "dec": 13.25194,
+            "x": 116.79,
+            "y": 45.48
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99295,
             "dec": 13.25194,
             "x": 116.79,
             "y": 45.48
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425243838752896",
@@ -317,7 +397,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99944,
             "dec": 13.30077,
             "x": 97.37,
@@ -325,13 +405,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99944,
+            "dec": 13.30077,
+            "x": 97.37,
+            "y": 195.51
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99944,
             "dec": 13.30077,
             "x": 97.37,
             "y": 195.51
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614378239716664960",
@@ -349,7 +438,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.01836,
             "dec": 13.27511,
             "x": 40.81,
@@ -357,13 +446,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.01836,
+            "dec": 13.27511,
+            "x": 40.81,
+            "y": 116.65
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.01836,
             "dec": 13.27511,
             "x": 40.81,
             "y": 116.65
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377655601113088",
@@ -381,7 +479,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.0258,
             "dec": 13.25777,
             "x": 18.55,
@@ -389,13 +487,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.0258,
+            "dec": 13.25777,
+            "x": 18.55,
+            "y": 63.39
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.0258,
             "dec": 13.25777,
             "x": 18.55,
             "y": 63.39
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425376982359936",
@@ -413,7 +520,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.01142,
             "dec": 13.31357,
             "x": 61.55,
@@ -421,13 +528,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.01142,
+            "dec": 13.31357,
+            "x": 61.55,
+            "y": 234.81
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.01142,
             "dec": 13.31357,
             "x": 61.55,
             "y": 234.81
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377685665478784",
@@ -445,7 +561,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.97211,
             "dec": 13.24185,
             "x": 179.1,
@@ -453,13 +569,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.97211,
+            "dec": 13.24185,
+            "x": 179.1,
+            "y": 14.49
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.97211,
             "dec": 13.24185,
             "x": 179.1,
             "y": 14.49
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425140759295488",
@@ -477,7 +602,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.95794,
             "dec": 13.3057,
             "x": 221.48,
@@ -485,13 +610,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.95794,
+            "dec": 13.3057,
+            "x": 221.48,
+            "y": 210.63
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.95794,
             "dec": 13.3057,
             "x": 221.48,
             "y": 210.63
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377823104435840",
@@ -509,7 +643,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.0007,
             "dec": 13.25249,
             "x": 93.62,
@@ -517,13 +651,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.0007,
+            "dec": 13.25249,
+            "x": 93.62,
+            "y": 47.17
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.0007,
             "dec": 13.25249,
             "x": 93.62,
             "y": 47.17
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377926183659264",
@@ -541,7 +684,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99807,
             "dec": 13.27353,
             "x": 101.47,
@@ -549,13 +692,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99807,
+            "dec": 13.27353,
+            "x": 101.47,
+            "y": 111.8
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99807,
             "dec": 13.27353,
             "x": 101.47,
             "y": 111.8
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614377857464182400",
@@ -573,7 +725,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.0074,
             "dec": 13.27341,
             "x": 73.57,
@@ -581,13 +733,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.0074,
+            "dec": 13.27341,
+            "x": 73.57,
+            "y": 111.43
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.0074,
             "dec": 13.27341,
             "x": 73.57,
             "y": 111.43
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614378235421304064",
@@ -605,7 +766,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.02202,
             "dec": 13.27225,
             "x": 29.86,
@@ -613,13 +774,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.02202,
+            "dec": 13.27225,
+            "x": 29.86,
+            "y": 107.87
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.02202,
             "dec": 13.27225,
             "x": 29.86,
             "y": 107.87
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614425342624085888",
@@ -637,7 +807,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.9924,
             "dec": 13.31193,
             "x": 118.43,
@@ -645,13 +815,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.9924,
+            "dec": 13.31193,
+            "x": 118.43,
+            "y": 229.77
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.9924,
             "dec": 13.31193,
             "x": 118.43,
             "y": 229.77
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614378029264434304",
@@ -669,7 +848,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.02739,
             "dec": 13.26477,
             "x": 13.81,
@@ -677,13 +856,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.02739,
+            "dec": 13.26477,
+            "x": 13.81,
+            "y": 84.91
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.02739,
             "dec": 13.26477,
             "x": 13.81,
             "y": 84.91
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "gaia:614424934601346688",
@@ -701,7 +889,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.97359,
             "dec": 13.30319,
             "x": 174.68,
@@ -709,13 +897,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.97359,
+            "dec": 13.30319,
+            "x": 174.68,
+            "y": 202.93
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.97359,
             "dec": 13.30319,
             "x": 174.68,
             "y": 202.93
           }
-        ]
+        ],
+        "object_class": "star"
       },
       {
         "object_id": "wise:J094757.84+131631.3",
@@ -733,7 +930,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.99104,
             "dec": 13.27538,
             "x": 122.5,
@@ -741,13 +938,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.99104,
+            "dec": 13.27538,
+            "x": 122.5,
+            "y": 117.49
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.99104,
             "dec": 13.27538,
             "x": 122.5,
             "y": 117.49
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094754.44+131646.3",
@@ -765,7 +971,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.97686,
             "dec": 13.27953,
             "x": 164.91,
@@ -773,13 +979,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.97686,
+            "dec": 13.27953,
+            "x": 164.91,
+            "y": 130.25
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.97686,
             "dec": 13.27953,
             "x": 164.91,
             "y": 130.25
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094750.93+131709.2",
@@ -797,7 +1012,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.96221,
             "dec": 13.28591,
             "x": 208.7,
@@ -805,13 +1020,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.96221,
+            "dec": 13.28591,
+            "x": 208.7,
+            "y": 149.83
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.96221,
             "dec": 13.28591,
             "x": 208.7,
             "y": 149.83
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094804.11+131616.3",
@@ -829,7 +1053,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.01716,
             "dec": 13.2712,
             "x": 44.41,
@@ -837,13 +1061,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.01716,
+            "dec": 13.2712,
+            "x": 44.41,
+            "y": 104.65
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.01716,
             "dec": 13.2712,
             "x": 44.41,
             "y": 104.65
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094804.35+131715.7",
@@ -861,7 +1094,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.01814,
             "dec": 13.2877,
             "x": 41.47,
@@ -869,13 +1102,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.01814,
+            "dec": 13.2877,
+            "x": 41.47,
+            "y": 155.35
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.01814,
             "dec": 13.2877,
             "x": 41.47,
             "y": 155.35
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094749.07+131601.8",
@@ -893,7 +1135,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 146.95446,
             "dec": 13.26717,
             "x": 231.86,
@@ -901,13 +1143,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 146.95446,
+            "dec": 13.26717,
+            "x": 231.86,
+            "y": 92.27
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 146.95446,
             "dec": 13.26717,
             "x": 231.86,
             "y": 92.27
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094801.63+131436.5",
@@ -925,7 +1176,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.00683,
             "dec": 13.24349,
             "x": 75.3,
@@ -933,13 +1184,22 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.00683,
+            "dec": 13.24349,
+            "x": 75.3,
+            "y": 19.52
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.00683,
             "dec": 13.24349,
             "x": 75.3,
             "y": 19.52
           }
-        ]
+        ],
+        "object_class": "brown_dwarf"
       },
       {
         "object_id": "wise:J094806.03+131744.7",
@@ -957,7 +1217,7 @@
         "epoch_positions": [
           {
             "epoch_id": "pass_1",
-            "mjd": 60810.5,
+            "mjd": 60792.915653507,
             "ra": 147.02513,
             "dec": 13.29575,
             "x": 20.56,
@@ -965,13 +1225,287 @@
           },
           {
             "epoch_id": "pass_2",
-            "mjd": 60993.2,
+            "mjd": 60996.906979022,
+            "ra": 147.02513,
+            "dec": 13.29575,
+            "x": 20.56,
+            "y": 180.07
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
             "ra": 147.02513,
             "dec": 13.29575,
             "x": 20.56,
             "y": 180.07
           }
-        ]
+        ],
+        "object_class": "infrared_source"
+      },
+      {
+        "object_id": "simbad:MDL2003_13",
+        "label": "[MDL2003] 13",
+        "catalog": "simbad",
+        "object_type": "star",
+        "object_class": "star",
+        "canonical_name": "[MDL2003] 13",
+        "otype": "*",
+        "ra": 147.001554,
+        "dec": 13.318423,
+        "x": 91.06,
+        "y": 249.73,
+        "magnitude": 15.566,
+        "proper_motion_arcsec_yr": 0.0144,
+        "pmra_mas_yr": -10.152,
+        "pmdec_mas_yr": 10.18,
+        "parallax_mas": 3.974,
+        "w1_w2_color": null,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60792.915653507,
+            "ra": 147.001554,
+            "dec": 13.318423,
+            "x": 91.06,
+            "y": 249.73
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60996.906979022,
+            "ra": 147.001553,
+            "dec": 13.318425,
+            "x": 91.06,
+            "y": 249.74
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 147.001551,
+            "dec": 13.318426,
+            "x": 91.07,
+            "y": 249.74
+          }
+        ],
+        "motion_vector": {
+          "dx_px": 0.01,
+          "dy_px": 0.01,
+          "dra_arcsec": -0.011,
+          "ddec_arcsec": 0.011
+        },
+        "data_source": "simbad_idia"
+      },
+      {
+        "object_id": "simbad:2MASS_J09475565_1314126",
+        "label": "2MASS J09475565+1314126",
+        "catalog": "simbad",
+        "object_type": "star",
+        "object_class": "star",
+        "canonical_name": "2MASS J09475565+1314126",
+        "otype": "*",
+        "ra": 146.981898,
+        "dec": 13.236731,
+        "x": 149.83,
+        "y": -1.24,
+        "magnitude": 12.859,
+        "proper_motion_arcsec_yr": 0.0145,
+        "pmra_mas_yr": 0.896,
+        "pmdec_mas_yr": -14.464,
+        "parallax_mas": 1.225,
+        "w1_w2_color": null,
+        "default_checked": true,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60792.915653507,
+            "ra": 146.981898,
+            "dec": 13.236731,
+            "x": 149.83,
+            "y": -1.24
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60996.906979022,
+            "ra": 146.981898,
+            "dec": 13.236729,
+            "x": 149.83,
+            "y": -1.25
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 146.981899,
+            "dec": 13.236727,
+            "x": 149.83,
+            "y": -1.26
+          }
+        ],
+        "motion_vector": {
+          "dx_px": 0.0,
+          "dy_px": -0.02,
+          "dra_arcsec": 0.004,
+          "ddec_arcsec": -0.014
+        },
+        "data_source": "simbad_idia"
+      },
+      {
+        "object_id": "simbad:MDL2003_15",
+        "label": "[MDL2003] 15",
+        "catalog": "simbad",
+        "object_type": "star",
+        "object_class": "star",
+        "canonical_name": "[MDL2003] 15",
+        "otype": "*",
+        "ra": 146.942433,
+        "dec": 13.28602,
+        "x": 267.84,
+        "y": 150.18,
+        "magnitude": 16.447,
+        "proper_motion_arcsec_yr": 0.0399,
+        "pmra_mas_yr": 25.786,
+        "pmdec_mas_yr": -30.436,
+        "parallax_mas": 1.401,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60792.915653507,
+            "ra": 146.942433,
+            "dec": 13.28602,
+            "x": 267.84,
+            "y": 150.18
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60996.906979022,
+            "ra": 146.942437,
+            "dec": 13.286015,
+            "x": 267.82,
+            "y": 150.17
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 146.942441,
+            "dec": 13.286011,
+            "x": 267.81,
+            "y": 150.15
+          }
+        ],
+        "motion_vector": {
+          "dx_px": -0.03,
+          "dy_px": -0.03,
+          "dra_arcsec": 0.028,
+          "ddec_arcsec": -0.032
+        },
+        "data_source": "simbad_idia"
+      },
+      {
+        "object_id": "simbad:MDL2003_11",
+        "label": "[MDL2003] 11",
+        "catalog": "simbad",
+        "object_type": "star",
+        "object_class": "star",
+        "canonical_name": "[MDL2003] 11",
+        "otype": "*",
+        "ra": 147.028292,
+        "dec": 13.321556,
+        "x": 11.11,
+        "y": 259.35,
+        "magnitude": null,
+        "proper_motion_arcsec_yr": null,
+        "pmra_mas_yr": null,
+        "pmdec_mas_yr": null,
+        "parallax_mas": null,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60792.915653507,
+            "ra": 147.028292,
+            "dec": 13.321556,
+            "x": 11.11,
+            "y": 259.35
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60996.906979022,
+            "ra": 147.028292,
+            "dec": 13.321556,
+            "x": 11.11,
+            "y": 259.35
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 147.028292,
+            "dec": 13.321556,
+            "x": 11.11,
+            "y": 259.35
+          }
+        ],
+        "motion_vector": {
+          "dx_px": 0.0,
+          "dy_px": 0.0,
+          "dra_arcsec": 0.0,
+          "ddec_arcsec": 0.0
+        },
+        "data_source": "simbad_idia"
+      },
+      {
+        "object_id": "simbad:2MASS_J09480288_1319111",
+        "label": "2MASS J09480288+1319111",
+        "catalog": "simbad",
+        "object_type": "star",
+        "object_class": "star",
+        "canonical_name": "2MASS J09480288+1319111",
+        "otype": "*",
+        "ra": 147.011969,
+        "dec": 13.319752,
+        "x": 59.92,
+        "y": 253.81,
+        "magnitude": null,
+        "proper_motion_arcsec_yr": null,
+        "pmra_mas_yr": null,
+        "pmdec_mas_yr": null,
+        "parallax_mas": null,
+        "w1_w2_color": null,
+        "default_checked": false,
+        "epoch_positions": [
+          {
+            "epoch_id": "pass_1",
+            "mjd": 60792.915653507,
+            "ra": 147.011969,
+            "dec": 13.319752,
+            "x": 59.92,
+            "y": 253.81
+          },
+          {
+            "epoch_id": "pass_2",
+            "mjd": 60996.906979022,
+            "ra": 147.011969,
+            "dec": 13.319752,
+            "x": 59.92,
+            "y": 253.81
+          },
+          {
+            "epoch_id": "pass_3",
+            "mjd": 61171.49201103,
+            "ra": 147.011969,
+            "dec": 13.319752,
+            "x": 59.92,
+            "y": 253.81
+          }
+        ],
+        "motion_vector": {
+          "dx_px": 0.0,
+          "dy_px": 0.0,
+          "dra_arcsec": 0.0,
+          "ddec_arcsec": 0.0
+        },
+        "data_source": "simbad_idia"
       }
     ],
     "gaia_dr3": [
@@ -1183,6 +1717,61 @@
         "bp_rp": 1.46,
         "pmra": 0.0,
         "pmdec": 0.0
+      },
+      {
+        "source_id": "614425342622623488",
+        "ra": 147.001554,
+        "dec": 13.318423,
+        "x": 91.06,
+        "y": 249.73,
+        "g_mag": 15.566001,
+        "bp_rp": null,
+        "pmra": -10.151738013623383,
+        "pmdec": 10.179695687303138
+      },
+      {
+        "source_id": "614377685665279360",
+        "ra": 146.981898,
+        "dec": 13.236731,
+        "x": 149.83,
+        "y": -1.24,
+        "g_mag": 12.859266,
+        "bp_rp": null,
+        "pmra": 0.8962437887149084,
+        "pmdec": -14.464160473303341
+      },
+      {
+        "source_id": "614424999025227648",
+        "ra": 146.942433,
+        "dec": 13.28602,
+        "x": 267.84,
+        "y": 150.18,
+        "g_mag": 16.447475,
+        "bp_rp": null,
+        "pmra": 25.785863057819405,
+        "pmdec": -30.436493192225637
+      },
+      {
+        "source_id": "614377930478412032",
+        "ra": 146.989401,
+        "dec": 13.278806,
+        "x": 127.4,
+        "y": 128.02,
+        "g_mag": 16.83244,
+        "bp_rp": null,
+        "pmra": 33.84,
+        "pmdec": 10.0
+      },
+      {
+        "source_id": "614377930478412544",
+        "ra": 146.989516,
+        "dec": 13.278785,
+        "x": 127.06,
+        "y": 127.95,
+        "g_mag": 17.320253,
+        "bp_rp": null,
+        "pmra": null,
+        "pmdec": null
       }
     ],
     "wise_sources": [
@@ -1277,6 +1866,12 @@
         "w1_w2_color": -3.97
       }
     ],
-    "most_solar_system": []
+    "most_solar_system": [],
+    "source_status": {
+      "simbad": "simbad_idia",
+      "gaia_dr3": "gaia_esa",
+      "horizons_ephemeris": "empty_in_fov",
+      "most": "no_match"
+    }
   }
 }

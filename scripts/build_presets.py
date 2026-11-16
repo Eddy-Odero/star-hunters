@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -108,12 +109,16 @@ def _resolve_live_frames(
     | None
 ):
     """Attempt to ingest real SPHEREx cutouts (with a WISE fallback epoch)."""
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
     from app.services import wise_fallback as wise_module
     from app.services.spherex_coadd import (
         build_target_wcs_header,
         coadd_spherex_epochs,
     )
-    from app.services.spherex_ingest import ingest_spherex_cutouts
+    from app.services.spherex_ingest import ingest_spherex_cutouts, irsa_circuit_breaker
 
     ra = float(meta["ra"])
     dec = float(meta["dec"])
@@ -124,6 +129,18 @@ def _resolve_live_frames(
     cutouts: list[Any] = []
     live_spectrum: dict[str, Any] | None = None
 
+    retry_session = requests.Session()
+    retry_policy = Retry(
+        total=3,
+        backoff_factor=1.0,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET", "HEAD"),
+    )
+    adapter = HTTPAdapter(max_retries=retry_policy)
+    retry_session.mount("https://", adapter)
+    retry_session.mount("http://", adapter)
+
+    irsa_circuit_breaker.reset()
     previous_wise_timeout = getattr(wise_module, "IRSA_TIMEOUT", None)
     try:
         wise_module.IRSA_TIMEOUT = float(timeout)
@@ -133,7 +150,9 @@ def _resolve_live_frames(
                 dec=dec,
                 fov_arcmin=fov_arcmin,
                 allow_synthetic_fallback=False,
+                session=retry_session,
                 timeout=timeout,
+                budget_seconds=max(120.0, float(timeout) * 3.0),
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"{slug}: SPHEREx ingestion failed ({type(exc).__name__}: {exc})")
@@ -199,6 +218,7 @@ def _resolve_live_frames(
                     }
                 )
     finally:
+        retry_session.close()
         if previous_wise_timeout is not None:
             wise_module.IRSA_TIMEOUT = previous_wise_timeout
 
@@ -213,7 +233,7 @@ def _resolve_live_frames(
                 source_label=str(meta["name"]),
             )
             live_spectrum["spectrum_origin"] = (
-                "SPHEREx 102-Band Forced Photometry (IRSA archival cutouts)"
+                f"{live_spectrum['spectrum_origin']} (IRSA archival cutouts)"
             )
         except Exception as exc:  # noqa: BLE001
             _log(f"{slug}: forced photometry failed ({type(exc).__name__}: {exc})")
@@ -234,7 +254,12 @@ def _resolve_live_frames(
             "has_multi_epoch_spherex": len(spherex_mjds) >= 2,
             "uses_wise_fallback": True,
             "baseline_days": baseline_days,
-            "status_note": f"WISE/NEOWISE W1/W2 fallback; {len(spherex_mjds)} SPHEREx epoch(s)",
+            "status_note": (
+                f"Supplementary latest WISE/NEOWISE W1/W2 fallback; "
+                f"{len(spherex_mjds)} SPHEREx pass(es)"
+            ),
+            "provenance_tier": "extension",
+            "survey_name": "WISE / NEOWISE W1-W2 (Supplemental)",
         }
     else:
         summary = {
@@ -242,7 +267,9 @@ def _resolve_live_frames(
             "has_multi_epoch_spherex": True,
             "uses_wise_fallback": False,
             "baseline_days": baseline_days,
-            "status_note": f"{len(spherex_mjds)} real SPHEREx comparison epoch(s)",
+            "status_note": f"{len(spherex_mjds)} real SPHEREx archival pass(es)",
+            "provenance_tier": "primary",
+            "survey_name": "SPHEREx IRSA Archival",
         }
     return frames, epochs, summary, live_spectrum
 
@@ -500,9 +527,20 @@ def build_presets(
         finally:
             cache.close()
 
+    all_manifests: dict[str, dict[str, Any]] = dict(manifests)
+    for target_slug in SHOWCASE_TARGETS:
+        if target_slug in all_manifests:
+            continue
+        manifest_path = output_dir / target_slug / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                all_manifests[target_slug] = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as exc:  # noqa: BLE001
+                _log(f"{target_slug}: could not load existing manifest.json ({exc})")
+
     index = write_global_known_objects_index(
         output_dir,
-        manifests if set(manifests) == set(SHOWCASE_TARGETS) else None,
+        all_manifests if set(all_manifests) == set(SHOWCASE_TARGETS) else None,
     )
     _log(f"Wrote global known-object index with {len(index)} entries")
     _log(f"Built and validated {len(built)} preset bundle(s)")

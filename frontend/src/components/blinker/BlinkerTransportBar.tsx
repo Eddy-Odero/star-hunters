@@ -1,4 +1,5 @@
 import React from 'react';
+import { formatEpochDateShort, formatRelativeDataAge } from '../../utils/observatoryMath';
 import {
   PauseIcon,
   PlayIcon,
@@ -13,6 +14,8 @@ interface BlinkerTransportBarProps {
   fps: number;
   activeEpochIndex: number;
   totalEpochs: number;
+  activeEpochIsoDate?: string | null;
+  activeEpochMission?: string | null;
   onPlay: () => void;
   onPause: () => void;
   onStepForward: () => void;
@@ -28,84 +31,110 @@ export const BlinkerTransportBar: React.FC<BlinkerTransportBarProps> = ({
   fps,
   activeEpochIndex,
   totalEpochs,
+  activeEpochIsoDate,
+  activeEpochMission,
   onPlay,
   onPause,
   onStepForward,
   onStepBackward,
   onToggleLoop,
   onSetFps,
-}) => (
-  <div
-    className="blinker-transport-bar"
-    role="toolbar"
-    aria-label="Pass Playback Transport"
-    data-testid="blinker-transport-bar"
-    onPointerDown={(e) => e.stopPropagation()}
-    onPointerUp={(e) => e.stopPropagation()}
-  >
-    <button
-      type="button"
-      className="transport-btn"
-      aria-label="Previous pass"
-      onClick={onStepBackward}
-      data-testid="transport-prev-btn"
-    >
-      <SkipPrevIcon size={15} />
-    </button>
+}) => {
+  const shortDate = formatEpochDateShort(activeEpochIsoDate);
+  const ageText = formatRelativeDataAge(activeEpochIsoDate);
 
-    <button
-      type="button"
-      className={`transport-btn ${isPlaying ? 'is-active' : ''}`}
-      aria-label={isPlaying ? 'Pause playback' : 'Play passes'}
-      onClick={isPlaying ? onPause : onPlay}
-      data-testid="transport-play-btn"
+  return (
+    <div
+      className="blinker-transport-bar"
+      role="toolbar"
+      aria-label="Pass Playback Transport"
+      data-testid="blinker-transport-bar"
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
     >
-      {isPlaying ? <PauseIcon size={15} /> : <PlayIcon size={15} />}
-    </button>
+      <button
+        type="button"
+        className="transport-btn"
+        aria-label="Previous pass"
+        onClick={onStepBackward}
+        data-testid="transport-prev-btn"
+      >
+        <SkipPrevIcon size={15} />
+      </button>
 
-    <button
-      type="button"
-      className="transport-btn"
-      aria-label="Next pass"
-      onClick={onStepForward}
-      data-testid="transport-next-btn"
-    >
-      <SkipNextIcon size={15} />
-    </button>
+      <button
+        type="button"
+        className={`transport-btn ${isPlaying ? 'is-active' : ''}`}
+        aria-label={isPlaying ? 'Pause playback' : 'Play passes'}
+        onClick={isPlaying ? onPause : onPlay}
+        data-testid="transport-play-btn"
+      >
+        {isPlaying ? <PauseIcon size={15} /> : <PlayIcon size={15} />}
+      </button>
 
-    <button
-      type="button"
-      className={`transport-btn ${isLooping ? 'is-active' : ''}`}
-      aria-label="Toggle loop playback"
-      aria-pressed={isLooping}
-      onClick={onToggleLoop}
-      data-testid="transport-loop-btn"
-    >
-      <RepeatLoopIcon size={14} />
-    </button>
+      <button
+        type="button"
+        className="transport-btn"
+        aria-label="Next pass"
+        onClick={onStepForward}
+        data-testid="transport-next-btn"
+      >
+        <SkipNextIcon size={15} />
+      </button>
 
-    <span className="globe-telemetry-divider" />
+      <button
+        type="button"
+        className={`transport-btn ${isLooping ? 'is-active' : ''}`}
+        aria-label="Toggle loop playback"
+        aria-pressed={isLooping}
+        onClick={onToggleLoop}
+        data-testid="transport-loop-btn"
+      >
+        <RepeatLoopIcon size={14} />
+      </button>
 
-    <span
-      className="mono"
-      style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '0 4px' }}
-    >
-      {totalEpochs > 0 ? `${activeEpochIndex + 1}/${totalEpochs}` : '0/0'}
-    </span>
+      <span className="globe-telemetry-divider" />
 
-    <select
-      aria-label="Playback speed in FPS"
-      className="hud-select"
-      style={{ height: 26, fontSize: 11, borderRadius: 999, padding: '0 8px' }}
-      value={fps}
-      onChange={(e) => onSetFps(Number(e.target.value))}
-      data-testid="transport-fps-select"
-    >
-      <option value={0.5}>FPS | 0.5×</option>
-      <option value={1}>FPS | 1×</option>
-      <option value={2}>FPS | 2×</option>
-      <option value={4}>FPS | 4×</option>
-      <option value={8}>FPS | 8×</option>
-    </select>
-  </div>
-);
+      <span
+        className="mono"
+        style={{ fontSize: 11, color: 'var(--text-secondary)', padding: '0 4px' }}
+      >
+        {totalEpochs > 0 ? `${activeEpochIndex + 1}/${totalEpochs}` : '0/0'}
+      </span>
+
+      {shortDate !== 'n/a' && (
+        <span
+          className="mono"
+          data-testid="transport-epoch-timestamp"
+          title={`Captured UTC: ${activeEpochIsoDate ?? shortDate}${
+            activeEpochMission ? ` (${activeEpochMission})` : ''
+          }`}
+          style={{
+            fontSize: 11,
+            color: 'var(--text-muted)',
+            padding: '0 4px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {shortDate}
+          {ageText ? ` (${ageText})` : ''}
+        </span>
+      )}
+
+      <select
+        aria-label="Playback speed in FPS"
+        className="hud-select"
+        style={{ height: 26, fontSize: 11, borderRadius: 999, padding: '0 8px' }}
+        value={fps}
+        onChange={(e) => onSetFps(Number(e.target.value))}
+        data-testid="transport-fps-select"
+      >
+        <option value={0.5}>FPS | 0.5×</option>
+        <option value={1}>FPS | 1×</option>
+        <option value={2}>FPS | 2×</option>
+        <option value={4}>FPS | 4×</option>
+        <option value={8}>FPS | 8×</option>
+      </select>
+    </div>
+  );
+};

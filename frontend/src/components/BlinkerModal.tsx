@@ -265,6 +265,8 @@ export const BlinkerModal: React.FC = () => {
   if (!isBlinkerModalOpen) return null;
 
   const totalEpochs = manifest?.epochs.length ?? 0;
+  const activeEpoch =
+    manifest?.epochs[Math.min(renderSettings.activeEpochIndex, Math.max(0, totalEpochs - 1))];
   const fullSubtitleText = `${formatBlinkerSubtitle({
     manifest,
     renderSettings,
@@ -421,6 +423,8 @@ export const BlinkerModal: React.FC = () => {
               fps={playback.fps}
               activeEpochIndex={renderSettings.activeEpochIndex}
               totalEpochs={totalEpochs}
+              activeEpochIsoDate={activeEpoch?.iso_date}
+              activeEpochMission={activeEpoch?.mission}
               onPlay={playback.play}
               onPause={playback.pause}
               onStepForward={playback.stepForward}

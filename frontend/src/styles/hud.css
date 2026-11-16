@@ -236,6 +236,52 @@ select:focus-visible {
   gap: 3px;
 }
 
+.zenith-archival-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.search-epoch-card {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-hairline);
+  width: 344px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-epoch-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.search-epoch-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-epoch-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid var(--border-hairline);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
 /* Known Objects Panel (291px top-right) */
 .known-objects-panel {
   z-index: 38;
