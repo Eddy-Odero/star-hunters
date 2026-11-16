@@ -4,12 +4,14 @@ import {
   decodeFlagsBinaryBuffer,
   type BinaryDtype,
   type CatalogsResponse,
+  type EpochManifestEntry,
   type SkyPatchManifest,
   type SpectrumPayload,
 } from '../types/contracts.ts';
 import type { ClientPatchCache } from './clientPatchCache.ts';
 import { observatoryLogger } from '../utils/observatoryLogger.ts';
 
+/** Progressive two-stage loading state emitted during preset and live sky patch loads. */
 export type ProgressiveLoadingStage =
   | { stage: 'idle' }
   | { stage: 'loading_catalogs'; message: string }
@@ -17,6 +19,7 @@ export type ProgressiveLoadingStage =
   | { stage: 'ready'; fromClientCache: boolean }
   | { stage: 'error'; message: string };
 
+/** Fully decoded sky patch payload delivered to {@link PresetFlowOptions.onReady} / {@link LiveFlowOptions.onReady}. */
 export interface LoadedPatchResult {
   manifest: SkyPatchManifest;
   epochBuffers: Float32Array[][];
@@ -25,13 +28,16 @@ export interface LoadedPatchResult {
   fromClientCache: boolean;
 }
 
+/** Terminal outcome of a progressive patch loading flow. */
 export interface FlowOutcome {
   aborted: boolean;
   fromClientCache?: boolean;
 }
 
+/** Minimal `fetch` function signature accepted for dependency injection in tests. */
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Options for {@link loadPresetPatchFlow}. */
 export interface PresetFlowOptions {
   cache: ClientPatchCache;
   fetchImpl?: FetchLike;
@@ -40,6 +46,7 @@ export interface PresetFlowOptions {
   onReady: (result: LoadedPatchResult) => void;
 }
 
+/** Options for {@link loadLiveCoordinatesFlow}. */
 export interface LiveFlowOptions {
   cache: ClientPatchCache;
   fetchImpl?: FetchLike;
@@ -49,6 +56,164 @@ export interface LiveFlowOptions {
   onReady: (result: LoadedPatchResult) => void;
 }
 
+/** Options for {@link fetchAndCachePatchBundle}. */
+interface FetchPatchBundleOptions {
+  cache: ClientPatchCache;
+  cacheKey: string;
+  manifest: SkyPatchManifest;
+  fetchImpl: FetchLike;
+  signal?: AbortSignal;
+  preferFloat16: boolean;
+  defaultDtype: BinaryDtype;
+  onReady: (result: LoadedPatchResult) => void;
+}
+
+/**
+ * Attempt to satisfy a patch load directly from the two-tier client cache.
+ *
+ * @param cache - Client patch cache instance.
+ * @param cacheKey - Canonical cache key (`preset:{slug}` or quantized `grid_key`).
+ * @param signal - Optional abort signal.
+ * @param onReady - Callback invoked on cache hit.
+ * @returns A resolved {@link FlowOutcome} on hit or abort, or `null` on cache miss.
+ */
+async function tryServeCachedPatch(
+  cache: ClientPatchCache,
+  cacheKey: string,
+  signal: AbortSignal | undefined,
+  onReady: (result: LoadedPatchResult) => void,
+): Promise<FlowOutcome | null> {
+  const cached = await cache.getPatch(cacheKey);
+  if (signal?.aborted) return { aborted: true };
+  if (!cached) return null;
+
+  onReady({
+    manifest: cached.manifest,
+    epochBuffers: cached.epochBuffers,
+    flagsBuffers: cached.flagsBuffers,
+    spectrum: cached.spectrum ?? null,
+    fromClientCache: true,
+  });
+  return { aborted: false, fromClientCache: true };
+}
+
+/**
+ * Fetch and decode the 6-detector binary cube and 8-bit hygiene flags mask for one epoch.
+ *
+ * @param epoch - Epoch descriptor from a {@link SkyPatchManifest}.
+ * @param options - Fetch implementation, abort signal, and binary precision hints.
+ * @returns Decoded detector planes (`Float32Array[6]`) and hygiene flag mask (`Uint8Array`).
+ * @throws {Error} When either the detector frame or flags frame HTTP request fails.
+ */
+async function fetchDecodedEpoch(
+  epoch: EpochManifestEntry,
+  options: {
+    fetchImpl: FetchLike;
+    signal?: AbortSignal;
+    preferFloat16: boolean;
+    defaultDtype: BinaryDtype;
+  },
+): Promise<{ detectors: Float32Array[]; flags: Uint8Array }> {
+  const { fetchImpl, signal, preferFloat16, defaultDtype } = options;
+  const detUrl =
+    preferFloat16 && !epoch.detectors_data_url.includes('?')
+      ? `${epoch.detectors_data_url}?precision=float16`
+      : epoch.detectors_data_url;
+
+  const [detRes, flagRes] = await Promise.all([
+    fetchImpl(detUrl, { signal }),
+    fetchImpl(epoch.flags_mask_url, { signal }),
+  ]);
+  if (signal?.aborted) {
+    const abortErr = new Error('Aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
+  if (!detRes.ok) {
+    throw new Error(`Failed to load detector frame (${detRes.status})`);
+  }
+  if (!flagRes.ok) {
+    throw new Error(`Failed to load flags frame (${flagRes.status})`);
+  }
+
+  const [detBuf, flagBuf] = await Promise.all([detRes.arrayBuffer(), flagRes.arrayBuffer()]);
+  if (signal?.aborted) {
+    const abortErr = new Error('Aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
+  const headerDtype = (detRes.headers.get('X-Binary-Dtype') ||
+    epoch.binary_dtype ||
+    defaultDtype) as BinaryDtype;
+
+  return {
+    detectors: decodeDetectorBinaryBuffer(detBuf, headerDtype),
+    flags: decodeFlagsBinaryBuffer(flagBuf),
+  };
+}
+
+/**
+ * Concurrently fetch and decode all epoch binary buffers and optional default
+ * spectrum for a manifest, persist the bundle in {@link ClientPatchCache}, and
+ * invoke `onReady`.
+ *
+ * @param options - Manifest, cache target, fetch implementation, and callbacks.
+ * @returns Flow completion status (`aborted: true` if cancelled before completion).
+ */
+async function fetchAndCachePatchBundle(options: FetchPatchBundleOptions): Promise<FlowOutcome> {
+  const { cache, cacheKey, manifest, fetchImpl, signal, preferFloat16, defaultDtype, onReady } =
+    options;
+
+  const epochPromises = manifest.epochs.map((epoch) =>
+    fetchDecodedEpoch(epoch, { fetchImpl, signal, preferFloat16, defaultDtype }),
+  );
+  const spectrumPromise = manifest.default_spectrum_url
+    ? fetchImpl(manifest.default_spectrum_url, { signal }).then(async (res) =>
+        res.ok ? ((await res.json()) as SpectrumPayload) : null,
+      )
+    : Promise.resolve(null);
+
+  const [decodedEpochs, loadedSpectrum] = await Promise.all([
+    Promise.all(epochPromises),
+    spectrumPromise,
+  ]);
+  if (signal?.aborted) return { aborted: true };
+
+  const epochBuffers = decodedEpochs.map((entry) => entry.detectors);
+  const flagsBuffers = decodedEpochs.map((entry) => entry.flags);
+
+  const now = Date.now();
+  await cache.putPatch({
+    cacheKey,
+    manifest,
+    epochBuffers,
+    flagsBuffers,
+    spectrum: loadedSpectrum,
+    storedAt: now,
+    lastAccessed: now,
+  });
+  if (signal?.aborted) return { aborted: true };
+
+  onReady({
+    manifest,
+    epochBuffers,
+    flagsBuffers,
+    spectrum: loadedSpectrum,
+    fromClientCache: false,
+  });
+  return { aborted: false, fromClientCache: false };
+}
+
+/**
+ * Load a static benchmark preset bundle (`/presets/{slug}/manifest.json` plus
+ * epoch binary frames and default spectrum), serving from {@link ClientPatchCache}
+ * when already cached.
+ *
+ * @param slug - Benchmark preset identifier (e.g., `'wise_0855'`).
+ * @param options - Cache instance, abort signal, stage callback, and completion callback.
+ * @returns Outcome indicating whether the flow was aborted or served from cache.
+ * @throws {Error} When the manifest or any epoch binary frame fails to load.
+ */
 export async function loadPresetPatchFlow(
   slug: string,
   options: PresetFlowOptions,
@@ -56,19 +221,8 @@ export async function loadPresetPatchFlow(
   const { cache, fetchImpl = fetch, signal, onStageChange, onReady } = options;
   const cacheKey = `preset:${slug}`;
 
-  const cached = await cache.getPatch(cacheKey);
-  if (signal?.aborted) return { aborted: true };
-
-  if (cached) {
-    onReady({
-      manifest: cached.manifest,
-      epochBuffers: cached.epochBuffers,
-      flagsBuffers: cached.flagsBuffers,
-      spectrum: cached.spectrum ?? null,
-      fromClientCache: true,
-    });
-    return { aborted: false, fromClientCache: true };
-  }
+  const cacheOutcome = await tryServeCachedPatch(cache, cacheKey, signal, onReady);
+  if (cacheOutcome) return cacheOutcome;
 
   onStageChange?.({ stage: 'loading_cutouts', message: `Loading preset ${slug}...` });
   const manifestRes = await fetchImpl(`/presets/${slug}/manifest.json`, { signal });
@@ -79,62 +233,30 @@ export async function loadPresetPatchFlow(
   const loadedManifest = (await manifestRes.json()) as SkyPatchManifest;
   if (signal?.aborted) return { aborted: true };
 
-  const decodedEpochs: Float32Array[][] = [];
-  const decodedFlags: Uint8Array[] = [];
-
-  for (const ep of loadedManifest.epochs) {
-    const [detRes, flagRes] = await Promise.all([
-      fetchImpl(ep.detectors_data_url, { signal }),
-      fetchImpl(ep.flags_mask_url, { signal }),
-    ]);
-    if (signal?.aborted) return { aborted: true };
-    if (!detRes.ok) {
-      throw new Error(`Failed to load detector frame (${detRes.status})`);
-    }
-    if (!flagRes.ok) {
-      throw new Error(`Failed to load flags frame (${flagRes.status})`);
-    }
-    const [detBuf, flagBuf] = await Promise.all([detRes.arrayBuffer(), flagRes.arrayBuffer()]);
-    if (signal?.aborted) return { aborted: true };
-    const headerDtype = (detRes.headers.get('X-Binary-Dtype') ||
-      ep.binary_dtype ||
-      'float32') as BinaryDtype;
-    decodedEpochs.push(decodeDetectorBinaryBuffer(detBuf, headerDtype));
-    decodedFlags.push(decodeFlagsBinaryBuffer(flagBuf));
-  }
-
-  let loadedSpectrum: SpectrumPayload | null = null;
-  if (loadedManifest.default_spectrum_url) {
-    const specRes = await fetchImpl(loadedManifest.default_spectrum_url, { signal });
-    if (signal?.aborted) return { aborted: true };
-    if (specRes.ok) {
-      loadedSpectrum = (await specRes.json()) as SpectrumPayload;
-    }
-  }
-
-  if (signal?.aborted) return { aborted: true };
-
-  await cache.putPatch({
+  return fetchAndCachePatchBundle({
+    cache,
     cacheKey,
     manifest: loadedManifest,
-    epochBuffers: decodedEpochs,
-    flagsBuffers: decodedFlags,
-    spectrum: loadedSpectrum,
-    storedAt: Date.now(),
-    lastAccessed: Date.now(),
+    fetchImpl,
+    signal,
+    preferFloat16: false,
+    defaultDtype: 'float32',
+    onReady,
   });
-  if (signal?.aborted) return { aborted: true };
-
-  onReady({
-    manifest: loadedManifest,
-    epochBuffers: decodedEpochs,
-    flagsBuffers: decodedFlags,
-    spectrum: loadedSpectrum,
-    fromClientCache: false,
-  });
-  return { aborted: false, fromClientCache: false };
 }
 
+/**
+ * Load a live sky patch at `(ra, dec, fovArcmin)` using a two-stage progressive
+ * pipeline: Stage A fetches `/api/v1/catalogs` concurrently with Stage B
+ * `/api/v1/sky-patch`, then fetches all epoch frames in parallel with `?precision=float16`.
+ *
+ * @param ra - Right Ascension in decimal degrees `[0, 360)`.
+ * @param dec - Declination in decimal degrees `[-90, 90]`.
+ * @param fovArcmin - Field-of-view width in arcminutes.
+ * @param options - Cache instance, abort signal, and Stage A / Stage B callbacks.
+ * @returns Outcome indicating whether the flow was aborted or served from cache.
+ * @throws {Error} When `/api/v1/sky-patch` or any epoch binary frame fails to load.
+ */
 export async function loadLiveCoordinatesFlow(
   ra: number,
   dec: number,
@@ -144,19 +266,12 @@ export async function loadLiveCoordinatesFlow(
   const { cache, fetchImpl = fetch, signal, onStageChange, onCatalogsReady, onReady } = options;
   const gridKey = computeGridKey(ra, dec, fovArcmin);
 
-  const cached = await cache.getPatch(gridKey);
-  if (signal?.aborted) return { aborted: true };
-
-  if (cached) {
-    observatoryLogger.info('patch_loader', 'Live patch cache hit', { gridKey });
-    onReady({
-      manifest: cached.manifest,
-      epochBuffers: cached.epochBuffers,
-      flagsBuffers: cached.flagsBuffers,
-      spectrum: cached.spectrum ?? null,
-      fromClientCache: true,
-    });
-    return { aborted: false, fromClientCache: true };
+  const cacheOutcome = await tryServeCachedPatch(cache, gridKey, signal, onReady);
+  if (cacheOutcome) {
+    if (!cacheOutcome.aborted) {
+      observatoryLogger.info('patch_loader', 'Live patch cache hit', { gridKey });
+    }
+    return cacheOutcome;
   }
 
   observatoryLogger.info('patch_loader', 'Fetching live sky patch & catalogs', {
@@ -184,8 +299,7 @@ export async function loadLiveCoordinatesFlow(
     })
     .catch(() => null);
 
-  const patchPromise = fetchImpl(`/api/v1/sky-patch?${qs}`, { signal });
-  const patchRes = await patchPromise;
+  const patchRes = await fetchImpl(`/api/v1/sky-patch?${qs}`, { signal });
   if (signal?.aborted) return { aborted: true };
   if (!patchRes.ok) {
     throw new Error(`Failed to load sky patch (${patchRes.status})`);
@@ -196,61 +310,14 @@ export async function loadLiveCoordinatesFlow(
   await catalogsPromise;
   if (signal?.aborted) return { aborted: true };
 
-  const decodedEpochs: Float32Array[][] = [];
-  const decodedFlags: Uint8Array[] = [];
-
-  for (const ep of loadedManifest.epochs) {
-    const detUrl = ep.detectors_data_url.includes('?')
-      ? ep.detectors_data_url
-      : `${ep.detectors_data_url}?precision=float16`;
-    const [detRes, flagRes] = await Promise.all([
-      fetchImpl(detUrl, { signal }),
-      fetchImpl(ep.flags_mask_url, { signal }),
-    ]);
-    if (signal?.aborted) return { aborted: true };
-    if (!detRes.ok) {
-      throw new Error(`Failed to load detector frame (${detRes.status})`);
-    }
-    if (!flagRes.ok) {
-      throw new Error(`Failed to load flags frame (${flagRes.status})`);
-    }
-    const [detBuf, flagBuf] = await Promise.all([detRes.arrayBuffer(), flagRes.arrayBuffer()]);
-    if (signal?.aborted) return { aborted: true };
-    const headerDtype = (detRes.headers.get('X-Binary-Dtype') ||
-      ep.binary_dtype ||
-      'float16') as BinaryDtype;
-    decodedEpochs.push(decodeDetectorBinaryBuffer(detBuf, headerDtype));
-    decodedFlags.push(decodeFlagsBinaryBuffer(flagBuf));
-  }
-
-  let loadedSpectrum: SpectrumPayload | null = null;
-  if (loadedManifest.default_spectrum_url) {
-    const specRes = await fetchImpl(loadedManifest.default_spectrum_url, { signal });
-    if (signal?.aborted) return { aborted: true };
-    if (specRes.ok) {
-      loadedSpectrum = (await specRes.json()) as SpectrumPayload;
-    }
-  }
-
-  if (signal?.aborted) return { aborted: true };
-
-  await cache.putPatch({
+  return fetchAndCachePatchBundle({
+    cache,
     cacheKey: gridKey,
     manifest: loadedManifest,
-    epochBuffers: decodedEpochs,
-    flagsBuffers: decodedFlags,
-    spectrum: loadedSpectrum,
-    storedAt: Date.now(),
-    lastAccessed: Date.now(),
+    fetchImpl,
+    signal,
+    preferFloat16: true,
+    defaultDtype: 'float16',
+    onReady,
   });
-  if (signal?.aborted) return { aborted: true };
-
-  onReady({
-    manifest: loadedManifest,
-    epochBuffers: decodedEpochs,
-    flagsBuffers: decodedFlags,
-    spectrum: loadedSpectrum,
-    fromClientCache: false,
-  });
-  return { aborted: false, fromClientCache: false };
 }

@@ -8,7 +8,6 @@ import json
 import math
 import os
 import random
-import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
@@ -19,12 +18,10 @@ from typing import Any, Literal
 import numpy as np
 
 from .models.contracts import (
-    BINARY_FLAGS_UINT8_BYTES,
     DEFAULT_MOLECULAR_FEATURES,
     GRID_HEIGHT,
     GRID_WIDTH,
     NUM_DETECTORS,
-    PIXELS_PER_PLANE,
     SHOWCASE_TARGETS,
     TOTAL_DETECTOR_VALUES,
     convert_float32_bytes_to_float16_bytes,
@@ -585,8 +582,19 @@ def generate_synthetic_epoch_frames(
     slug: str = "wise_0855",
     manifest: dict[str, Any] | None = None,
 ) -> dict[str, bytes]:
-    """Generate deterministic (6, 256, 256) float32 and (256, 256) uint8 binary buffers
-    rendering every KnownCelestialObject in the sky patch across passes."""
+    """Generate deterministic ``(6, 256, 256)`` float32 and ``(256, 256)`` uint8 buffers.
+
+    Renders every ``KnownCelestialObject`` in the sky patch across survey passes
+    using vectorized NumPy PSF synthesis.
+
+    Args:
+        slug: Showcase target slug used for cache lookup and SED weighting.
+        manifest: Optional pre-built sky-patch manifest dictionary.
+
+    Returns:
+        Mapping of frame filenames (``pass_1.bin``, ``pass_2.bin``,
+        ``pass_1_flags.bin``, ``pass_2_flags.bin``) to raw little-endian bytes.
+    """
     if manifest is None and slug in _PREWARMED_FRAMES:
         return _PREWARMED_FRAMES[slug]
 
@@ -603,24 +611,39 @@ def generate_synthetic_epoch_frames(
     known_objects = manifest.get("catalog_overlays", {}).get("known_objects", [])
     cold_only_primary = resolved_slug in ("wise_0855", "epsilon_indi_b", "luhman_16")
     variable_primary = resolved_slug in ("rw_aurigae", "r_draconis", "cw_leonis", "t_tauri")
+    det_indices = np.arange(NUM_DETECTORS, dtype=np.float32)
+
+    if cold_only_primary:
+        primary_weights_base = np.array([0.03, 0.03, 0.03, 0.45, 1.85, 1.85], dtype=np.float32)
+    else:
+        primary_weights_base = np.full(NUM_DETECTORS, 1.15, dtype=np.float32)
+    wise_weights_base = (0.65 + 0.16 * det_indices).astype(np.float32)
+    gaia_weights_base = (1.38 - 0.15 * det_indices).astype(np.float32)
 
     def _build_pass(pass_idx: int) -> bytes:
-        planes: list[float] = [0.02] * TOTAL_DETECTOR_VALUES
+        """Synthesize a single ``(6, 256, 256)`` little-endian float32 cube for ``pass_idx``."""
+        cube = np.full((NUM_DETECTORS, GRID_HEIGHT, GRID_WIDTH), 0.02, dtype="<f4")
 
-        def _add_psf(cx: float, cy: float, det_idx: int, peak: float, sigma: float = 1.65) -> None:
-            plane_offset = det_idx * PIXELS_PER_PLANE
+        def _add_psf_all_detectors(
+            cx: float,
+            cy: float,
+            det_weights: np.ndarray,
+            sigma: float,
+        ) -> None:
+            """Accumulate a 2D Gaussian PSF across all 6 detector planes at ``(cx, cy)``."""
             x_min = max(0, int(cx - 6))
             x_max = min(GRID_WIDTH - 1, int(cx + 6))
             y_min = max(0, int(cy - 6))
             y_max = min(GRID_HEIGHT - 1, int(cy + 6))
-            two_sigma_sq = 2.0 * sigma * sigma
-            for py in range(y_min, y_max + 1):
-                dy_sq = (py - cy) * (py - cy)
-                row_offset = plane_offset + py * GRID_WIDTH
-                for px in range(x_min, x_max + 1):
-                    dx_sq = (px - cx) * (px - cx)
-                    val = peak * math.exp(-(dx_sq + dy_sq) / two_sigma_sq)
-                    planes[row_offset + px] += val
+            if x_min > x_max or y_min > y_max:
+                return
+            xs = np.arange(x_min, x_max + 1, dtype=np.float32) - np.float32(cx)
+            ys = np.arange(y_min, y_max + 1, dtype=np.float32) - np.float32(cy)
+            r2 = ys[:, None] ** 2 + xs[None, :] ** 2
+            psf = np.exp(-r2 / np.float32(2.0 * sigma * sigma))
+            cube[:, y_min : y_max + 1, x_min : x_max + 1] += (
+                det_weights[:, None, None] * psf[None, :, :]
+            )
 
         for obj_idx, obj in enumerate(known_objects):
             ep_positions = obj.get("epoch_positions", [])
@@ -635,29 +658,20 @@ def generate_synthetic_epoch_frames(
                     t_scale = 2.0 if pass_idx == 0 else 6.5
                 else:
                     t_scale = 5.8
-                for d in range(NUM_DETECTORS):
-                    if cold_only_primary:
-                        det_weight = 0.03 if d < 3 else (0.45 if d == 3 else 1.85)
-                    else:
-                        det_weight = 1.15
-                    _add_psf(cx, cy, d, t_scale * det_weight, sigma=1.75)
+                _add_psf_all_detectors(cx, cy, primary_weights_base * np.float32(t_scale), 1.75)
             else:
                 mag = float(obj.get("magnitude") or 15.5)
-                base_flux = max(1.85, min(4.6, 2.4 + (16.2 - mag) * 0.32))
-                cat = obj.get("catalog", "gaia_dr3")
-                for d in range(NUM_DETECTORS):
-                    if cat == "wise":
-                        det_weight = 0.65 + 0.16 * d
-                    else:
-                        det_weight = 1.38 - 0.15 * d
-                    _add_psf(cx, cy, d, base_flux * det_weight, sigma=1.60)
+                base_flux = np.float32(max(1.85, min(4.6, 2.4 + (16.2 - mag) * 0.32)))
+                is_wise = obj.get("catalog", "gaia_dr3") == "wise"
+                base_weights = wise_weights_base if is_wise else gaia_weights_base
+                _add_psf_all_detectors(cx, cy, base_weights * base_flux, 1.60)
 
-        return struct.pack(f"<{TOTAL_DETECTOR_VALUES}f", *planes)
+        return cube.tobytes(order="C")
 
-    flags = bytearray(BINARY_FLAGS_UINT8_BYTES)
-    flags[10 * GRID_WIDTH + 10] = 1  # Sample transient/cosmic ray bit
-    flags[240 * GRID_WIDTH + 240] = 2  # Sample saturation bit
-    flags_bytes = bytes(flags)
+    flags = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
+    flags[10, 10] = 1  # Sample transient/cosmic ray bit
+    flags[240, 240] = 2  # Sample saturation bit
+    flags_bytes = flags.tobytes(order="C")
 
     result = {
         "pass_1.bin": _build_pass(0),
@@ -1484,7 +1498,20 @@ class StarHuntersBackendService:
         fov: float,
         fallback_frames: dict[str, bytes],
     ) -> tuple[dict[str, Any], dict[str, bytes]]:
-        """Run archival retrieval chain: SPHEREx -> WISE -> NASA SkyView -> Simulated."""
+        """Run archival retrieval chain: SPHEREx -> WISE -> NASA SkyView -> Simulated.
+
+        Args:
+            manifest: Baseline sky-patch manifest dictionary.
+            grid_key: Quantized spatial grid identifier.
+            ra: Field center Right Ascension in degrees.
+            dec: Field center Declination in degrees.
+            fov: Field of view in arcminutes.
+            fallback_frames: Synthetic fallback frame buffers used if all
+                archival providers fail.
+
+        Returns:
+            Tuple of ``(resolved_manifest, resolved_frames)``.
+        """
         out_manifest = copy.deepcopy(manifest)
         frames = dict(fallback_frames)
         fallback_errors: list[str] = []
@@ -1512,6 +1539,7 @@ class StarHuntersBackendService:
                 )
                 wait_futures([fut_spherex], timeout=0.15)
                 spherex_fast_ok = False
+                fast_coadd = None
                 if fut_spherex.done():
                     try:
                         cutouts = fut_spherex.result()
@@ -1520,6 +1548,7 @@ class StarHuntersBackendService:
                             len(fast_coadd.epochs) >= 2 and not fast_coadd.needs_wise_fallback
                         )
                     except Exception:
+                        fast_coadd = None
                         spherex_fast_ok = False
 
                 if not spherex_fast_ok:
@@ -1547,19 +1576,22 @@ class StarHuntersBackendService:
                             target_wcs_header=target_header,
                         )
 
-                wait_futures([fut_spherex], timeout=22.0)
-                if fut_spherex.done():
-                    try:
-                        cutouts = fut_spherex.result()
-                    except Exception as exc:
-                        fallback_errors.append(f"SPHEREx:{type(exc).__name__}")
-                        cutouts = []
+                if fast_coadd is not None:
+                    coadd = fast_coadd
                 else:
-                    fallback_errors.append("SPHEREx:TimeoutError")
-                    fut_spherex.cancel()
-                    cutouts = []
+                    wait_futures([fut_spherex], timeout=22.0)
+                    if fut_spherex.done():
+                        try:
+                            cutouts = fut_spherex.result()
+                        except Exception as exc:
+                            fallback_errors.append(f"SPHEREx:{type(exc).__name__}")
+                            cutouts = []
+                    else:
+                        fallback_errors.append("SPHEREx:TimeoutError")
+                        fut_spherex.cancel()
+                        cutouts = []
 
-                coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
+                    coadd = coadd_spherex_epochs(cutouts, ra, dec, fov_deg)
                 epoch_entries: list[dict[str, Any]] = []
                 actual_frames: dict[str, bytes] = {}
                 epoch_mjds: list[float] = []
@@ -1863,6 +1895,16 @@ class StarHuntersBackendService:
         dec: float,
         fov: float = 5.0,
     ) -> dict[str, Any]:
+        """Synchronously resolve, validate, and cache a sky-patch manifest and frames.
+
+        Args:
+            ra: Field center Right Ascension in degrees.
+            dec: Field center Declination in degrees.
+            fov: Field of view in arcminutes.
+
+        Returns:
+            Validated ``SkyPatchManifest`` dictionary.
+        """
         grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
         cached_manifest = self.cache.get_manifest(grid_key)
         if cached_manifest is not None:
@@ -1899,7 +1941,6 @@ class StarHuntersBackendService:
             manifest=manifest,
             frames=frames,
         )
-        validate_sky_patch_manifest(manifest)
         return manifest
 
     async def get_sky_patch_async(
@@ -2110,12 +2151,24 @@ class StarHuntersBackendService:
 
         Wavelength-resolved planes are used directly when supplied. Otherwise the
         six detector-band cutouts are measured with aperture photometry and
-        interpolated onto the 102-channel contract grid. The ISS-04 synthetic
-        fixture fallback keeps this endpoint available when IRSA is offline.
+        interpolated onto the 102-channel contract grid. The synthetic fixture
+        fallback keeps this endpoint available when IRSA is offline.
+
+        Args:
+            ra: Target Right Ascension in degrees.
+            dec: Target Declination in degrees.
+            label: Optional human-readable target label; defaults to
+                ``"Selected sky position"`` when omitted or blank.
+
+        Returns:
+            Validated 102-channel ``SpectrumPayload`` dictionary.
         """
+        clean_label = label.strip() if label and label.strip() else None
+        resolved_label = clean_label or "Selected sky position"
         spectrum_key = f"spec_forced_ra{round(ra, 4):.4f}_dec{round(dec, 4):.4f}"
         cached_spec = self.cache.get_spectrum(spectrum_key)
         if cached_spec is not None:
+            cached_spec["source_label"] = resolved_label
             validate_spectrum_payload(cached_spec)
             return cached_spec
 
@@ -2136,7 +2189,7 @@ class StarHuntersBackendService:
             ra=ra,
             dec=dec,
             cutouts=cutouts,
-            source_label=label or "Selected sky position",
+            source_label=resolved_label,
         )
         self.cache.put_spectrum(spectrum_key=spectrum_key, ra=ra, dec=dec, payload=payload)
         return payload
@@ -2202,9 +2255,22 @@ if HAS_FASTAPI:
         lat: float | None = Query(None),
         lon: float | None = Query(None),
         iso_time: str | None = Query(None),
+        time: str | None = Query(None),
     ) -> dict[str, Any]:
+        """Compute overhead ICRS zenith coordinates for an Earth location and UTC time.
+
+        Args:
+            lat: Observer latitude in degrees (falls back to random capital if omitted).
+            lon: Observer longitude in degrees.
+            iso_time: Primary ISO-8601 UTC observation timestamp.
+            time: Optional alias fallback when ``iso_time`` is omitted.
+
+        Returns:
+            Validated ``EarthToSkyResponse`` dictionary.
+        """
+        resolved_time = iso_time or time
         try:
-            return backend_service.get_earth_to_sky(lat=lat, lon=lon, iso_time=iso_time)
+            return backend_service.get_earth_to_sky(lat=lat, lon=lon, iso_time=resolved_time)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2303,10 +2369,22 @@ if HAS_FASTAPI:
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),
         dec: float = Query(..., ge=-90.0, le=90.0),
+        label: str | None = Query(None),
     ) -> dict[str, Any]:
+        """Extract or retrieve a 102-channel SPHEREx spectrum at ``(ra, dec)``.
+
+        Args:
+            response: FastAPI response object for cache-control headers.
+            ra: Target Right Ascension in degrees.
+            dec: Target Declination in degrees.
+            label: Optional target label forwarded as ``source_label``.
+
+        Returns:
+            Validated 102-channel ``SpectrumPayload`` dictionary.
+        """
         response.headers["Cache-Control"] = "public, max-age=3600"
         try:
-            return backend_service.get_forced_spectrum(ra=ra, dec=dec)
+            return backend_service.get_forced_spectrum(ra=ra, dec=dec, label=label)
         except SpectrumExtractionError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:

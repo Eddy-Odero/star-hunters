@@ -52,6 +52,18 @@ class SkyViewEpochResult:
 
 
 def _parse_fits_2d(content: bytes, survey: str) -> tuple[np.ndarray, Any]:
+    """Extract the first 2D image plane and FITS header from a SkyView response.
+
+    Args:
+        content: Raw FITS or gzipped FITS byte payload.
+        survey: SkyView survey identifier for error reporting.
+
+    Returns:
+        Tuple of ``(image_2d, fits_header)``.
+
+    Raises:
+        SkyViewFallbackError: If ``content`` is not FITS or contains no 2D image.
+    """
     if not content or (b"SIMPLE" not in content[:160] and content[:2] != b"\x1f\x8b"):
         raise SkyViewFallbackError(f"SkyView did not return FITS data for survey {survey!r}.")
     with fits.open(io.BytesIO(content), memmap=False) as hdus:
@@ -65,7 +77,17 @@ def _parse_fits_2d(content: bytes, survey: str) -> tuple[np.ndarray, Any]:
 
 
 def _normalize_skyview_plate(image: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Subtract background pedestal and scale archival photographic counts safely."""
+    """Subtract background pedestal and scale archival photographic counts safely.
+
+    Args:
+        image: Raw 2D archival plate image array.
+
+    Returns:
+        Tuple of ``(normalized_image, invalid_pixel_mask)``.
+
+    Raises:
+        SkyViewFallbackError: If the image contains no finite pixel values.
+    """
     arr = np.asarray(image, dtype=np.float64)
     finite = np.isfinite(arr)
     if not np.any(finite):
@@ -90,6 +112,7 @@ def _download_skyview_fits(
     survey: str,
     session: Any = requests,
 ) -> tuple[np.ndarray, Any]:
+    """Download a FITS cutout from NASA SkyView for a single survey."""
     size_deg = max(0.02, float(fov_arcmin) / 60.0)
     params = {
         "Position": f"{float(ra):.6f},{float(dec):.6f}",
@@ -111,6 +134,7 @@ def _assemble_skyview_cube(
     *,
     detector_channels: tuple[int, ...] = (0, 1),
 ) -> tuple[np.ndarray, np.ndarray, bytes, bytes]:
+    """Pack a normalized 256x256 SkyView plate into a ``(6, 256, 256)`` float32 cube."""
     expected = (GRID_SIZE, GRID_SIZE)
     plane = np.asarray(projected_plane, dtype=np.float64)
     invalid = np.asarray(invalid_mask, dtype=bool)
@@ -144,11 +168,28 @@ def fetch_skyview_fallback(
     session: Any = requests,
     downloader: Callable[..., tuple[np.ndarray, Any]] = _download_skyview_fits,
 ) -> list[SkyViewEpochResult]:
-    """Fetch SkyView archival optical/NIR FITS plates onto the 256x256 TAN grid."""
+    """Fetch SkyView archival optical/NIR FITS plates onto the 256x256 TAN grid.
+
+    Args:
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        target_wcs_header: Optional target FITS WCS header for bilinear
+            reprojection onto the canonical 256x256 grid.
+        session: HTTP session/module exposing ``.get(...)``.
+        downloader: Callable fetching ``(image_2d, header)`` for a survey.
+
+    Returns:
+        List of :class:`SkyViewEpochResult` entries (DSS2 Red/IR, or legacy DSS).
+
+    Raises:
+        SkyViewFallbackError: If no usable archival plates could be retrieved.
+    """
     t0 = time.perf_counter()
     surveys_to_fetch = list(SKYVIEW_DEFAULT_SURVEYS)
 
     def _fetch_one(spec: tuple[str, str, str, float]) -> SkyViewEpochResult | None:
+        """Fetch, reproject, normalize, and pack a single SkyView survey plate."""
         epoch_id, survey, label, mjd = spec
         try:
             raw_img, src_hdr = downloader(ra, dec, fov_arcmin, survey, session=session)
@@ -176,11 +217,10 @@ def fetch_skyview_fallback(
         if norm_plane.shape != (GRID_SIZE, GRID_SIZE):
             return None
 
-        det_idx = (0, 1) if "ir" in epoch_id or "dss2_ir" in epoch_id else (0, 1)
         cube, flags, det_bytes, flag_bytes = _assemble_skyview_cube(
             norm_plane,
             invalid,
-            detector_channels=det_idx,
+            detector_channels=(0, 1),
         )
         return SkyViewEpochResult(
             epoch_id=epoch_id,
