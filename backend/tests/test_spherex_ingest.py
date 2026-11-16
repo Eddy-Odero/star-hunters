@@ -323,6 +323,8 @@ class FakeSession:
 
 class TestDownloadsAndFallback(unittest.TestCase):
     def setUp(self) -> None:
+        spherex_ingest.irsa_circuit_breaker.reset()
+        self.addCleanup(spherex_ingest.irsa_circuit_breaker.reset)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
 
@@ -564,6 +566,153 @@ class TestDownloadsAndFallback(unittest.TestCase):
                     fov_arcmin=5.0,
                     allow_synthetic_fallback=False,
                 )
+
+    def test_sia_csv_discovery_and_tap_failover_rules(self) -> None:
+        csv_body = (
+            "energy_bandpassname,access_url,t_min\n"
+            "SPHEREx-D1,https://irsa.ipac.caltech.edu/ibe/d1_a.fits,60900.0\n"
+            "SPHEREx-D4,https://irsa.ipac.caltech.edu/ibe/d4_a.fits,60901.0\n"
+            "SPHEREx-D1,,60902.0\n"
+            "OTHER,https://irsa.ipac.caltech.edu/ibe/other.fits,60903.0\n"
+        )
+
+        class _FakeCsvResp:
+            text = csv_body
+
+            def raise_for_status(self) -> None:
+                return None
+
+        class _FakeCsvSession:
+            def get(self, *_args: object, **_kwargs: object) -> _FakeCsvResp:
+                return _FakeCsvResp()
+
+            def close(self) -> None:
+                return None
+
+        rows = spherex_ingest.query_observations_sia(
+            ra=131.45, dec=-11.1, fov_arcmin=5.0, session=_FakeCsvSession()
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r.bandpass for r in rows], ["SPHEREx-D1", "SPHEREx-D4"])
+        self.assertIn("center=131.45,-11.1d", rows[0].uri)
+
+        # Clean 0-row SIA result must NOT fall through to TAP
+        with (
+            mock.patch.object(spherex_ingest, "query_observations_sia", return_value=[]),
+            mock.patch.object(spherex_ingest, "query_observations_tap") as tap_mock,
+        ):
+            self.assertEqual(spherex_ingest.query_observations(131.45, -11.1, 5.0), [])
+            tap_mock.assert_not_called()
+
+        # Non-recoverable 400 error on SIA must fail fast without calling TAP
+        import requests
+
+        resp_400 = requests.Response()
+        resp_400.status_code = 400
+        err_400 = requests.HTTPError("400 Client Error", response=resp_400)
+        wrapped_400 = spherex_fits.SpherexIngestError("bad request")
+        wrapped_400.__cause__ = err_400
+        with (
+            mock.patch.object(spherex_ingest, "query_observations_sia", side_effect=wrapped_400),
+            mock.patch.object(spherex_ingest, "query_observations_tap") as tap_mock,
+        ):
+            with self.assertRaises(spherex_fits.SpherexIngestError):
+                spherex_ingest.query_observations(131.45, -11.1, 5.0)
+            tap_mock.assert_not_called()
+
+        # Transient 503 on SIA fails over cleanly to TAP
+        tap_row = [spherex_fits.SpherexObservation(uri="a.fits", bandpass="SPHEREx-D1")]
+        with (
+            mock.patch.object(
+                spherex_ingest,
+                "query_observations_sia",
+                side_effect=spherex_fits.SpherexIngestError("503 Service Unavailable"),
+            ),
+            mock.patch.object(spherex_ingest, "query_observations_tap", return_value=tap_row),
+        ):
+            self.assertEqual(spherex_ingest.query_observations(131.45, -11.1, 5.0), tap_row)
+
+        # Transient failure on both SIA and TAP opens shared circuit breaker for fast-fail
+        with (
+            mock.patch.object(
+                spherex_ingest,
+                "query_observations_sia",
+                side_effect=spherex_fits.SpherexIngestError("503 Service Unavailable"),
+            ),
+            mock.patch.object(
+                spherex_ingest,
+                "query_observations_tap",
+                side_effect=spherex_fits.SpherexIngestError("502 Bad Gateway"),
+            ),
+        ):
+            with self.assertRaises(spherex_fits.SpherexIngestError):
+                spherex_ingest.query_observations(131.45, -11.1, 5.0)
+        self.assertTrue(spherex_ingest.irsa_circuit_breaker.is_open())
+
+        with mock.patch.object(spherex_ingest, "query_observations_sia") as sia_mock:
+            with self.assertRaises(spherex_fits.SpherexIngestError):
+                spherex_ingest.query_observations(131.45, -11.1, 5.0)
+            sia_mock.assert_not_called()
+
+    def test_select_representative_observations_caps_290_rows_for_patch_and_spectrum(self) -> None:
+        obs_290 = [
+            spherex_fits.SpherexObservation(
+                uri=f"artifact/obs_{idx}.fits",
+                bandpass=f"SPHEREx-D{(idx % 6) + 1}",
+                mjd_obs=60800.0 + (idx // 6) * 4.0,
+            )
+            for idx in range(290)
+        ]
+        patch_sample = spherex_ingest.select_representative_observations(
+            obs_290, max_cutouts=18, max_epochs=3
+        )
+        self.assertLessEqual(len(patch_sample), 18)
+        self.assertEqual({o.bandpass for o in patch_sample}, set(spherex_fits.SPHEREX_BANDPASSES))
+
+        spec_sample = spherex_ingest.select_representative_observations(
+            obs_290, max_cutouts=6, max_epochs=1
+        )
+        self.assertEqual(len(spec_sample), 6)
+        self.assertEqual({o.bandpass for o in spec_sample}, set(spherex_fits.SPHEREX_BANDPASSES))
+
+    def test_ingest_with_synthetic_fallback_trips_503_breaker_without_downloading_all(self) -> None:
+        import time
+
+        obs_list = [
+            spherex_fits.SpherexObservation(
+                uri=f"artifact/obs_{idx}.fits",
+                bandpass=f"SPHEREx-D{(idx % 6) + 1}",
+                mjd_obs=61000.0 + idx,
+            )
+            for idx in range(60)
+        ]
+        download_calls = 0
+
+        def _always_503(uri: str, **_kwargs: object) -> bytes:
+            nonlocal download_calls
+            download_calls += 1
+            time.sleep(0.01)
+            raise spherex_fits.SpherexDownloadError(
+                f"503 Server Error: Service Unavailable for url: {uri}"
+            )
+
+        with (
+            mock.patch.object(spherex_ingest, "query_observations", return_value=obs_list),
+            mock.patch.object(spherex_ingest, "download_cutout", side_effect=_always_503),
+        ):
+            cutouts = spherex_ingest.ingest_spherex_cutouts(
+                ra=131.45,
+                dec=-11.1,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=True,
+                session=mock.MagicMock(),
+                max_cutouts=18,
+            )
+
+        self.assertLess(download_calls, 18)
+        self.assertTrue(spherex_ingest.irsa_circuit_breaker.is_open())
+        self.assertEqual(len(cutouts), 6)
+        self.assertTrue(all(c.source == "synthetic" for c in cutouts))
 
 
 if __name__ == "__main__":

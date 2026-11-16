@@ -14,6 +14,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.services.backend_service import StarHuntersBackendService
+from app.services.logging_config import configure_backend_logging
 from app.services.spectrum_extractor import SpectrumExtractionError
 
 _HTTP_CLIENT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
@@ -36,7 +37,8 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        """Manage pooled HTTP client and SQLite connection pool across ASGI lifespan."""
+        """Manage unified logging, pooled HTTP client, and SQLite pool across ASGI lifespan."""
+        configure_backend_logging()
         managed_http_client: httpx.AsyncClient | None = None
         if active_service.catalog_pipeline.http_client is None:
             managed_http_client = httpx.AsyncClient(
@@ -98,7 +100,9 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """
         resolved_time = iso_time or time
         try:
-            return active_service.get_earth_to_sky(lat=lat, lon=lon, iso_time=resolved_time)
+            return await active_service.get_earth_to_sky_async(
+                lat=lat, lon=lon, iso_time=resolved_time
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -168,12 +172,19 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """Assemble or retrieve a cached multi-epoch ``SkyPatchManifest``."""
         response.headers["Cache-Control"] = "public, max-age=3600"
-        return await active_service.get_sky_patch_async(
-            ra=ra,
-            dec=dec,
-            fov=fov,
-            live_catalogs=live_catalogs,
-        )
+        try:
+            return await active_service.get_sky_patch_async(
+                ra=ra,
+                dec=dec,
+                fov=fov,
+                live_catalogs=live_catalogs,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503, detail=f"Sky patch assembly unavailable: {exc}"
+            ) from exc
 
     @fastapi_app.get("/api/v1/frames/{grid_key}/{filename}")
     @fastapi_app.get("/api/frames/{grid_key}/{filename}")
@@ -218,7 +229,12 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """
         response.headers["Cache-Control"] = "public, max-age=3600"
         try:
-            return active_service.get_forced_spectrum(ra=ra, dec=dec, label=label)
+            return await active_service.get_forced_spectrum_async(ra=ra, dec=dec, label=label)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="SPHEREx spectrum extraction timed out; upstream archive unavailable.",
+            ) from exc
         except SpectrumExtractionError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:

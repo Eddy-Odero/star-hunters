@@ -16,7 +16,7 @@ from app.services.spherex_fits import (
     validate_coordinates,
 )
 from app.services.spherex_flags import SPHEREX_FLAG_BITS
-from app.utils.astronomy import build_tan_wcs_header
+from app.utils.astronomy import build_tan_wcs_header, mjd_to_iso
 
 
 def _synthetic_arrays(
@@ -113,8 +113,10 @@ def build_synthetic_spherex_hdul(
         fits_keywords=True,
     )
 
+    date_obs = mjd_to_iso(mjd_obs)
     primary = fits.PrimaryHDU()
     primary.header["MJD-OBS"] = float(mjd_obs)
+    primary.header["DATE-OBS"] = date_obs
     primary.header["BANDPASS"] = str(bandpass)
     primary.header["RA"] = float(ra)
     primary.header["DEC"] = float(dec)
@@ -122,6 +124,7 @@ def build_synthetic_spherex_hdul(
 
     image_hdu = fits.ImageHDU(image, name="IMAGE")
     image_hdu.header["MJD-OBS"] = float(mjd_obs)
+    image_hdu.header["DATE-OBS"] = date_obs
     image_hdu.header["BANDPASS"] = str(bandpass)
     image_hdu.header["BUNIT"] = "MJy/sr"
     image_hdu.header.update(wcs_header)

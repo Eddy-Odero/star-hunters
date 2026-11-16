@@ -35,7 +35,11 @@ from app.services.skyview_fallback import fetch_skyview_fallback
 from app.services.spatial_cache import SpatialSqliteCache, compute_grid_key
 from app.services.spectrum_extractor import extract_forced_spectrum
 from app.services.spherex_coadd import build_target_wcs_header, coadd_spherex_epochs
-from app.services.spherex_ingest import ingest_spherex_cutouts
+from app.services.spherex_ingest import (
+    DEFAULT_MAX_SPECTRUM_CUTOUTS,
+    _env_float,
+    ingest_spherex_cutouts,
+)
 from app.services.synthetic_patch import (
     build_sky_patch_manifest_payload,
     build_spectrum_payload,
@@ -301,6 +305,42 @@ class StarHuntersBackendService:
             )
         return payload
 
+    async def get_earth_to_sky_async(
+        self,
+        lat: float | None = None,
+        lon: float | None = None,
+        iso_time: str | None = None,
+        fallback_seed: int | None = None,
+        prewarm_patch: bool = True,
+        timeout_s: float = 24.0,
+    ) -> dict[str, Any]:
+        """Offload Earth-to-Sky zenith lookup off the ASGI event loop."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.get_earth_to_sky,
+                    lat=lat,
+                    lon=lon,
+                    iso_time=iso_time,
+                    fallback_seed=fallback_seed,
+                    prewarm_patch=prewarm_patch,
+                ),
+                timeout=timeout_s,
+            )
+        except TimeoutError:
+            _logger.warning(
+                "Earth-to-Sky prewarm exceeded %.1fs; returning zenith coordinates without prewarm",
+                timeout_s,
+            )
+            return await asyncio.to_thread(
+                self.get_earth_to_sky,
+                lat=lat,
+                lon=lon,
+                iso_time=iso_time,
+                fallback_seed=fallback_seed,
+                prewarm_patch=False,
+            )
+
     def _apply_cached_pipeline_sync(
         self,
         manifest: dict[str, Any],
@@ -555,17 +595,48 @@ class StarHuntersBackendService:
             )
 
             if self.enable_archival_data:
-                archival_coro = asyncio.to_thread(
-                    self.archival_resolver.resolve_archival_patch_sync,
-                    manifest=base_manifest,
-                    grid_key=grid_key,
-                    ra=ra,
-                    dec=dec,
-                    fov=fov,
-                    fallback_frames=synthetic_frames,
-                )
+                archival_timeout_s = _env_float("ARCHIVAL_RESOLVE_BUDGET_S", 18.0) + 6.0
+
+                async def _resolve_archival_bounded() -> tuple[dict[str, Any], dict[str, bytes]]:
+                    try:
+                        return await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.archival_resolver.resolve_archival_patch_sync,
+                                manifest=base_manifest,
+                                grid_key=grid_key,
+                                ra=ra,
+                                dec=dec,
+                                fov=fov,
+                                fallback_frames=synthetic_frames,
+                            ),
+                            timeout=archival_timeout_s,
+                        )
+                    except TimeoutError:
+                        _logger.warning(
+                            "Archival resolution for %s exceeded %.1fs; "
+                            "serving labeled simulated baseline",
+                            grid_key,
+                            archival_timeout_s,
+                        )
+                        timed_out_manifest = dict(base_manifest)
+                        timed_out_manifest["data_source_summary"] = {
+                            "primary_mission": "Simulated",
+                            "has_multi_epoch_spherex": False,
+                            "uses_wise_fallback": False,
+                            "baseline_days": float(
+                                base_manifest["data_source_summary"].get("baseline_days", 182.7)
+                            ),
+                            "status_note": (
+                                f"Archival retrieval timed out after {archival_timeout_s:.0f}s; "
+                                "simulated baseline"
+                            ),
+                            "provenance_tier": "simulated",
+                            "survey_name": "Simulated Multi-Band Baseline",
+                        }
+                        return timed_out_manifest, dict(synthetic_frames)
+
                 pipeline_result, (resolved_manifest, frames) = await asyncio.gather(
-                    catalog_coro, archival_coro
+                    catalog_coro, _resolve_archival_bounded()
                 )
             else:
                 pipeline_result = await catalog_coro
@@ -605,12 +676,14 @@ class StarHuntersBackendService:
             )
             validate_sky_patch_manifest(merged_manifest)
             _logger.info(
-                "Sky patch %s assembled (mission=%s, tier=%s, epochs=%d, known=%d) in %.2fs",
+                "Sky patch %s assembled (mission=%s, tier=%s, epochs=%d, known=%d, note=%s) "
+                "in %.2fs",
                 grid_key,
                 merged_manifest["data_source_summary"].get("primary_mission"),
                 merged_manifest["data_source_summary"].get("provenance_tier"),
                 len(merged_manifest.get("epochs", [])),
                 len(merged_manifest["catalog_overlays"].get("known_objects", [])),
+                merged_manifest["data_source_summary"].get("status_note", ""),
                 time.perf_counter() - t0,
             )
             return merged_manifest
@@ -772,12 +845,22 @@ class StarHuntersBackendService:
             validate_spectrum_payload(cached_spec)
             return cached_spec
 
-        cutouts = self.spherex_cutout_fetcher(
-            ra=ra,
-            dec=dec,
-            fov_arcmin=5.0,
-            allow_synthetic_fallback=True,
-        )
+        try:
+            cutouts = self.spherex_cutout_fetcher(
+                ra=ra,
+                dec=dec,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=True,
+                max_cutouts=DEFAULT_MAX_SPECTRUM_CUTOUTS,
+                budget_seconds=13.0,
+            )
+        except TypeError:
+            cutouts = self.spherex_cutout_fetcher(
+                ra=ra,
+                dec=dec,
+                fov_arcmin=5.0,
+                allow_synthetic_fallback=True,
+            )
         payload = self.spectrum_extractor(
             ra=ra,
             dec=dec,
@@ -785,6 +868,40 @@ class StarHuntersBackendService:
             source_label=resolved_label,
         )
         self.cache.put_spectrum(spectrum_key=spectrum_key, ra=ra, dec=dec, payload=payload)
+        return payload
+
+    async def get_forced_spectrum_async(
+        self,
+        ra: float,
+        dec: float,
+        label: str | None = None,
+        timeout_s: float = 20.0,
+    ) -> dict[str, Any]:
+        """Asynchronously compute/fetch a 102-band forced spectrum off the event loop."""
+        clean_label = label.strip() if label and label.strip() else None
+        resolved_label = clean_label or "Selected sky position"
+        spectrum_key = f"spec_forced_ra{round(ra, 4):.4f}_dec{round(dec, 4):.4f}"
+        cached_spec = self.cache.get_spectrum(spectrum_key)
+        if cached_spec is not None:
+            cached_spec["source_label"] = resolved_label
+            validate_spectrum_payload(cached_spec)
+            return cached_spec
+
+        async def _compute() -> dict[str, Any]:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.get_forced_spectrum,
+                    ra=ra,
+                    dec=dec,
+                    label=resolved_label,
+                ),
+                timeout=timeout_s,
+            )
+
+        payload = await self._run_singleflight(f"spectrum:{spectrum_key}", _compute)
+        if payload.get("source_label") != resolved_label:
+            payload = dict(payload)
+            payload["source_label"] = resolved_label
         return payload
 
     def get_spectrum(

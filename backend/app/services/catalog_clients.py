@@ -32,6 +32,16 @@ VIZIER_GAIA_CFA_ENDPOINT = "https://vizier.cfa.harvard.edu/viz-bin/asu-tsv"
 JPL_HORIZONS_ENDPOINT = "https://ssd.jpl.nasa.gov/api/horizons.api"
 IRSA_MOST_ENDPOINT = "https://irsa.ipac.caltech.edu/cgi-bin/MOST/nph-most"
 
+PROVIDER_BASE_URLS: dict[str, str] = {
+    "simbad_idia": SIMBAD_TAP_ENDPOINTS[0],
+    "simbad_cfa": SIMBAD_TAP_ENDPOINTS[1],
+    "gaia_esa": GAIA_DR3_TAP_ENDPOINTS[0],
+    "gaia_ari": GAIA_DR3_TAP_ENDPOINTS[1],
+    "gaia_vizier_cfa": VIZIER_GAIA_CFA_ENDPOINT,
+    "jpl_horizons": JPL_HORIZONS_ENDPOINT,
+    "irsa_most": IRSA_MOST_ENDPOINT,
+}
+
 HORIZONS_FEATURED_BODIES: tuple[dict[str, str], ...] = (
     # Major planets (Earth excluded because CENTER='500@399' is geocentric)
     {

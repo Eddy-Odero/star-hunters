@@ -25,11 +25,12 @@ from app.services.skyview_fallback import (
     inject_solar_system_ephemeris_overlay,
 )
 from app.services.spherex_coadd import build_target_wcs_header, coadd_spherex_epochs
-from app.services.spherex_ingest import ingest_spherex_cutouts
+from app.services.spherex_ingest import _env_float, ingest_spherex_cutouts
 from app.services.wise_fallback import fetch_wise_fallback
 from app.utils.astronomy import angular_separation_deg, mjd_to_iso
 
 _logger = get_logger("archival_resolver")
+DEFAULT_ARCHIVAL_BUDGET_SECONDS = _env_float("ARCHIVAL_RESOLVE_BUDGET_S", 18.0)
 
 
 def merge_pipeline_overlays(
@@ -236,6 +237,7 @@ class ArchivalResolver:
         frames = dict(fallback_frames)
         fallback_errors: list[str] = []
         t0 = time.perf_counter()
+        overall_deadline = t0 + DEFAULT_ARCHIVAL_BUDGET_SECONDS
 
         try:
             fov_deg = float(fov) / 60.0
@@ -294,7 +296,8 @@ class ArchivalResolver:
                 if fast_coadd is not None:
                     coadd = fast_coadd
                 else:
-                    wait_futures([fut_spherex], timeout=22.0)
+                    spherex_wait = max(0.5, min(14.0, overall_deadline - time.perf_counter()))
+                    wait_futures([fut_spherex], timeout=spherex_wait)
                     if fut_spherex.done():
                         try:
                             cutouts = fut_spherex.result()
@@ -341,7 +344,8 @@ class ArchivalResolver:
                                 target_wcs_header=target_header,
                             )
                         else:
-                            wise = fut_wise.result(timeout=15.0)
+                            wise_wait = max(0.5, min(8.0, overall_deadline - time.perf_counter()))
+                            wise = fut_wise.result(timeout=wise_wait)
                         wise_data_name = "wise_fallback.bin"
                         wise_flags_name = "wise_fallback_flags.bin"
                         actual_frames[wise_data_name] = wise.detector_buffer
@@ -376,7 +380,7 @@ class ArchivalResolver:
                         }
                         out_manifest["epochs"] = epoch_entries
                         frames = actual_frames
-                        _logger.info(
+                        _logger.debug(
                             "Archival patch %s served from WISE/NEOWISE (%d SPHEREx + WISE) "
                             "in %.2fs",
                             grid_key,
@@ -399,7 +403,7 @@ class ArchivalResolver:
                         "survey_name": "SPHEREx IRSA Archival",
                     }
                     frames = actual_frames
-                    _logger.info(
+                    _logger.debug(
                         "Archival patch %s served from primary SPHEREx (%d epochs) in %.2fs",
                         grid_key,
                         len(coadd.epochs),
@@ -417,7 +421,8 @@ class ArchivalResolver:
                                 target_wcs_header=target_header,
                             )
                         else:
-                            sv_epochs = fut_skyview.result(timeout=15.0)
+                            sv_wait = max(2.0, overall_deadline - time.perf_counter())
+                            sv_epochs = fut_skyview.result(timeout=sv_wait)
                         sv_entries: list[dict[str, Any]] = []
                         sv_frames: dict[str, bytes] = {}
                         sv_mjds: list[float] = []
@@ -444,19 +449,25 @@ class ArchivalResolver:
                             )
                         baseline_sv = (max(sv_mjds) - min(sv_mjds)) if len(sv_mjds) >= 2 else 365.0
                         out_manifest["epochs"] = sv_entries
+                        fb_note = (
+                            f"; fallback from {', '.join(fallback_errors)}"
+                            if fallback_errors
+                            else ""
+                        )
                         out_manifest["data_source_summary"] = {
                             "primary_mission": "SkyView",
                             "has_multi_epoch_spherex": False,
                             "uses_wise_fallback": False,
                             "baseline_days": max(1.0, float(baseline_sv)),
                             "status_note": (
-                                f"NASA SkyView archival extension ({len(sv_entries)} plate(s))"
+                                f"NASA SkyView archival extension "
+                                f"({len(sv_entries)} plate(s){fb_note})"
                             ),
                             "provenance_tier": "extension",
                             "survey_name": "NASA SkyView (DSS2 IR / Red)",
                         }
                         frames = sv_frames
-                        _logger.info(
+                        _logger.debug(
                             "Archival patch %s served from NASA SkyView (%d plate(s)) in %.2fs",
                             grid_key,
                             len(sv_entries),

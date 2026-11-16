@@ -11,6 +11,7 @@ from typing import Any
 
 ROOT_LOGGER_NAME = "star_hunters"
 VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+UNIFIED_THIRD_PARTY_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access", "astropy")
 
 
 class JsonLogFormatter(logging.Formatter):
@@ -74,6 +75,31 @@ def configure_backend_logging(
 
     for handler in logger.handlers:
         handler.setLevel(numeric_level)
+        handler.setFormatter(formatter)
+
+    # Unify third-party runtime loggers (Uvicorn, Astropy) onto the same format and tag
+    # records with their package/logger name without causing duplicate propagation.
+    for third_party_name in UNIFIED_THIRD_PARTY_LOGGERS:
+        third_party_logger = logging.getLogger(third_party_name)
+        third_party_level = (
+            max(numeric_level, logging.WARNING) if third_party_name == "astropy" else numeric_level
+        )
+        third_party_logger.setLevel(third_party_level)
+        third_party_logger.propagate = False
+        unified_handler_name = f"star_hunters_unified_{third_party_name}"
+        existing = [
+            h
+            for h in third_party_logger.handlers
+            if getattr(h, "name", None) == unified_handler_name
+        ]
+        if existing and len(third_party_logger.handlers) == 1:
+            handler = existing[0]
+        else:
+            third_party_logger.handlers.clear()
+            handler = logging.StreamHandler(sys.stdout)
+            handler.set_name(unified_handler_name)
+            third_party_logger.addHandler(handler)
+        handler.setLevel(third_party_level)
         handler.setFormatter(formatter)
 
     # Keep Uvicorn / root logger quiet unless higher severity, while allowing pytest caplog capture.

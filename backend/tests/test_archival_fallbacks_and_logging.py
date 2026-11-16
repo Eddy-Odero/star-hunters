@@ -21,6 +21,7 @@ from app.models.contracts import (
 from app.services.backend_service import StarHuntersBackendService
 from app.services.logging_config import (
     ROOT_LOGGER_NAME,
+    UNIFIED_THIRD_PARTY_LOGGERS,
     configure_backend_logging,
     parse_log_level,
 )
@@ -30,6 +31,7 @@ from app.services.skyview_fallback import (
     inject_solar_system_ephemeris_overlay,
 )
 from app.services.spatial_cache import SpatialSqliteCache
+from app.services.spherex_synthetic import build_synthetic_spherex_hdul
 from app.services.wise_fallback import WiseFallbackError
 
 
@@ -78,6 +80,42 @@ class TestLoggingConfiguration(unittest.TestCase):
         self.assertEqual(parsed["level"], "INFO")
         self.assertEqual(parsed["message"], "Loaded patch grid_123")
         self.assertEqual(parsed["logger"], f"{ROOT_LOGGER_NAME}.test")
+
+    def test_unified_logging_formats_third_party_sources_consistently(self) -> None:
+        configure_backend_logging(level="INFO", log_format="text")
+        for third_party in UNIFIED_THIRD_PARTY_LOGGERS:
+            tp_logger = logging.getLogger(third_party)
+            self.assertFalse(tp_logger.propagate)
+            self.assertEqual(len(tp_logger.handlers), 1)
+            rec = logging.LogRecord(
+                name=f"{third_party}.sub",
+                level=logging.WARNING,
+                pathname="mod.py",
+                lineno=1,
+                msg="Sample %s",
+                args=("ok",),
+                exc_info=None,
+            )
+            line = tp_logger.handlers[0].format(rec)
+            self.assertIn(f"WARNING [{third_party}.sub] Sample ok", line)
+
+    def test_synthetic_spherex_hdul_sets_date_obs_without_fits_fixed_warning(self) -> None:
+        import warnings
+
+        from astropy.wcs import WCS, FITSFixedWarning
+
+        hdul = build_synthetic_spherex_hdul(ra=131.45, dec=-11.10, mjd_obs=60000.0)
+        try:
+            self.assertIn("DATE-OBS", hdul["IMAGE"].header)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", FITSFixedWarning)
+                wcs = WCS(hdul["IMAGE"].header).celestial
+                self.assertTrue(wcs.has_celestial)
+        finally:
+            hdul.close()
+
+        fixed_warnings = [w for w in caught if issubclass(w.category, FITSFixedWarning)]
+        self.assertEqual(fixed_warnings, [])
 
 
 class TestSkyViewFallbackAndOverlays(unittest.TestCase):
@@ -389,3 +427,106 @@ class TestArchivalChainSingleFlightAndHorizons(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(skyview_calls, 0)
         self.assertEqual(manifest["data_source_summary"]["primary_mission"], "SPHEREx")
         self.assertTrue(manifest["data_source_summary"]["has_multi_epoch_spherex"])
+
+    async def test_spectrum_endpoint_is_non_blocking_and_returns_504_on_timeout(self) -> None:
+        import threading
+        import time
+
+        import httpx
+
+        from app.main import create_app
+
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
+
+        worker_started = threading.Event()
+        release_worker = threading.Event()
+        self.addCleanup(release_worker.set)
+
+        def blocking_fetcher(**_kwargs: object) -> list[object]:
+            worker_started.set()
+            release_worker.wait(timeout=3.0)
+            return []
+
+        svc = StarHuntersBackendService(
+            cache=cache,
+            spherex_cutout_fetcher=blocking_fetcher,
+        )
+        test_app = create_app(svc)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=test_app),
+            base_url="http://testserver",
+        ) as client:
+            spec_task = asyncio.create_task(
+                client.get("/api/v1/spectrum", params={"ra": 12.34, "dec": -5.67})
+            )
+            for _ in range(50):
+                if worker_started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(worker_started.is_set())
+
+            t0 = time.perf_counter()
+            health_resp = await client.get("/health")
+            self.assertEqual(health_resp.status_code, 200)
+            self.assertLess(time.perf_counter() - t0, 0.25)
+
+            release_worker.set()
+            spec_resp = await spec_task
+            # Empty cutouts returned by dummy fetcher raises SpectrumExtractionError -> 503
+            self.assertEqual(spec_resp.status_code, 503)
+
+        async def _timeout_spectrum(**_kwargs: object) -> dict[str, object]:
+            raise TimeoutError("timed out")
+
+        with patch.object(svc, "get_forced_spectrum_async", side_effect=_timeout_spectrum):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=test_app),
+                base_url="http://testserver",
+            ) as client:
+                timeout_resp = await client.get(
+                    "/api/v1/spectrum", params={"ra": 12.34, "dec": -5.67}
+                )
+                self.assertEqual(timeout_resp.status_code, 504)
+                self.assertIn("timed out", timeout_resp.json()["detail"].lower())
+
+    def test_forced_spectrum_passes_bounded_budget_and_silences_hierarch_warnings(self) -> None:
+        import warnings
+
+        from astropy.io.fits.verify import VerifyWarning
+
+        from app.services.spectrum_extractor import _pixel_coordinates
+        from app.services.spherex_synthetic import fallback_cutout
+
+        captured_kwargs: dict[str, object] = {}
+
+        def _recording_fetcher(**kwargs: object) -> list[object]:
+            captured_kwargs.update(kwargs)
+            return [
+                fallback_cutout(
+                    ra=45.2, dec=-2.85, fov_arcmin=5.0, bandpass=f"SPHEREx-D{d}", seed=d
+                )
+                for d in range(1, 7)
+            ]
+
+        cache = SpatialSqliteCache(self.db_path)
+        self.addCleanup(cache.close)
+        svc = StarHuntersBackendService(
+            cache=cache,
+            spherex_cutout_fetcher=_recording_fetcher,
+        )
+        payload = svc.get_forced_spectrum(ra=45.2, dec=-2.85, label="7 Eri")
+        self.assertEqual(len(payload["channels"]), 102)
+        self.assertEqual(captured_kwargs.get("max_cutouts"), 6)
+        self.assertLessEqual(float(captured_kwargs.get("budget_seconds", 99.0)), 14.0)
+
+        # Real SPHEREx DR1 FITS headers contain >8-char keywords (e.g. NVISITROW, L2 N_NONLINEAR)
+        cutout = fallback_cutout(ra=45.2, dec=-2.85, fov_arcmin=5.0, bandpass="SPHEREx-D1", seed=1)
+        cutout.header["NVISITROW"] = 1
+        cutout.header["L2 N_NONLINEAR"] = 42
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", VerifyWarning)
+            x, y = _pixel_coordinates(cutout, 45.2, -2.85)
+            self.assertTrue(np.isfinite(x) and np.isfinite(y))
+        self.assertEqual(len(caught), 0)
