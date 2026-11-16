@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import math
 import os
 import time
@@ -773,6 +774,7 @@ class StarHuntersBackendService:
         grid_key: str,
         filename: str,
         precision: Literal["float32", "float16"] = "float32",
+        accept_gzip: bool = False,
     ) -> tuple[bytes, dict[str, str]]:
         """Retrieve raw binary detector or flag bytes for a cached or synthetic frame.
 
@@ -780,13 +782,26 @@ class StarHuntersBackendService:
             grid_key: Quantized spatial grid identifier.
             filename: Binary frame filename (e.g. ``"pass_1.bin"``).
             precision: Output floating-point precision (``"float32"`` or ``"float16"``).
+            accept_gzip: When True, serve pre-gzipped bytes with ``Content-Encoding: gzip``.
 
         Returns:
-            Tuple of ``(raw_bytes, response_headers)``.
+            Tuple of ``(body_bytes, response_headers)``.
 
         Raises:
             KeyError: If ``filename`` does not exist in cache or synthetic fallback.
         """
+        if accept_gzip:
+            cached_gz = self.cache.get_frame_gzip(grid_key, filename, precision=precision)
+            if cached_gz is not None:
+                gz_bytes, dtype_header = cached_gz
+                return gz_bytes, {
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Binary-Dtype": dtype_header,
+                    "Content-Type": "application/octet-stream",
+                    "Content-Encoding": "gzip",
+                    "Vary": "Accept-Encoding",
+                }
+
         raw = self.cache.get_frame(grid_key, filename)
         if raw is None:
             cached_manifest = self.cache.get_manifest(grid_key)
@@ -817,6 +832,10 @@ class StarHuntersBackendService:
             "X-Binary-Dtype": dtype_header,
             "Content-Type": "application/octet-stream",
         }
+        if accept_gzip:
+            body = gzip.compress(body, compresslevel=6)
+            headers["Content-Encoding"] = "gzip"
+            headers["Vary"] = "Accept-Encoding"
         return body, headers
 
     def get_forced_spectrum(
