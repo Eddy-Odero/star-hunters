@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -16,14 +15,15 @@ import httpx
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.models.contracts import SHOWCASE_TARGETS  # noqa: E402
-from app.services.backend_service import StarHuntersBackendService  # noqa: E402
-from app.services.catalog_clients import (  # noqa: E402
-    HORIZONS_FEATURED_BODIES,
-    fetch_horizons_ephemeris,
-    fetch_most_spherex_matches,
-)
+from app.services.catalog_clients import HORIZONS_FEATURED_BODIES  # noqa: E402
 from app.services.celestial_catalog_pipeline import AutomatedCelestialPipeline  # noqa: E402
+from app.services.preset_builder import (  # noqa: E402
+    prewarm_cache_with_service,
+    seed_ephemeris_for_bodies,
+    seed_most_intersections,
+    seed_showcase_regions,
+    write_summary_json,
+)
 from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
 
 
@@ -37,7 +37,21 @@ async def seed_all(
     skip_regions: bool = False,
     skip_most: bool = False,
 ) -> dict[str, Any]:
-    """Populate SQLite cache tables across all showcase fields and Solar System ephemerides."""
+    """Populate SQLite cache tables across all showcase fields and Solar System ephemerides.
+
+    Args:
+        db_path: Destination SQLite database file path.
+        summary_path: Optional path to write the JSON seeding summary.
+        start_date: Ephemeris window start date (``YYYY-MM-DD``).
+        stop_date: Ephemeris window stop date (``YYYY-MM-DD``).
+        step_size: Horizons sampling cadence (e.g. ``"1d"``).
+        skip_ephemeris: Skip live JPL Horizons ephemeris seeding when ``True``.
+        skip_regions: Skip live SIMBAD/Gaia region seeding when ``True``.
+        skip_most: Skip live IRSA MOST intersection seeding when ``True``.
+
+    Returns:
+        Summary dictionary recording seeded counts and final cache statistics.
+    """
     cache = SpatialSqliteCache(db_path=db_path)
     try:
         pipeline = AutomatedCelestialPipeline(cache=cache)
@@ -52,87 +66,41 @@ async def seed_all(
             pipeline.http_client = client
 
             if not skip_ephemeris:
-                for body in HORIZONS_FEATURED_BODIES:
-                    points = await fetch_horizons_ephemeris(
-                        naif_cmd=body["cmd"],
-                        naif_id=body["naif_id"],
-                        body_name=body["name"],
-                        body_class=body["body_class"],
-                        start_date=start_date,
-                        stop_date=stop_date,
-                        step_size=step_size,
-                        client=client,
-                    )
-                    count = cache.upsert_ephemeris_points(points)
-                    summary["ephemeris"][body["name"]] = {
-                        "naif_id": body["naif_id"],
-                        "body_class": body["body_class"],
-                        "rows": count,
-                    }
-                    print(
+                summary["ephemeris"] = await seed_ephemeris_for_bodies(
+                    cache,
+                    HORIZONS_FEATURED_BODIES,
+                    start_date=start_date,
+                    stop_date=stop_date,
+                    step_size=step_size,
+                    client=client,
+                    on_body=lambda body, count: print(
                         f"[horizons] {body['name']} ({body['naif_id']}): {count} daily rows"
-                    )
+                    ),
+                )
 
             if not skip_regions:
-                for slug, meta in SHOWCASE_TARGETS.items():
-                    ra = float(meta["ra"])
-                    dec = float(meta["dec"])
-                    simbad_rows, simbad_status = await pipeline.get_simbad_region(
-                        ra_deg=ra,
-                        dec_deg=dec,
-                        radius_deg=0.0625,
-                        allow_live=True,
-                    )
-                    gaia_rows, gaia_status = await pipeline.get_gaia_region(
-                        ra_deg=ra,
-                        dec_deg=dec,
-                        radius_deg=0.0625,
-                        allow_live=True,
-                    )
-                    summary["regions"][slug] = {
-                        "ra": ra,
-                        "dec": dec,
-                        "simbad_count": len(simbad_rows),
-                        "simbad_status": simbad_status,
-                        "gaia_count": len(gaia_rows),
-                        "gaia_status": gaia_status,
-                    }
-                    print(
-                        f"[region] {slug}: SIMBAD={len(simbad_rows)} ({simbad_status}), "
-                        f"Gaia={len(gaia_rows)} ({gaia_status})"
-                    )
+                summary["regions"] = await seed_showcase_regions(
+                    pipeline,
+                    on_region=lambda slug, scount, sstat, gcount, gstat: print(
+                        f"[region] {slug}: SIMBAD={scount} ({sstat}), Gaia={gcount} ({gstat})"
+                    ),
+                )
 
             if not skip_most:
                 most_queries = ["3I", "20000001:NID", "20000004:NID", "Mars", "Jupiter"]
-                for qname in most_queries:
-                    res = await fetch_most_spherex_matches(qname, client=client)
-                    matches = res["matches"]
-                    if matches:
-                        cache.put_cached_catalog_region(
-                            f"most:{qname.lower()}",
-                            0.0,
-                            0.0,
-                            1.0,
-                            res,
-                            ttl_seconds=7 * 24 * 3600,
-                        )
-                    summary["most"][qname] = {
-                        "status": res["status"],
-                        "matches": len(matches),
-                    }
-                    print(
-                        f"[most] {qname}: {len(matches)} SPHEREx intersections ({res['status']})"
-                    )
+                summary["most"] = await seed_most_intersections(
+                    cache,
+                    most_queries,
+                    client=client,
+                    on_query=lambda qname, count, status: print(
+                        f"[most] {qname}: {count} SPHEREx intersections ({status})"
+                    ),
+                )
 
-        # Prewarm showcase sky patches & search index into SQLite
-        service = StarHuntersBackendService(cache=cache)
-        prewarm_count = service.prewarm_known_data()
-        summary["prewarmed_patches"] = prewarm_count
-        summary["cache_stats"] = cache.get_ephemeris_stats()
+        summary.update(prewarm_cache_with_service(cache))
 
         if summary_path is not None:
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            write_summary_json(summary_path, summary)
             print(f"[seed] Wrote summary JSON to {summary_path}")
 
         return summary
@@ -141,6 +109,7 @@ async def seed_all(
 
 
 def main() -> int:
+    """CLI entrypoint for seeding the SQLite spatial cache."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--db-path",
@@ -150,11 +119,7 @@ def main() -> int:
     parser.add_argument(
         "--summary-json",
         type=Path,
-        default=REPO_ROOT
-        / "backend"
-        / "app"
-        / "models"
-        / "seeded_ephemeris_summary.json",
+        default=REPO_ROOT / "backend" / "app" / "models" / "seeded_ephemeris_summary.json",
         help="Optional output path for lightweight seeding summary JSON.",
     )
     parser.add_argument("--start-date", default="2025-05-01")

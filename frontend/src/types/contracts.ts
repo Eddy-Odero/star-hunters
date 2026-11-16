@@ -80,7 +80,10 @@ export const DETECTOR_WAVELENGTH_BOUNDS_UM: ReadonlyArray<readonly [number, numb
   [4.4, 5.0], // Detector 6 (WISE W2 4.6 um fallback)
 ];
 
-/** Distinct high-contrast palette used for object highlighters and tracking squares. */
+/**
+ * Distinct high-contrast 20-color palette used for object highlighters and
+ * tracking squares, aligned verbatim with `backend/app/models/contracts.py`.
+ */
 export const TRACKING_SQUARE_COLORS: readonly string[] = [
   '#00F5D4', // Cyan-Mint
   '#FFBE0B', // Solar Amber
@@ -90,18 +93,18 @@ export const TRACKING_SQUARE_COLORS: readonly string[] = [
   '#8338EC', // Ultraviolet
   '#06D6A0', // Emerald
   '#FF9F1C', // Gold
-  '#F15BB5', // Rose Pink
-  '#00BBF9', // Sky Cyan
-  '#9B5DE5', // Amethyst
-  '#FEE440', // Lemon Flare
-  '#2EC4B6', // Teal Glow
-  '#E71D36', // Crimson Nova
-  '#70E000', // Lime Pulsar
-  '#FF5400', // Flame Orange
-  '#4CC9F0', // Ice Blue
-  '#F72585', // Hot Fuchsia
-  '#B5179E', // Deep Orchid
-  '#AACC00', // Chartreuse
+  '#AACC00', // Electric Lime
+  '#FF4D6D', // Coral Red
+  '#F72585', // Hot Pink
+  '#4CC9F0', // Sky Cyan
+  '#80ED99', // Mint Green
+  '#C77DFF', // Orchid Violet
+  '#FFEA00', // Laser Yellow
+  '#00BBF9', // Cerulean
+  '#FF6B6B', // Salmon Rose
+  '#72EFDD', // Aquamarine
+  '#F15BB5', // Bubblegum Magenta
+  '#FEE440', // Starlight Yellow
 ] as const;
 
 /**

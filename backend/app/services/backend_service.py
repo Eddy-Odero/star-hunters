@@ -675,7 +675,10 @@ class StarHuntersBackendService:
                 "count": len(cached.get("matches", [])),
                 "matches": cached.get("matches", []),
             }
-        result = await fetch_most_spherex_matches(obj_name=obj_name)
+        result = await fetch_most_spherex_matches(
+            obj_name=obj_name,
+            client=self.catalog_pipeline.http_client,
+        )
         if result["matches"]:
             self.cache.put_cached_catalog_region(
                 cache_key,

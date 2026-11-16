@@ -6,38 +6,25 @@ known-object pipeline for each entry in ``SHOWCASE_TARGETS`` and writes the
 result to ``frontend/public/presets/{slug}/``.
 
 When IRSA is unreachable (or ``--fallback-synthetic`` is supplied) the script
-falls back to the deterministic synthetic bundles produced by
-``scripts/generate_synthetic_presets.py``. Every manifest, spectrum and binary
-buffer is validated before it is written to disk.
+falls back to deterministic synthetic bundles via
+``app.services.preset_builder``. Every manifest, spectrum, and binary buffer
+is validated before it is written to disk.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import copy
-import json
 import os
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from generate_synthetic_presets import generate_all_presets  # noqa: E402
-
-from app.models.contracts import (  # noqa: E402
-    SHOWCASE_TARGETS,
-    validate_detector_binary_buffer,
-    validate_flags_binary_buffer,
-    validate_sky_patch_manifest,
-    validate_spectrum_payload,
-)
-from app.models.global_sky_reference_catalog import extend_global_known_objects_index  # noqa: E402
+from app.models.contracts import SHOWCASE_TARGETS  # noqa: E402
 from app.services.archival_resolver import merge_pipeline_overlays  # noqa: E402
 from app.services.catalog_clients import (  # noqa: E402
     HORIZONS_FEATURED_BODIES,
@@ -47,42 +34,29 @@ from app.services.catalog_clients import (  # noqa: E402
     fetch_simbad_objects,
 )
 from app.services.celestial_catalog_pipeline import AutomatedCelestialPipeline  # noqa: E402
-from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
-from app.services.synthetic_patch import (  # noqa: E402
-    build_catalog_overlays_for_patch,
-    build_sky_patch_manifest_payload,
-    build_spectrum_payload,
-    generate_synthetic_epoch_frames,
+from app.services.preset_builder import (  # noqa: E402
+    DEFAULT_FOV_ARCMIN,
+    build_live_preset_bundle,
+    build_synthetic_preset_bundle,
+    generate_all_synthetic_presets,
+    validate_preset_bundle,
+    validate_written_presets,
+    write_global_known_objects_index,
+    write_preset_bundle,
 )
+from app.services.spatial_cache import SpatialSqliteCache  # noqa: E402
 from app.utils.astronomy import (  # noqa: E402
     mjd_to_iso,
     offline_requested,
     sky_to_pixel,
 )
 
-DEFAULT_FOV_ARCMIN = 5.0
 DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("PRESET_BUILD_TIMEOUT", "20"))
 PROBE_TIMEOUT_SECONDS = 5.0
-GENERATED_BINARY_PATTERNS = (
-    "pass_*.bin",
-    "pass_*_flags.bin",
-    "wise_fallback.bin",
-    "wise_fallback_flags.bin",
-)
-
-
-@dataclass
-class PresetBundle:
-    """In-memory bundle that has passed contract validation."""
-
-    slug: str
-    manifest: dict[str, Any]
-    spectrum: dict[str, Any]
-    frames: dict[str, bytes]
-    source: str
 
 
 def _log(message: str) -> None:
+    """Print a flushed status line for preset build progress."""
     print(f"[build_presets] {message}", flush=True)
 
 
@@ -105,6 +79,7 @@ def _probe_irsa(timeout: float) -> bool:
 
 
 def _horizons_body_for(slug: str) -> dict[str, str] | None:
+    """Return the Horizons body spec matching ``slug`` if applicable."""
     if slug == "comet_3i_atlas":
         return next(
             (body for body in HORIZONS_FEATURED_BODIES if "3I" in body["name"]),
@@ -189,8 +164,7 @@ def _resolve_live_frames(
                         "iso_date": mjd_to_iso(epoch.mjd),
                         "detectors_data_url": f"/presets/{slug}/{data_name}",
                         "flags_mask_url": f"/presets/{slug}/{flags_name}",
-                        "available_detectors": epoch.available_detectors
-                        or [1, 2, 3, 4, 5, 6],
+                        "available_detectors": epoch.available_detectors or [1, 2, 3, 4, 5, 6],
                         "binary_dtype": "float32",
                     }
                 )
@@ -247,8 +221,7 @@ def _resolve_live_frames(
 
     if len(epochs) < 2:
         _log(
-            f"{slug}: live archive yielded {len(epochs)} usable epoch(s); "
-            "using synthetic fallback"
+            f"{slug}: live archive yielded {len(epochs)} usable epoch(s); using synthetic fallback"
         )
         return None
 
@@ -261,9 +234,7 @@ def _resolve_live_frames(
             "has_multi_epoch_spherex": len(spherex_mjds) >= 2,
             "uses_wise_fallback": True,
             "baseline_days": baseline_days,
-            "status_note": (
-                f"WISE/NEOWISE W1/W2 fallback; {len(spherex_mjds)} SPHEREx epoch(s)"
-            ),
+            "status_note": f"WISE/NEOWISE W1/W2 fallback; {len(spherex_mjds)} SPHEREx epoch(s)",
         }
     else:
         summary = {
@@ -279,19 +250,33 @@ def _resolve_live_frames(
 async def _fetch_live_catalog_overlays(
     slug: str,
     meta: dict[str, Any],
-    manifest: dict[str, Any],
+    ra: float,
+    dec: float,
+    fov_arcmin: float,
+    wcs: dict[str, Any],
+    epochs_meta: list[dict[str, Any]],
     cache: SpatialSqliteCache,
     timeout: float,
-) -> dict[str, Any] | None:
-    """Query live SIMBAD, Gaia DR3, JPL Horizons and IRSA MOST for one target."""
+) -> dict[str, Any]:
+    """Query live SIMBAD, Gaia DR3, JPL Horizons, and IRSA MOST for one target.
+
+    Args:
+        slug: Showcase target slug.
+        meta: Showcase target metadata mapping.
+        ra: Field center Right Ascension in degrees.
+        dec: Field center Declination in degrees.
+        fov_arcmin: Field of view in arcminutes.
+        wcs: Patch contract WCS dictionary.
+        epochs_meta: Resolved epoch metadata list.
+        cache: Ephemeral SQLite cache for Horizons ephemeris upserts.
+        timeout: Per-request HTTP timeout in seconds.
+
+    Returns:
+        Assembled pipeline catalog overlay dictionary.
+    """
     import httpx
 
-    ra = float(meta["ra"])
-    dec = float(meta["dec"])
-    fov_arcmin = float(manifest["query"]["fov_arcmin"])
     radius_deg = AutomatedCelestialPipeline.fov_to_radius_deg(fov_arcmin)
-    epochs_meta = manifest["epochs"]
-    wcs = manifest["wcs"]
     pipeline = AutomatedCelestialPipeline(cache=cache)
 
     async with httpx.AsyncClient(
@@ -372,9 +357,7 @@ async def _fetch_live_catalog_overlays(
                 "status": f"unavailable:{type(exc).__name__}",
                 "matches": [],
             }
-        result.setdefault("source_status", {})["most"] = str(
-            most_result.get("status", "unknown")
-        )
+        result.setdefault("source_status", {})["most"] = str(most_result.get("status", "unknown"))
         for match in most_result.get("matches", []):
             try:
                 match_ra = float(match["ra"])
@@ -384,7 +367,7 @@ async def _fetch_live_catalog_overlays(
             x, y = sky_to_pixel(match_ra, match_dec, wcs)
             mjd_start = match.get("mjd_start")
             epoch_suffix = (
-                f"{int(round(float(mjd_start)))}"  # noqa: RUF046
+                f"{int(round(float(mjd_start)))}"
                 if mjd_start is not None and str(mjd_start).strip()
                 else "archive"
             )
@@ -396,229 +379,15 @@ async def _fetch_live_catalog_overlays(
                     "dec": match_dec,
                     "x": x,
                     "y": y,
-                    "v_mag": (
-                        float(match["vmag"]) if match.get("vmag") is not None else 12.0
-                    ),
+                    "v_mag": (float(match["vmag"]) if match.get("vmag") is not None else 12.0),
                 }
             )
 
         return result
 
 
-def _build_synthetic_bundle(slug: str, meta: dict[str, Any]) -> PresetBundle:
-    manifest = build_sky_patch_manifest_payload(
-        ra=meta["ra"],
-        dec=meta["dec"],
-        fov_arcmin=DEFAULT_FOV_ARCMIN,
-        slug=slug,
-        static_preset_urls=True,
-    )
-    spectrum = build_spectrum_payload(
-        ra=meta["ra"],
-        dec=meta["dec"],
-        source_label=meta["name"],
-        slug=slug,
-    )
-    frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
-    return PresetBundle(
-        slug=slug,
-        manifest=manifest,
-        spectrum=spectrum,
-        frames=frames,
-        source="synthetic",
-    )
-
-
-def _build_live_bundle(
-    slug: str,
-    meta: dict[str, Any],
-    frames: dict[str, bytes],
-    epochs: list[dict[str, Any]],
-    summary: dict[str, Any],
-    cache: SpatialSqliteCache,
-    timeout: float,
-    live_catalogs: bool,
-    live_spectrum: dict[str, Any] | None = None,
-) -> PresetBundle:
-    manifest = build_sky_patch_manifest_payload(
-        ra=meta["ra"],
-        dec=meta["dec"],
-        fov_arcmin=DEFAULT_FOV_ARCMIN,
-        slug=slug,
-        static_preset_urls=True,
-    )
-    manifest["epochs"] = epochs
-    manifest["data_source_summary"] = summary
-    manifest["catalog_overlays"] = build_catalog_overlays_for_patch(
-        ra=meta["ra"],
-        dec=meta["dec"],
-        wcs=manifest["wcs"],
-        epochs_meta=epochs,
-        target_slug=slug,
-    )
-    manifest["default_spectrum_url"] = f"/presets/{slug}/spectrum.json"
-
-    if live_catalogs:
-        try:
-            live_overlays = asyncio.run(
-                _fetch_live_catalog_overlays(
-                    slug=slug,
-                    meta=meta,
-                    manifest=manifest,
-                    cache=cache,
-                    timeout=timeout,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log(f"{slug}: live catalog ingestion failed ({type(exc).__name__}: {exc})")
-            live_overlays = None
-        if live_overlays is not None:
-            manifest = merge_pipeline_overlays(
-                manifest,
-                live_overlays,
-                prefer_pipeline_when_uncached=False,
-            )
-
-    spectrum = live_spectrum or build_spectrum_payload(
-        ra=meta["ra"],
-        dec=meta["dec"],
-        source_label=meta["name"],
-        slug=slug,
-    )
-    return PresetBundle(
-        slug=slug,
-        manifest=manifest,
-        spectrum=spectrum,
-        frames=frames,
-        source="live",
-    )
-
-
-def _validate_bundle(bundle: PresetBundle) -> None:
-    """Validate every JSON contract and binary byte length before writing."""
-    validate_sky_patch_manifest(bundle.manifest)
-    validate_spectrum_payload(bundle.spectrum)
-
-    epochs = bundle.manifest["epochs"]
-    if len(epochs) < 2:
-        raise ValueError(
-            f"{bundle.slug}: expected at least 2 epochs, found {len(epochs)}"
-        )
-    epoch_ids = {str(epoch["epoch_id"]) for epoch in epochs}
-    known_objects = bundle.manifest["catalog_overlays"].get("known_objects", [])
-    if not known_objects:
-        raise ValueError(f"{bundle.slug}: catalog_overlays.known_objects is empty")
-    for obj in known_objects:
-        position_ids = {
-            str(pos.get("epoch_id")) for pos in obj.get("epoch_positions", [])
-        }
-        if not epoch_ids.issubset(position_ids):
-            raise ValueError(
-                f"{bundle.slug}: {obj.get('object_id')} is missing epoch positions "
-                f"for {sorted(epoch_ids - position_ids)}"
-            )
-
-    for filename, raw in bundle.frames.items():
-        if filename.endswith("_flags.bin"):
-            validate_flags_binary_buffer(raw)
-        else:
-            precision = "float32"
-            for epoch in epochs:
-                if filename == epoch["detectors_data_url"].rsplit("/", 1)[-1]:
-                    precision = str(epoch.get("binary_dtype", "float32"))
-                    break
-            validate_detector_binary_buffer(raw, precision=precision)
-
-    for epoch in epochs:
-        for url_key in ("detectors_data_url", "flags_mask_url"):
-            filename = str(epoch[url_key]).rsplit("/", 1)[-1]
-            if filename not in bundle.frames:
-                raise ValueError(
-                    f"{bundle.slug}: manifest references missing frame {filename}"
-                )
-
-
-def _clean_generated_files(target_dir: Path) -> None:
-    for pattern in GENERATED_BINARY_PATTERNS:
-        for path in target_dir.glob(pattern):
-            if path.is_file():
-                path.unlink()
-
-
-def _write_bundle(bundle: PresetBundle, output_dir: Path) -> None:
-    target_dir = output_dir / bundle.slug
-    target_dir.mkdir(parents=True, exist_ok=True)
-    _clean_generated_files(target_dir)
-
-    for filename, raw in bundle.frames.items():
-        (target_dir / filename).write_bytes(raw)
-    (target_dir / "manifest.json").write_text(
-        json.dumps(bundle.manifest, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (target_dir / "spectrum.json").write_text(
-        json.dumps(bundle.spectrum, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _write_global_known_objects_index(
-    output_dir: Path,
-    manifests: dict[str, dict[str, Any]],
-) -> None:
-    index: list[dict[str, Any]] = []
-    for slug, manifest in manifests.items():
-        meta = SHOWCASE_TARGETS[slug]
-        for obj in manifest["catalog_overlays"].get("known_objects", []):
-            entry = copy.deepcopy(obj)
-            entry["target_slug"] = slug
-            entry["target_name"] = meta["name"]
-            entry["constellation"] = meta["constellation"]
-            entry["patch_ra"] = meta["ra"]
-            entry["patch_dec"] = meta["dec"]
-            index.append(entry)
-    index = extend_global_known_objects_index(index)
-    (output_dir / "global_known_objects.json").write_text(
-        json.dumps(index, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    _log(f"Wrote global known-object index with {len(index)} entries")
-
-
-def _validate_written_presets(output_dir: Path, slugs: list[str]) -> None:
-    for slug in slugs:
-        target_dir = output_dir / slug
-        manifest_path = target_dir / "manifest.json"
-        spectrum_path = target_dir / "spectrum.json"
-        if not manifest_path.is_file() or not spectrum_path.is_file():
-            raise FileNotFoundError(
-                f"{slug}: manifest.json or spectrum.json is missing"
-            )
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        spectrum = json.loads(spectrum_path.read_text(encoding="utf-8"))
-        validate_sky_patch_manifest(manifest)
-        validate_spectrum_payload(spectrum)
-
-        frames: dict[str, bytes] = {}
-        for epoch in manifest["epochs"]:
-            for url_key in ("detectors_data_url", "flags_mask_url"):
-                filename = str(epoch[url_key]).rsplit("/", 1)[-1]
-                path = target_dir / filename
-                if not path.is_file():
-                    raise FileNotFoundError(f"{slug}: missing binary frame {filename}")
-                frames[filename] = path.read_bytes()
-        _validate_bundle(
-            PresetBundle(
-                slug=slug,
-                manifest=manifest,
-                spectrum=spectrum,
-                frames=frames,
-                source="written",
-            )
-        )
-
-
 def _parse_targets(raw_targets: str | None) -> list[str]:
+    """Parse and validate a comma-separated list of showcase slugs."""
     if not raw_targets:
         return list(SHOWCASE_TARGETS)
     slugs = [slug.strip() for slug in raw_targets.split(",") if slug.strip()]
@@ -639,7 +408,20 @@ def build_presets(
     targets: list[str] | None = None,
     live_catalogs: bool = True,
 ) -> list[str]:
-    """Build every requested preset bundle and return the generated slugs."""
+    """Build every requested preset bundle and return the generated slugs.
+
+    Args:
+        output_dir: Root directory where per-target preset directories are written.
+        fallback_synthetic: When ``True``, skip IRSA probing and generate
+            deterministic synthetic bundles directly.
+        timeout: Per-request archive timeout in seconds.
+        targets: Optional subset of showcase slugs (defaults to all targets).
+        live_catalogs: Whether to augment live image frames with live catalog
+            overlays from SIMBAD, Gaia DR3, JPL Horizons, and IRSA MOST.
+
+    Returns:
+        List of generated and validated showcase target slugs.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     slugs = targets or list(SHOWCASE_TARGETS)
     live_enabled = not fallback_synthetic and _probe_irsa(timeout)
@@ -652,13 +434,9 @@ def build_presets(
         _log("IRSA unreachable/disabled; using deterministic synthetic fallback")
 
     if not live_enabled:
-        for slug in SHOWCASE_TARGETS:
-            _clean_generated_files(output_dir / slug)
-        generated = generate_all_presets(output_root=output_dir)
-        requested = [slug for slug in slugs if slug in generated]
-        _validate_written_presets(output_dir, requested)
-        _log(f"Built and validated {len(requested)} preset bundle(s)")
-        return requested
+        generated = generate_all_synthetic_presets(output_root=output_dir, slugs=slugs)
+        _log(f"Built and validated {len(generated)} preset bundle(s)")
+        return generated
 
     manifests: dict[str, dict[str, Any]] = {}
     built: list[str] = []
@@ -675,35 +453,64 @@ def build_presets(
                     timeout=timeout,
                 )
                 if live_frames is None:
-                    bundle = _build_synthetic_bundle(slug, meta)
+                    bundle = build_synthetic_preset_bundle(slug, meta)
                 else:
                     frames, epochs, summary, live_spectrum = live_frames
-                    bundle = _build_live_bundle(
+                    bundle = build_live_preset_bundle(
                         slug=slug,
                         meta=meta,
                         frames=frames,
                         epochs=epochs,
                         summary=summary,
-                        cache=cache,
-                        timeout=timeout,
-                        live_catalogs=live_catalogs,
                         live_spectrum=live_spectrum,
                     )
-                _validate_bundle(bundle)
-                _write_bundle(bundle, output_dir)
-                _validate_written_presets(output_dir, [slug])
+                    if live_catalogs:
+                        try:
+                            live_overlays = asyncio.run(
+                                _fetch_live_catalog_overlays(
+                                    slug=slug,
+                                    meta=meta,
+                                    ra=float(meta["ra"]),
+                                    dec=float(meta["dec"]),
+                                    fov_arcmin=DEFAULT_FOV_ARCMIN,
+                                    wcs=bundle.manifest["wcs"],
+                                    epochs_meta=epochs,
+                                    cache=cache,
+                                    timeout=timeout,
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            _log(
+                                f"{slug}: live catalog ingestion failed "
+                                f"({type(exc).__name__}: {exc})"
+                            )
+                            live_overlays = None
+                        if live_overlays is not None:
+                            bundle.manifest = merge_pipeline_overlays(
+                                bundle.manifest,
+                                live_overlays,
+                                prefer_pipeline_when_uncached=False,
+                            )
+                validate_preset_bundle(bundle)
+                write_preset_bundle(bundle, output_dir)
+                validate_written_presets(output_dir, [slug])
                 manifests[slug] = bundle.manifest
                 built.append(slug)
                 _log(f"{slug}: wrote validated {bundle.source} preset")
         finally:
             cache.close()
 
-    _write_global_known_objects_index(output_dir, manifests)
+    index = write_global_known_objects_index(
+        output_dir,
+        manifests if set(manifests) == set(SHOWCASE_TARGETS) else None,
+    )
+    _log(f"Wrote global known-object index with {len(index)} entries")
     _log(f"Built and validated {len(built)} preset bundle(s)")
     return built
 
 
 def main() -> int:
+    """CLI entrypoint for building static showcase presets."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--fallback-synthetic",

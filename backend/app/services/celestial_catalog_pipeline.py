@@ -13,6 +13,8 @@ import asyncio
 import math
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -171,6 +173,31 @@ class AutomatedCelestialPipeline:
         self.http_client = http_client
         self.catalog_ttl_seconds = catalog_ttl_seconds
 
+    @asynccontextmanager
+    async def _http_client_scope(
+        self,
+        client_override: httpx.AsyncClient | None = None,
+    ) -> AsyncIterator[httpx.AsyncClient]:
+        """Yield an injected ``httpx.AsyncClient`` or a short-lived fallback client.
+
+        Args:
+            client_override: Optional caller-supplied client taking precedence
+                over ``self.http_client``.
+
+        Yields:
+            Active :class:`httpx.AsyncClient` instance; transient clients are
+            closed automatically on exit.
+        """
+        active = client_override or self.http_client
+        if active is not None:
+            yield active
+            return
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(12.0, connect=5.0),
+            follow_redirects=True,
+        ) as transient_client:
+            yield transient_client
+
     def _read_cached_region_sync(
         self,
         source: str,
@@ -196,8 +223,22 @@ class AutomatedCelestialPipeline:
         dec_deg: float,
         radius_deg: float,
         allow_live: bool = True,
+        client: httpx.AsyncClient | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """Resolve a catalog region cache-first, falling back to live fetch and stale rows."""
+        """Resolve a catalog region cache-first, falling back to live fetch and stale rows.
+
+        Args:
+            source: Catalog source key (e.g. ``"simbad"`` or ``"gaia_dr3"``).
+            fetcher: Async catalog query coroutine matching ``fetch_simbad_objects``.
+            ra_deg: Cone-search center Right Ascension in degrees.
+            dec_deg: Cone-search center Declination in degrees.
+            radius_deg: Cone-search radius in degrees.
+            allow_live: Whether live upstream queries are permitted on cache miss.
+            client: Optional shared :class:`httpx.AsyncClient` override.
+
+        Returns:
+            Tuple of ``(records, status_tag)``.
+        """
         hit = self._read_cached_region_sync(source, ra_deg, dec_deg, radius_deg, allow_stale=False)
         if hit is not None:
             return hit
@@ -208,21 +249,22 @@ class AutomatedCelestialPipeline:
             return stale if stale is not None else ([], "cache_only")
 
         t0 = time.perf_counter()
-        try:
-            records, provider = await fetcher(
-                ra_deg=ra_deg,
-                dec_deg=dec_deg,
-                radius_deg=radius_deg,
-                client=self.http_client,
-                parallel_mirrors=True,
-            )
-        except TypeError:
-            records, provider = await fetcher(
-                ra_deg=ra_deg,
-                dec_deg=dec_deg,
-                radius_deg=radius_deg,
-                client=self.http_client,
-            )
+        async with self._http_client_scope(client) as active_client:
+            try:
+                records, provider = await fetcher(
+                    ra_deg=ra_deg,
+                    dec_deg=dec_deg,
+                    radius_deg=radius_deg,
+                    client=active_client,
+                    parallel_mirrors=True,
+                )
+            except TypeError:
+                records, provider = await fetcher(
+                    ra_deg=ra_deg,
+                    dec_deg=dec_deg,
+                    radius_deg=radius_deg,
+                    client=active_client,
+                )
         _logger.info(
             "Catalog %s query at (%.4f, %.4f) returned %d row(s) via %s in %.2fs",
             source,
@@ -269,16 +311,17 @@ class AutomatedCelestialPipeline:
             return cached
         start_str = (now_dt.date() - timedelta(days=3)).isoformat()
         stop_str = (now_dt.date() + timedelta(days=3)).isoformat()
-        points = await fetch_horizons_ephemeris(
-            naif_cmd=body_spec["cmd"],
-            naif_id=body_spec["naif_id"],
-            body_name=body_spec["name"],
-            body_class=body_spec["body_class"],
-            start_date=start_str,
-            stop_date=stop_str,
-            step_size="1d",
-            client=self.http_client,
-        )
+        async with self._http_client_scope() as active_client:
+            points = await fetch_horizons_ephemeris(
+                naif_cmd=body_spec["cmd"],
+                naif_id=body_spec["naif_id"],
+                body_name=body_spec["name"],
+                body_class=body_spec["body_class"],
+                start_date=start_str,
+                stop_date=stop_str,
+                step_size="1d",
+                client=active_client,
+            )
         if not points:
             return None
         self.cache.upsert_ephemeris_points(points)
@@ -298,10 +341,28 @@ class AutomatedCelestialPipeline:
         dec_deg: float,
         radius_deg: float,
         allow_live: bool = True,
+        client: httpx.AsyncClient | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """Fetch cached or live SIMBAD objects within a cone-search region."""
+        """Fetch cached or live SIMBAD objects within a cone-search region.
+
+        Args:
+            ra_deg: Cone-search center Right Ascension in degrees.
+            dec_deg: Cone-search center Declination in degrees.
+            radius_deg: Cone-search radius in degrees.
+            allow_live: Whether live upstream SIMBAD TAP queries are permitted.
+            client: Optional shared :class:`httpx.AsyncClient` override.
+
+        Returns:
+            Tuple of ``(simbad_records, status_tag)``.
+        """
         return await self._get_region(
-            "simbad", fetch_simbad_objects, ra_deg, dec_deg, radius_deg, allow_live=allow_live
+            "simbad",
+            fetch_simbad_objects,
+            ra_deg,
+            dec_deg,
+            radius_deg,
+            allow_live=allow_live,
+            client=client,
         )
 
     async def get_gaia_region(
@@ -310,10 +371,28 @@ class AutomatedCelestialPipeline:
         dec_deg: float,
         radius_deg: float,
         allow_live: bool = True,
+        client: httpx.AsyncClient | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
-        """Fetch cached or live Gaia DR3 sources within a cone-search region."""
+        """Fetch cached or live Gaia DR3 sources within a cone-search region.
+
+        Args:
+            ra_deg: Cone-search center Right Ascension in degrees.
+            dec_deg: Cone-search center Declination in degrees.
+            radius_deg: Cone-search radius in degrees.
+            allow_live: Whether live upstream Gaia DR3 TAP/VizieR queries are permitted.
+            client: Optional shared :class:`httpx.AsyncClient` override.
+
+        Returns:
+            Tuple of ``(gaia_records, status_tag)``.
+        """
         return await self._get_region(
-            "gaia_dr3", fetch_gaia_dr3_objects, ra_deg, dec_deg, radius_deg, allow_live=allow_live
+            "gaia_dr3",
+            fetch_gaia_dr3_objects,
+            ra_deg,
+            dec_deg,
+            radius_deg,
+            allow_live=allow_live,
+            client=client,
         )
 
     @staticmethod
@@ -392,11 +471,29 @@ class AutomatedCelestialPipeline:
             ``most_solar_system``, and ``source_status``.
         """
         radius_deg = self.fov_to_radius_deg(fov_arcmin)
-
-        (simbad_rows, simbad_status), (gaia_rows, gaia_status) = await asyncio.gather(
-            self.get_simbad_region(ra_deg, dec_deg, radius_deg, allow_live=allow_live),
-            self.get_gaia_region(ra_deg, dec_deg, radius_deg, allow_live=allow_live),
+        needs_transient_client = (
+            allow_live
+            and self.http_client is None
+            and (
+                self._read_cached_region_sync("simbad", ra_deg, dec_deg, radius_deg) is None
+                or self._read_cached_region_sync("gaia_dr3", ra_deg, dec_deg, radius_deg) is None
+            )
         )
+        if needs_transient_client:
+            async with self._http_client_scope() as active_client:
+                (simbad_rows, simbad_status), (gaia_rows, gaia_status) = await asyncio.gather(
+                    self.get_simbad_region(
+                        ra_deg, dec_deg, radius_deg, allow_live=True, client=active_client
+                    ),
+                    self.get_gaia_region(
+                        ra_deg, dec_deg, radius_deg, allow_live=True, client=active_client
+                    ),
+                )
+        else:
+            (simbad_rows, simbad_status), (gaia_rows, gaia_status) = await asyncio.gather(
+                self.get_simbad_region(ra_deg, dec_deg, radius_deg, allow_live=allow_live),
+                self.get_gaia_region(ra_deg, dec_deg, radius_deg, allow_live=allow_live),
+            )
         return self.assemble_patch_objects(
             ra_deg=ra_deg,
             dec_deg=dec_deg,

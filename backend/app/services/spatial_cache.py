@@ -288,7 +288,7 @@ class SpatialSqliteCache:
             return json.loads(row[json_column])
 
     def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
-        """Fetch a cached sky-patch manifest and mark it as a cache hit.
+        """Fetch a cached sky-patch manifest, rehydrating deduplicated catalog overlays.
 
         Args:
             grid_key: Quantized spatial grid identifier.
@@ -296,10 +296,24 @@ class SpatialSqliteCache:
         Returns:
             Manifest dictionary with ``query.cached = True``, or ``None``.
         """
-        manifest = self._get_json_row("sky_patches", "manifest_json", "grid_key", grid_key)
-        if manifest is not None:
+        now = time.time()
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT manifest_json, catalogs_json FROM sky_patches WHERE grid_key = ?",
+                (grid_key,),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
+                (now, grid_key),
+            )
+            manifest: dict[str, Any] = json.loads(row["manifest_json"])
+            if "catalog_overlays" not in manifest:
+                catalogs_payload = json.loads(row["catalogs_json"])
+                manifest["catalog_overlays"] = catalogs_payload["catalog_overlays"]
             manifest["query"]["cached"] = True
-        return manifest
+            return manifest
 
     def get_catalogs(self, grid_key: str) -> dict[str, Any] | None:
         """Fetch cached catalog overlays for a sky patch and mark as cached.
@@ -359,13 +373,14 @@ class SpatialSqliteCache:
             frames: Mapping of frame filename to raw little-endian bytes.
         """
         now = time.time()
-        manifest_str = json.dumps(manifest)
+        slim_manifest = {key: value for key, value in manifest.items() if key != "catalog_overlays"}
+        manifest_str = json.dumps(slim_manifest, separators=(",", ":"))
         catalogs_payload = {
             "query": manifest["query"],
             "wcs": manifest["wcs"],
             "catalog_overlays": manifest["catalog_overlays"],
         }
-        catalogs_str = json.dumps(catalogs_payload)
+        catalogs_str = json.dumps(catalogs_payload, separators=(",", ":"))
 
         frame_rows: list[tuple[str, str, bytes, int]] = []
         total_bytes = len(manifest_str.encode("utf-8")) + len(catalogs_str.encode("utf-8"))
