@@ -1,7 +1,17 @@
-import { wrapRaDeg } from './observatoryMath';
+import { wrapRaDeg } from './observatoryMath.ts';
 
 const ALADIN_MODULE_URL = 'https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/aladin.js';
 const ALADIN_LOAD_TIMEOUT_MS = 12000;
+
+export interface AladinViewHandle {
+  redrawClbk?: () => void;
+  moving?: boolean;
+  needRedraw?: boolean;
+  wasm?: {
+    isRendering?(): boolean;
+    isInerting?(): boolean;
+  };
+}
 
 export interface AladinInstance {
   gotoRaDec(ra: number, dec: number): void;
@@ -13,6 +23,160 @@ export interface AladinInstance {
   pix2world?(x: number, y: number): [number, number] | null;
   world2pix?(ra: number, dec: number): [number, number] | null;
   on?(event: string, handler: (...args: unknown[]) => void): void;
+  view?: AladinViewHandle;
+}
+
+export interface AladinIdleThrottler {
+  /** Mark the globe active and immediately resume 60 FPS rendering if throttled. */
+  wake: () => void;
+  /** Pause (0 FPS) when obscured by a modal or hidden tab; resume when unpaused. */
+  setPaused: (paused: boolean) => void;
+  /** Permanently halt Aladin's internal requestAnimationFrame loop on unmount. */
+  destroy: () => void;
+}
+
+export interface AladinThrottlerOptions {
+  /** Low-power keepalive interval (ms) once Aladin reports idle & tiles finished. */
+  idleIntervalMs?: number;
+  /** Number of consecutive quiet frames before dropping from 60 FPS to idle. */
+  quietFramesBeforeIdle?: number;
+  scheduleFrame?: (cb: () => void) => void;
+  scheduleTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  cancelTimer?: (id: ReturnType<typeof setTimeout>) => void;
+}
+
+/**
+ * Wrap Aladin Lite v3's unconditional 60 FPS `view.redrawClbk` loop with an
+ * event- and render-state-driven throttler and clean unmount teardown.
+ *
+ * Keeps native 60 FPS whenever the user interacts or Aladin's WASM engine reports
+ * active camera motion, inertia, overlay redraws, or HiPS tile rendering
+ * (`view.wasm.isRendering()`). Drops immediately to a lightweight keepalive once
+ * Aladin reports quiet frames (all HiPS tiles finished streaming), pauses to 0 FPS
+ * while the Blinker modal is open or the tab is hidden, and halts cleanly on unmount.
+ */
+export function attachAladinIdleThrottler(
+  instance: AladinInstance,
+  options: AladinThrottlerOptions = {},
+): AladinIdleThrottler {
+  const view = instance.view;
+  if (!view || typeof view.redrawClbk !== 'function') {
+    return {
+      wake: () => {},
+      setPaused: () => {},
+      destroy: () => {},
+    };
+  }
+
+  const idleIntervalMs = options.idleIntervalMs ?? 500;
+  const quietFramesBeforeIdle = options.quietFramesBeforeIdle ?? 2;
+  const scheduleFrame =
+    options.scheduleFrame ??
+    ((cb: () => void) => {
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(cb);
+      } else {
+        setTimeout(cb, 16);
+      }
+    });
+  const scheduleTimer =
+    options.scheduleTimer ?? ((cb: () => void, ms: number) => setTimeout(cb, ms));
+  const cancelTimer =
+    options.cancelTimer ?? ((id: ReturnType<typeof setTimeout>) => clearTimeout(id));
+
+  const origRedraw = view.redrawClbk;
+  let stopped = false;
+  let paused = false;
+  let waitingResume = false;
+  let woke = true;
+  let quietFrames = 0;
+  let idleTimerId: ReturnType<typeof setTimeout> | null = null;
+
+  const isViewBusy = (): boolean =>
+    Boolean(
+      view.moving || view.needRedraw || view.wasm?.isRendering?.() || view.wasm?.isInerting?.(),
+    );
+
+  const throttledRedraw = () => {
+    if (stopped) return;
+    if (paused) {
+      waitingResume = true;
+      return;
+    }
+
+    if (woke || isViewBusy()) {
+      woke = false;
+      quietFrames = 0;
+      origRedraw();
+      return;
+    }
+
+    quietFrames += 1;
+    if (quietFrames < quietFramesBeforeIdle) {
+      origRedraw();
+      return;
+    }
+
+    if (idleTimerId === null) {
+      idleTimerId = scheduleTimer(() => {
+        idleTimerId = null;
+        if (stopped) return;
+        if (paused) {
+          waitingResume = true;
+          return;
+        }
+        origRedraw();
+        if (isViewBusy()) {
+          quietFrames = 0;
+        }
+      }, idleIntervalMs);
+    }
+  };
+
+  view.redrawClbk = throttledRedraw;
+
+  return {
+    wake() {
+      if (stopped) return;
+      woke = true;
+      quietFrames = 0;
+      if (paused) return;
+      if (idleTimerId !== null) {
+        cancelTimer(idleTimerId);
+        idleTimerId = null;
+        scheduleFrame(throttledRedraw);
+      } else if (waitingResume) {
+        waitingResume = false;
+        scheduleFrame(throttledRedraw);
+      }
+    },
+    setPaused(nextPaused: boolean) {
+      if (stopped || paused === nextPaused) return;
+      paused = nextPaused;
+      if (paused) {
+        if (idleTimerId !== null) {
+          cancelTimer(idleTimerId);
+          idleTimerId = null;
+          waitingResume = true;
+        }
+      } else {
+        woke = true;
+        quietFrames = 0;
+        if (waitingResume) {
+          waitingResume = false;
+          scheduleFrame(throttledRedraw);
+        }
+      }
+    },
+    destroy() {
+      stopped = true;
+      if (idleTimerId !== null) {
+        cancelTimer(idleTimerId);
+        idleTimerId = null;
+      }
+      view.redrawClbk = () => {};
+    },
+  };
 }
 
 export interface AladinApi {

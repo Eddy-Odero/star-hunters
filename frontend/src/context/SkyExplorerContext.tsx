@@ -137,6 +137,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     objectHighlighterColors,
     loadPresetBundle,
     loadLiveCoordinates,
+    retryActivePatch,
   } = usePatchLoader({
     notificationsRef,
     onResetPatchDependents: () => {
@@ -507,6 +508,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isSpectrumLoading,
       selectPreset,
       navigateToCoordinates,
+      retryActivePatch,
       inspectPixelOrCoord,
       activeMissions,
       filteredEpochIndices,
@@ -550,6 +552,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       isSpectrumLoading,
       selectPreset,
       navigateToCoordinates,
+      retryActivePatch,
       inspectPixelOrCoord,
       activeMissions,
       filteredEpochIndices,

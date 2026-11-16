@@ -273,6 +273,15 @@
   user-select: none;
 }
 
+.blinker-canvas-frame:focus {
+  outline: none;
+}
+
+.blinker-canvas-frame:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 2px;
+}
+
 .blinker-pixel-canvas {
   width: 100%;
   height: 100%;
@@ -311,6 +320,32 @@
   border: 3px solid rgba(56, 189, 248, 0.22);
   border-top-color: var(--accent-cyan);
   animation: spinSlow 0.9s linear infinite;
+}
+
+.blinker-error-overlay {
+  background: rgba(15, 10, 14, 0.88);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  border-radius: 12px;
+}
+
+.blinker-error-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-danger);
+}
+
+.blinker-error-detail {
+  max-width: 340px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.blinker-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .blinker-objects-actions {

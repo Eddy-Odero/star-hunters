@@ -660,3 +660,108 @@ test('Phase 3 useObservatoryWarmup defers prewarm to requestIdleCallback/setTime
   });
   assert.equal(calledWhenAborted, false);
 });
+
+test('Live coordinate loading skips /api/v1/spectrum prefetch, surfaces FastAPI error details, and times out cleanly', async () => {
+  const manifest = readPresetManifest('wise_0855');
+  const liveManifest = {
+    ...manifest,
+    epochs: manifest.epochs.map((ep, idx) => ({
+      ...ep,
+      binary_dtype: 'float16',
+      detectors_data_url: `/api/v1/frames/live_grid/ep_${idx}_detectors.bin`,
+      flags_mask_url: `/api/v1/frames/live_grid/ep_${idx}_flags.bin`,
+    })),
+    default_spectrum_url: '/api/v1/spectrum?ra=131.4500&dec=-11.1000',
+  };
+
+  const float16Frame = new Uint16Array(6 * 256 * 256);
+  const flagsFrame = new Uint8Array(256 * 256);
+  const requestedUrls = [];
+
+  const mockLiveFetch = async (url) => {
+    requestedUrls.push(url);
+    if (url.startsWith('/api/v1/catalogs')) {
+      return new Response(
+        JSON.stringify({
+          grid_key: 'live_grid',
+          catalog_overlays: manifest.catalog_overlays,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (url.startsWith('/api/v1/sky-patch')) {
+      return new Response(JSON.stringify(liveManifest), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (url.includes('detectors.bin')) {
+      return new Response(float16Frame.buffer, {
+        status: 200,
+        headers: { 'X-Binary-Dtype': 'float16' },
+      });
+    }
+    if (url.includes('flags.bin')) {
+      return new Response(flagsFrame.buffer, { status: 200 });
+    }
+    throw new Error(`Unexpected URL fetched during live load: ${url}`);
+  };
+
+  let readyPayload = null;
+  await loadLiveCoordinatesFlow(131.45, -11.1, 5.0, {
+    cache: new ClientPatchCache(4),
+    fetchImpl: mockLiveFetch,
+    onReady: (res) => {
+      readyPayload = res;
+    },
+  });
+  assert.ok(readyPayload);
+  assert.equal(readyPayload.spectrum, null);
+  assert.equal(
+    requestedUrls.some((u) => u.includes('/api/v1/spectrum')),
+    false,
+    'Live coordinate load must not prefetch /api/v1/spectrum',
+  );
+
+  // FastAPI JSON error detail is surfaced directly
+  await assert.rejects(
+    () =>
+      loadLiveCoordinatesFlow(131.45, -11.1, 5.0, {
+        cache: new ClientPatchCache(4),
+        fetchImpl: async (url) => {
+          if (url.startsWith('/api/v1/sky-patch')) {
+            return new Response(JSON.stringify({ detail: 'IRSA archive unavailable' }), {
+              status: 503,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(null, { status: 503 });
+        },
+        onReady: () => {},
+      }),
+    /Failed to load sky patch \(503\): IRSA archive unavailable/,
+  );
+
+  // Client timeout rejects cleanly without hanging
+  await assert.rejects(
+    () =>
+      loadLiveCoordinatesFlow(131.45, -11.1, 5.0, {
+        cache: new ClientPatchCache(4),
+        timeouts: { catalogsMs: 25, patchMs: 25, frameMs: 25 },
+        fetchImpl: (_url, init) =>
+          new Promise((_, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => {
+                const err = new Error('Aborted');
+                err.name = 'AbortError';
+                reject(err);
+              },
+              { once: true },
+            );
+          }),
+        onReady: () => {},
+      }),
+    /timed out/i,
+  );
+});

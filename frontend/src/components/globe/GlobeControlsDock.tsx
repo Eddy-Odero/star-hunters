@@ -28,48 +28,48 @@ export const GlobeControlsDock: React.FC<GlobeControlsDockProps> = ({
     onPointerUp={(e) => e.stopPropagation()}
     onClick={(e) => e.stopPropagation()}
   >
-    <div className="globe-pan-cross" aria-label="Pan Sky Coordinates">
+    <div className="globe-pan-cross" aria-label="Pan Sky Coordinates (North-Up)">
       <span />
       <button
         type="button"
         className="globe-nav-btn"
-        aria-label="Pan North (Increase Declination)"
-        title="Pan North"
+        aria-label="Pan Up / North (Arrow Up or W)"
+        title="Pan Up / North (↑ or W; Shift for fine step)"
         data-testid="globe-pan-north"
         onClick={() => onPan('north')}
       >
-        N
+        ↑
       </button>
       <span />
       <button
         type="button"
         className="globe-nav-btn"
-        aria-label="Pan West (Decrease Right Ascension)"
-        title="Pan West"
-        data-testid="globe-pan-west"
-        onClick={() => onPan('west')}
-      >
-        W
-      </button>
-      <button
-        type="button"
-        className="globe-nav-btn"
-        aria-label="Pan South (Decrease Declination)"
-        title="Pan South"
-        data-testid="globe-pan-south"
-        onClick={() => onPan('south')}
-      >
-        S
-      </button>
-      <button
-        type="button"
-        className="globe-nav-btn"
-        aria-label="Pan East (Increase Right Ascension)"
-        title="Pan East"
+        aria-label="Pan Left / East (Arrow Left or A)"
+        title="Pan Left / East (← or A; Shift for fine step)"
         data-testid="globe-pan-east"
         onClick={() => onPan('east')}
       >
-        E
+        ←
+      </button>
+      <button
+        type="button"
+        className="globe-nav-btn"
+        aria-label="Pan Down / South (Arrow Down or S)"
+        title="Pan Down / South (↓ or S; Shift for fine step)"
+        data-testid="globe-pan-south"
+        onClick={() => onPan('south')}
+      >
+        ↓
+      </button>
+      <button
+        type="button"
+        className="globe-nav-btn"
+        aria-label="Pan Right / West (Arrow Right or D)"
+        title="Pan Right / West (→ or D; Shift for fine step)"
+        data-testid="globe-pan-west"
+        onClick={() => onPan('west')}
+      >
+        →
       </button>
     </div>
 
@@ -79,8 +79,8 @@ export const GlobeControlsDock: React.FC<GlobeControlsDockProps> = ({
       <button
         type="button"
         className="globe-nav-btn"
-        aria-label="Zoom In"
-        title="Zoom In"
+        aria-label="Zoom In (+ or =)"
+        title="Zoom In (+ / =)"
         data-testid="globe-zoom-in"
         onClick={() => onZoom(0.62)}
       >
@@ -89,8 +89,8 @@ export const GlobeControlsDock: React.FC<GlobeControlsDockProps> = ({
       <button
         type="button"
         className="globe-nav-btn"
-        aria-label="Zoom Out"
-        title="Zoom Out"
+        aria-label="Zoom Out (- or _)"
+        title="Zoom Out (- / _)"
         data-testid="globe-zoom-out"
         onClick={() => onZoom(1.48)}
       >
@@ -99,8 +99,8 @@ export const GlobeControlsDock: React.FC<GlobeControlsDockProps> = ({
       <button
         type="button"
         className="globe-nav-btn"
-        aria-label="Reset Sky Zoom"
-        title="Reset View (70 deg FoV)"
+        aria-label="Reset Sky Zoom (0)"
+        title="Reset View — 70° FoV (0)"
         data-testid="globe-zoom-reset"
         onClick={() => onZoom('reset')}
       >

@@ -502,6 +502,7 @@ export interface SkyExplorerContextValue {
   isSpectrumLoading: boolean;
   selectPreset: (slug: string) => void;
   navigateToCoordinates: (ra: number, dec: number, fovArcmin?: number) => void;
+  retryActivePatch?: () => void;
   inspectPixelOrCoord: (x: number, y: number, originEpochIndex?: number) => void;
   activeMissions?: MissionName[];
   filteredEpochIndices?: number[];

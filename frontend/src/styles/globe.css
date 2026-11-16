@@ -5,20 +5,25 @@
   z-index: 1;
 }
 
-.aladin-host {
+.globe-viewport-layer:focus {
+  outline: none;
+}
+
+.globe-viewport-layer:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: -2px;
+}
+
+.aladin-host,
+.aladin-host.aladin-container {
   position: relative;
   width: 100%;
   height: 100%;
   background: var(--sky-black);
 }
 
-.aladin-host > div,
-.aladin-host .aladin-container {
-  width: 100% !important;
-  height: 100% !important;
-}
-
 /* Defensive suppression of Aladin Lite overlapping chrome while keeping its logo clear in bottom-right */
+.aladin-host .aladin-widgets-toolbar,
 .aladin-host .aladin-zoomControl,
 .aladin-host .aladin-fov,
 .aladin-host .aladin-projection-control,
@@ -33,6 +38,17 @@
 .aladin-host .aladin-box.aladin-location,
 .aladin-host .aladin-popup-container {
   display: none !important;
+  pointer-events: none !important;
+}
+
+.aladin-host .aladin-logo-container {
+  width: auto !important;
+  height: auto !important;
+  right: 14px !important;
+  bottom: 12px !important;
+  left: auto !important;
+  top: auto !important;
+  z-index: 9 !important;
 }
 
 .aladin-host .aladin-logo,
@@ -196,5 +212,6 @@
   height: 22px;
   min-width: 22px;
   padding: 0;
-  font-size: 10px;
+  font-size: 13px;
+  line-height: 1;
 }

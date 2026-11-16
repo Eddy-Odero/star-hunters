@@ -192,6 +192,7 @@ export function clampGlobeFov(fovDeg: number): number {
  * @param dec - Current Declination in degrees.
  * @param fovDeg - Active FoV in degrees.
  * @param dir - Cardinal pan direction (`'north' | 'south' | 'east' | 'west'`).
+ * @param stepScale - Optional step multiplier (e.g. `0.35` for Shift fine panning).
  * @returns Wrapped and clamped `{ ra, dec }` coordinates.
  */
 export function stepPanCoordinates(
@@ -199,8 +200,9 @@ export function stepPanCoordinates(
   dec: number,
   fovDeg: number,
   dir: 'north' | 'south' | 'east' | 'west',
+  stepScale: number = 1.0,
 ): { ra: number; dec: number } {
-  const stepDeg = Math.max(0.05, Math.min(24.0, fovDeg * 0.22));
+  const stepDeg = Math.max(0.05, Math.min(24.0, fovDeg * 0.22)) * stepScale;
   const cosDec = Math.max(0.2, Math.cos((dec * Math.PI) / 180));
   if (dir === 'north') {
     return { ra, dec: Math.max(-89.9, Math.min(89.9, dec + stepDeg)) };
@@ -212,6 +214,57 @@ export function stepPanCoordinates(
     return { ra: wrapRaDeg(ra + stepDeg / cosDec), dec };
   }
   return { ra: wrapRaDeg(ra - stepDeg / cosDec), dec };
+}
+
+/** Keyboard action resolved for the focused Night-Sky Globe viewport. */
+export type GlobeKeyboardAction =
+  | { type: 'pan'; dir: 'north' | 'south' | 'east' | 'west'; fine: boolean }
+  | { type: 'zoom'; factor: number | 'reset' };
+
+/**
+ * Resolve a keyboard event into a globe pan/zoom/reset action under North-up
+ * celestial orientation (screen-left = East/+RA, screen-right = West/-RA).
+ *
+ * @param input - Keyboard event key and modifier flags.
+ * @returns Resolved {@link GlobeKeyboardAction}, or `null` for unbound/modified keys.
+ */
+export function resolveGlobeKeyboardAction(input: {
+  key: string;
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+}): GlobeKeyboardAction | null {
+  if (input.ctrlKey || input.metaKey || input.altKey) return null;
+  const fine = Boolean(input.shiftKey);
+  switch (input.key) {
+    case 'ArrowUp':
+    case 'w':
+    case 'W':
+      return { type: 'pan', dir: 'north', fine };
+    case 'ArrowDown':
+    case 's':
+    case 'S':
+      return { type: 'pan', dir: 'south', fine };
+    case 'ArrowLeft':
+    case 'a':
+    case 'A':
+      return { type: 'pan', dir: 'east', fine };
+    case 'ArrowRight':
+    case 'd':
+    case 'D':
+      return { type: 'pan', dir: 'west', fine };
+    case '+':
+    case '=':
+      return { type: 'zoom', factor: 0.72 };
+    case '-':
+    case '_':
+      return { type: 'zoom', factor: 1.38 };
+    case '0':
+      return { type: 'zoom', factor: 'reset' };
+    default:
+      return null;
+  }
 }
 
 /** Quantized `0.05°` sky-panel grid cell center around the globe camera. */

@@ -35,6 +35,8 @@ export interface SpectraPlotSvgProps {
   hoverIdx: number | null;
   /** Update callback when the pointer moves across channels or leaves the SVG. */
   onHoverIdxChange: (idx: number | null) => void;
+  /** Optional click callback to filter the Dim & Pop wavelength range to a molecular band. */
+  onSelectFeature?: (feature: MolecularFeature) => void;
 }
 
 /**
@@ -67,6 +69,7 @@ export const SpectraPlotSvg: React.FC<SpectraPlotSvgProps> = ({
   wavelengthRangeUm,
   hoverIdx,
   onHoverIdxChange,
+  onSelectFeature,
 }) => (
   <svg
     data-testid="spectra-plot-svg"
@@ -97,21 +100,34 @@ export const SpectraPlotSvg: React.FC<SpectraPlotSvgProps> = ({
     {features.map((feat) => {
       const x0 = plotGeometry.toX(feat.min_um);
       const x1 = plotGeometry.toX(feat.max_um);
+      const isActive =
+        Math.abs(wavelengthRangeUm[0] - feat.min_um) < 0.02 &&
+        Math.abs(wavelengthRangeUm[1] - feat.max_um) < 0.02;
       return (
-        <g key={feat.molecule}>
+        <g
+          key={feat.molecule}
+          style={onSelectFeature ? { cursor: 'pointer' } : undefined}
+          onClick={onSelectFeature ? () => onSelectFeature(feat) : undefined}
+        >
+          <title>
+            {isActive
+              ? `Click to reset wavelength filter (0.75–5.00 µm)`
+              : `Filter to ${feat.label || feat.molecule} (${feat.min_um.toFixed(2)}–${feat.max_um.toFixed(2)} µm)`}
+          </title>
           <rect
             x={x0}
             y={plotGeometry.padT}
             width={Math.max(2, x1 - x0)}
             height={plotGeometry.h - plotGeometry.padT - plotGeometry.padB}
-            fill="rgba(56, 189, 248, 0.08)"
+            fill={isActive ? 'rgba(56, 189, 248, 0.22)' : 'rgba(56, 189, 248, 0.08)'}
           />
           <text
             x={(x0 + x1) * 0.5}
             y={plotGeometry.padT + 10}
             textAnchor="middle"
-            fill="#7dd3fc"
+            fill={isActive ? '#e0f2fe' : '#7dd3fc'}
             fontSize={9}
+            fontWeight={isActive ? 700 : 400}
             fontFamily="JetBrains Mono, monospace"
           >
             {shortFormulaLabel(feat.molecule, feat.label || feat.molecule)}

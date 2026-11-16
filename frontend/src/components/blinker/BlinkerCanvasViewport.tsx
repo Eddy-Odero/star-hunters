@@ -56,8 +56,13 @@ interface BlinkerCanvasViewportProps {
   objectHighlighterColors: Readonly<Record<string, string>>;
   lockedCallout: CalloutRef | null;
   isCutoutLoading: boolean;
+  isCutoutError?: boolean;
   loadingMessage?: string;
+  errorMessage?: string;
   onSetViewportZoomPan: (zoom: number, panX: number, panY: number) => void;
+  onResetViewportZoomPan?: () => void;
+  onRetryLoad?: () => void;
+  onCloseModal?: () => void;
   onSetLockedCallout: (next: CalloutRef | null) => void;
   onSetHoverCallout: (next: CalloutRef | null) => void;
   onClickLoadingCanvas: () => void;
@@ -87,8 +92,13 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
   objectHighlighterColors,
   lockedCallout,
   isCutoutLoading,
+  isCutoutError = false,
   loadingMessage,
+  errorMessage,
   onSetViewportZoomPan,
+  onResetViewportZoomPan,
+  onRetryLoad,
+  onCloseModal,
   onSetLockedCallout,
   onSetHoverCallout,
   onClickLoadingCanvas,
@@ -110,6 +120,32 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
     startPanX: 0,
     startPanY: 0,
   });
+  const latestWheelZoomRef = useRef({
+    zoom: renderSettings.zoom,
+    panX: renderSettings.panX,
+    panY: renderSettings.panY,
+  });
+  useEffect(() => {
+    latestWheelZoomRef.current = {
+      zoom: renderSettings.zoom,
+      panX: renderSettings.panX,
+      panY: renderSettings.panY,
+    };
+  }, [renderSettings.panX, renderSettings.panY, renderSettings.zoom]);
+
+  useEffect(() => {
+    const el = canvasFrameRef.current;
+    if (!el) return undefined;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const { zoom, panX, panY } = latestWheelZoomRef.current;
+      const factor = e.deltaY < 0 ? 1.25 : 0.8;
+      const clamped = clampViewportPanZoom(zoom * factor, panX, panY);
+      onSetViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [canvasFrameRef, onSetViewportZoomPan]);
 
   // Kept strictly local to BlinkerCanvasViewport so hover movement never re-renders the sidebar.
   const [hoverFlagTooltip, setHoverFlagTooltip] = useState<HoverFlagTooltipState | null>(null);
@@ -260,6 +296,15 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    if ((e.target as HTMLElement | null)?.closest?.('button, a, input, [role="button"]')) return;
+    canvasFrameRef.current?.focus({ preventScroll: true });
+    if (e.currentTarget.setPointerCapture) {
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore capture errors in synthetic test environments
+      }
+    }
     panDragRef.current = {
       active: true,
       moved: false,
@@ -395,12 +440,20 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // Ignore release errors
+      }
+    }
     const drag = panDragRef.current;
     if (!drag.active) return;
     const wasMoved = drag.moved;
     panDragRef.current.active = false;
     if (wasMoved) return;
 
+    if (isCutoutError) return;
     if (isCutoutLoading) {
       onClickLoadingCanvas();
       return;
@@ -445,14 +498,50 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
     onClickToTrack(imgX, imgY, renderSettings.activeEpochIndex);
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+  const handleCanvasKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === '+' || e.key === '=') {
+      e.preventDefault();
+      const clamped = clampViewportPanZoom(
+        renderSettings.zoom * 1.25,
+        renderSettings.panX,
+        renderSettings.panY,
+      );
+      onSetViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
+      return;
+    }
+    if (e.key === '-' || e.key === '_') {
+      e.preventDefault();
+      const clamped = clampViewportPanZoom(
+        renderSettings.zoom * 0.8,
+        renderSettings.panX,
+        renderSettings.panY,
+      );
+      onSetViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
+      return;
+    }
+    if (e.key === '0') {
+      e.preventDefault();
+      if (onResetViewportZoomPan) {
+        onResetViewportZoomPan();
+      } else {
+        onSetViewportZoomPan(1.0, 0.0, 0.0);
+      }
+      return;
+    }
+    if (renderSettings.zoom <= 1.0) return;
+    const stepFrac = e.shiftKey ? 0.05 : 0.15;
+    const dxImg = viewBox.viewWidth * stepFrac;
+    const dyImg = viewBox.viewHeight * stepFrac;
+    let nextPanX = renderSettings.panX;
+    let nextPanY = renderSettings.panY;
+    if (e.key === 'ArrowLeft') nextPanX -= dxImg;
+    else if (e.key === 'ArrowRight') nextPanX += dxImg;
+    else if (e.key === 'ArrowUp') nextPanY -= dyImg;
+    else if (e.key === 'ArrowDown') nextPanY += dyImg;
+    else return;
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.25 : 0.8;
-    const clamped = clampViewportPanZoom(
-      renderSettings.zoom * factor,
-      renderSettings.panX,
-      renderSettings.panY,
-    );
+    const clamped = clampViewportPanZoom(renderSettings.zoom, nextPanX, nextPanY);
     onSetViewportZoomPan(clamped.zoom, clamped.panX, clamped.panY);
   };
 
@@ -466,9 +555,14 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
         ref={canvasFrameRef}
         className="blinker-canvas-frame"
         data-testid="blinker-canvas-frame"
+        tabIndex={0}
+        aria-label="Sky Patch Blinker Canvas (use + and - to zoom, 0 to reset, Arrow keys to pan when zoomed)"
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={() => {
+          panDragRef.current.active = false;
+        }}
         onPointerLeave={() => {
           panDragRef.current.active = false;
           lastPixelReadoutRef.current = null;
@@ -476,7 +570,7 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
           clearHoverTimer();
           onSetHoverCallout(null);
         }}
-        onWheel={handleWheel}
+        onKeyDown={handleCanvasKeyDown}
       >
         <canvas
           ref={visibleCanvasRef}
@@ -620,21 +714,58 @@ export const BlinkerCanvasViewport: React.FC<BlinkerCanvasViewportProps> = ({
           })}
         </svg>
 
-        {isCutoutLoading && (
+        {isCutoutError ? (
           <div
-            className="blinker-loading-throbber"
-            data-testid="blinker-loading-throbber"
-            role="status"
-            aria-live="polite"
+            className="blinker-loading-throbber blinker-error-overlay"
+            data-testid="blinker-error-overlay"
+            role="alert"
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
           >
-            <div className="blinker-spinner-ring" aria-hidden="true" />
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
-              {loadingMessage || 'Calibrating archival infrared passes...'}
+            <div className="blinker-error-title">Unable to load sky patch</div>
+            <div className="blinker-error-detail">
+              {errorMessage || 'Upstream observatory archives failed to respond.'}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              Sidebar controls and Known Objects remain interactive
+            <div className="blinker-error-actions">
+              {onRetryLoad && (
+                <button
+                  type="button"
+                  className="hud-btn-primary"
+                  data-testid="blinker-retry-btn"
+                  onClick={onRetryLoad}
+                >
+                  Retry
+                </button>
+              )}
+              {onCloseModal && (
+                <button
+                  type="button"
+                  className="hud-btn-secondary"
+                  data-testid="blinker-error-close-btn"
+                  onClick={onCloseModal}
+                >
+                  Close
+                </button>
+              )}
             </div>
           </div>
+        ) : (
+          isCutoutLoading && (
+            <div
+              className="blinker-loading-throbber"
+              data-testid="blinker-loading-throbber"
+              role="status"
+              aria-live="polite"
+            >
+              <div className="blinker-spinner-ring" aria-hidden="true" />
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-primary)' }}>
+                {loadingMessage || 'Calibrating archival infrared passes...'}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Sidebar controls and Known Objects remain interactive
+              </div>
+            </div>
+          )
         )}
       </div>
 
