@@ -7,7 +7,8 @@
 
 import worldCapitalCities from './world_capital_cities.json' with { type: 'json' };
 
-export type MissionName = 'SPHEREx' | 'WISE' | 'NEOSSat';
+export type MissionName =
+  'SPHEREx' | 'WISE' | 'SkyView' | '2MASS' | 'DSS2' | 'Horizons' | 'NEOSSat' | 'Simulated';
 export type BinaryDtype = 'float32' | 'float16';
 export type ComparisonMode = 'blink' | 'subtract' | 'coadd';
 export type ContrastStretch = 'asinh' | 'linear' | 'zscale';
@@ -143,6 +144,56 @@ export interface DataSourceSummary {
   uses_wise_fallback: boolean;
   baseline_days: number;
   status_note: string;
+  provenance_tier?: 'primary' | 'extension' | 'simulated';
+  survey_name?: string;
+}
+
+export interface ImageProvenanceBadge {
+  tier: 'primary' | 'extension' | 'simulated';
+  label: string;
+  shortLabel: string;
+}
+
+export function formatImageProvenanceBadge(
+  summary?: DataSourceSummary | null,
+): ImageProvenanceBadge {
+  if (!summary) {
+    return {
+      tier: 'primary',
+      label: 'SPHEREx Primary Archive',
+      shortLabel: 'SPHEREx (Primary)',
+    };
+  }
+  const tier =
+    summary.provenance_tier ??
+    (summary.primary_mission === 'Simulated'
+      ? 'simulated'
+      : summary.primary_mission === 'SPHEREx'
+        ? 'primary'
+        : 'extension');
+
+  if (tier === 'simulated' || summary.primary_mission === 'Simulated') {
+    return {
+      tier: 'simulated',
+      label: summary.survey_name || 'Simulated Multi-Band Baseline',
+      shortLabel: 'Simulated Baseline',
+    };
+  }
+
+  if (tier === 'primary' || summary.primary_mission === 'SPHEREx') {
+    return {
+      tier: 'primary',
+      label: summary.survey_name || 'SPHEREx Archival (Primary)',
+      shortLabel: 'SPHEREx (Primary)',
+    };
+  }
+
+  const label = summary.survey_name || `${summary.primary_mission} Archival (Extension)`;
+  return {
+    tier: 'extension',
+    label,
+    shortLabel: `${summary.primary_mission} (Extension)`,
+  };
 }
 
 export interface WcsHeader {

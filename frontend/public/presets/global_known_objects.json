@@ -1888,7 +1888,7 @@
   },
   {
     "object_id": "gaia:4472832130942575872",
-    "label": "Barnard's Star (GJ 699 \u2014 Fastest Proper Motion Star)",
+    "label": "Barnard's Star (GJ 699: Fastest Proper Motion Star)",
     "catalog": "gaia_dr3",
     "object_type": "high_pm_star",
     "ra": 269.45341,
@@ -9843,7 +9843,7 @@
   },
   {
     "object_id": "most:3I/ATLAS",
-    "label": "Comet 3I/ATLAS (C/2025 N1 \u2014 Interstellar Comet)",
+    "label": "Comet 3I/ATLAS (C/2025 N1: Interstellar Comet)",
     "catalog": "most",
     "object_type": "solar_system",
     "ra": 295.32137,
@@ -12396,7 +12396,7 @@
   },
   {
     "object_id": "wise:J104915.53-531906.1",
-    "label": "Luhman 16 AB (WISE J1049-5319 \u2014 Closest Brown Dwarf Binary)",
+    "label": "Luhman 16 AB (WISE J1049-5319: Closest Brown Dwarf Binary)",
     "catalog": "wise",
     "object_type": "brown_dwarf_candidate",
     "ra": 162.33038,
@@ -14616,7 +14616,7 @@
   },
   {
     "object_id": "gaia:3864972938605115520",
-    "label": "Wolf 359 (CN Leonis \u2014 Nearby M6.5V High-PM Flare Star)",
+    "label": "Wolf 359 (CN Leonis: Nearby M6.5V High-PM Flare Star)",
     "catalog": "gaia_dr3",
     "object_type": "high_pm_star",
     "ra": 164.12161,
@@ -15837,7 +15837,7 @@
   },
   {
     "object_id": "gaia:35227046884571776",
-    "label": "Teegarden's Star (SO J0253+1652 \u2014 Ultracool M7V Exoplanet Host)",
+    "label": "Teegarden's Star (SO J0253+1652: Ultracool M7V Exoplanet Host)",
     "catalog": "gaia_dr3",
     "object_type": "high_pm_star",
     "ra": 43.25486,
@@ -17687,7 +17687,7 @@
   },
   {
     "object_id": "wise:J094757.40+131643.5",
-    "label": "CW Leonis (IRC +10216 \u2014 Carbon-Rich AGB Dust Shell Star)",
+    "label": "CW Leonis (IRC +10216: Carbon-Rich AGB Dust Shell Star)",
     "catalog": "wise",
     "object_type": "variable_star",
     "ra": 146.9892,
@@ -18723,7 +18723,7 @@
   },
   {
     "object_id": "wise:J042159.43+193206.4",
-    "label": "T Tauri (HD 284419 \u2014 Prototype Young Stellar Object Triple System)",
+    "label": "T Tauri (HD 284419: Prototype Young Stellar Object Triple System)",
     "catalog": "wise",
     "object_type": "variable_star",
     "ra": 65.4976,

@@ -79,7 +79,7 @@
     "known_objects": [
       {
         "object_id": "most:3I/ATLAS",
-        "label": "Comet 3I/ATLAS (C/2025 N1 \u2014 Interstellar Comet)",
+        "label": "Comet 3I/ATLAS (C/2025 N1: Interstellar Comet)",
         "catalog": "most",
         "object_type": "solar_system",
         "ra": 295.32137,

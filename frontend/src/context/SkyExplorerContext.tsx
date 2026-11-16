@@ -37,6 +37,7 @@ import {
   toggleObjectId,
 } from '../utils/knownObjectSelection';
 import { BENCHMARK_TARGET_OPTIONS } from '../utils/observatoryMath';
+import { observatoryLogger } from '../utils/observatoryLogger';
 import { useOptionalNotifications } from './NotificationContext';
 
 const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
@@ -57,12 +58,25 @@ const INITIAL_RENDER_SETTINGS: ViewportRenderSettings = {
   panY: 0.0,
 };
 
-const ALL_MISSIONS: MissionName[] = ['SPHEREx', 'WISE', 'NEOSSat'];
+const ALL_MISSIONS: MissionName[] = [
+  'SPHEREx',
+  'WISE',
+  'NEOSSat',
+  'SkyView',
+  '2MASS',
+  'DSS2',
+  'Horizons',
+  'Simulated',
+];
 
 const SkyExplorerContext = createContext<SkyExplorerContextValue | null>(null);
 
 export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const notifications = useOptionalNotifications();
+  const notificationsRef = useRef(notifications);
+  useEffect(() => {
+    notificationsRef.current = notifications;
+  }, [notifications]);
 
   const [activePresetSlug, setActivePresetSlug] = useState<string | null>('wise_0855');
   const [coordinates, setCoordinates] = useState<{
@@ -134,16 +148,29 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     let cancelled = false;
 
     const wakeHealthAndGlobalCatalog = async () => {
-      // Wake scale-to-zero Fly.io backend quietly
-      fetch('/health').catch(() => undefined);
+      observatoryLogger.info('warmup', 'Waking backend /health and loading global object catalog');
+      fetch('/health')
+        .then((res) => {
+          observatoryLogger.info('warmup', 'Backend health check complete', { status: res.status });
+        })
+        .catch(() => {
+          observatoryLogger.warn(
+            'warmup',
+            'Backend health ping unreachable; operating offline/cached',
+          );
+        });
 
+      let baselineObjects: GlobalKnownObjectEntry[] = [];
       try {
         const res = await fetch('/presets/global_known_objects.json');
         if (res.ok) {
           const payload = (await res.json()) as GlobalKnownObjectEntry[];
           if (!cancelled && Array.isArray(payload) && payload.length > 0) {
+            baselineObjects = payload;
             setGlobalKnownObjects(payload);
-            return;
+            observatoryLogger.info('catalogs', 'Loaded preset global known objects', {
+              count: payload.length,
+            });
           }
         }
       } catch {
@@ -154,8 +181,20 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const apiRes = await fetch('/api/v1/catalogs/search?limit=200');
         if (apiRes.ok) {
           const apiData = (await apiRes.json()) as { results?: GlobalKnownObjectEntry[] };
-          if (!cancelled && Array.isArray(apiData.results)) {
-            setGlobalKnownObjects(apiData.results);
+          if (!cancelled && Array.isArray(apiData.results) && apiData.results.length > 0) {
+            setGlobalKnownObjects((prev) => {
+              const byId = new Map<string, GlobalKnownObjectEntry>();
+              for (const item of prev.length > 0 ? prev : baselineObjects) {
+                byId.set(item.object_id, item);
+              }
+              for (const liveItem of apiData.results ?? []) {
+                byId.set(liveItem.object_id, liveItem);
+              }
+              return Array.from(byId.values());
+            });
+            observatoryLogger.info('catalogs', 'Merged live global known objects from backend', {
+              count: apiData.results.length,
+            });
           }
         }
       } catch {
@@ -227,7 +266,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const epochA = manifest.epochs[renderSettings.passAIndex];
     const epochB = manifest.epochs[renderSettings.passBIndex];
     if (epochA && epochB && epochA.mission !== epochB.mission) {
-      notifications?.pushWarning({
+      notificationsRef.current?.pushWarning({
         id: 'cross-mission-subtract',
         title: `Cross-mission subtraction (${epochA.mission} vs ${epochB.mission})`,
         detail: 'Subtraction requires two calibrated passes from the same mission instrument.',
@@ -237,29 +276,25 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [
     isBlinkerModalOpen,
     manifest,
-    notifications,
     renderSettings.mode,
     renderSettings.passAIndex,
     renderSettings.passBIndex,
   ]);
 
-  const toggleMissionFilter = useCallback(
-    (mission: MissionName) => {
-      setActiveMissions((prev) => {
-        const exists = prev.includes(mission);
-        if (exists && prev.length <= 1) {
-          notifications?.pushWarning({
-            id: 'mission-filter-empty',
-            title: 'At least one mission source must stay enabled',
-            level: 'warning',
-          });
-          return prev;
-        }
-        return exists ? prev.filter((m) => m !== mission) : [...prev, mission];
-      });
-    },
-    [notifications],
-  );
+  const toggleMissionFilter = useCallback((mission: MissionName) => {
+    setActiveMissions((prev) => {
+      const exists = prev.includes(mission);
+      if (exists && prev.length <= 1) {
+        notificationsRef.current?.pushWarning({
+          id: 'mission-filter-empty',
+          title: 'At least one mission source must stay enabled',
+          level: 'warning',
+        });
+        return prev;
+      }
+      return exists ? prev.filter((m) => m !== mission) : [...prev, mission];
+    });
+  }, []);
 
   const setViewportZoomPan = useCallback((zoom: number, panX: number, panY: number) => {
     const clamped = clampViewportPanZoom(zoom, panX, panY);
@@ -443,9 +478,15 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setTrackedTargets([]);
       setLastClickDiagnostic(null);
       setLoadingState({ stage: 'ready', fromClientCache: result.fromClientCache });
-      notifications?.finishAsyncTask('sky-patch-load');
+      notificationsRef.current?.finishAsyncTask('sky-patch-load');
+      observatoryLogger.info('patch', 'Sky patch ready for blinking', {
+        gridKey: result.manifest.query.grid_key,
+        mission: result.manifest.data_source_summary?.primary_mission,
+        epochs: result.manifest.epochs.length,
+        fromClientCache: result.fromClientCache,
+      });
     },
-    [notifications],
+    [],
   );
 
   const loadPresetBundle = useCallback(
@@ -454,9 +495,11 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
-      notifications?.startAsyncTask(
+      observatoryLogger.info('patch', 'Loading benchmark preset bundle', { slug });
+      notificationsRef.current?.startAsyncTask(
         'sky-patch-load',
-        `Loading ${slug.replace(/_/g, ' ')} patch...`,
+        'Loading target frames...',
+        'progress',
       );
 
       try {
@@ -467,11 +510,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           onReady: (result) => applyLoadedPatch(result, true),
         });
       } catch (err) {
-        notifications?.finishAsyncTask('sky-patch-load');
+        notificationsRef.current?.finishAsyncTask('sky-patch-load');
         if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : 'Unknown error loading preset';
+        observatoryLogger.error('patch', 'Preset bundle load failed', { slug, error: msg });
         setLoadingState({ stage: 'error', message: msg });
-        notifications?.pushWarning({
+        notificationsRef.current?.pushWarning({
           id: 'patch-load-error',
           title: 'Failed to load preset patch',
           detail: msg,
@@ -479,7 +523,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         });
       }
     },
-    [applyLoadedPatch, notifications],
+    [applyLoadedPatch],
   );
 
   const selectPreset = useCallback(
@@ -498,9 +542,11 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const controller = new AbortController();
       abortControllerRef.current = controller;
       setStageAKnownObjects(null);
-      notifications?.startAsyncTask(
+      observatoryLogger.info('patch', 'Loading live sky patch', { ra, dec, fovArcmin });
+      notificationsRef.current?.startAsyncTask(
         'sky-patch-load',
-        `Streaming cutouts at ${ra.toFixed(2)}°, ${dec >= 0 ? '+' : ''}${dec.toFixed(2)}°...`,
+        'Streaming epoch frames...',
+        'progress',
       );
 
       try {
@@ -510,24 +556,45 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           onStageChange: setLoadingState,
           onCatalogsReady: (catData: CatalogsResponse) => {
             const stageAObjects = catData.catalog_overlays.known_objects ?? [];
+            observatoryLogger.info('catalogs', 'Known objects loaded for patch', {
+              count: stageAObjects.length,
+              ra,
+              dec,
+            });
             setStageAKnownObjects(stageAObjects);
             setRenderSettings((prev) => ({
               ...prev,
               checkedObjectIds: getDefaultCheckedObjectIds(stageAObjects),
             }));
+            notificationsRef.current?.startAsyncTask(
+              'sky-patch-catalogs',
+              'Known objects loaded',
+              'success',
+              2600,
+            );
+            notificationsRef.current?.startAsyncTask(
+              'sky-patch-load',
+              'Streaming epoch frames...',
+              'progress',
+            );
             setLoadingState({
               stage: 'loading_cutouts',
-              message: 'Known objects loaded; streaming 3G-compressed epoch frames...',
+              message: 'Streaming epoch frames...',
             });
           },
           onReady: (result) => applyLoadedPatch(result, false),
         });
       } catch (err) {
-        notifications?.finishAsyncTask('sky-patch-load');
+        notificationsRef.current?.finishAsyncTask('sky-patch-load');
         if ((err as Error).name === 'AbortError' || controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : 'Unknown error loading sky patch';
+        observatoryLogger.error('patch', 'Live sky patch stream interrupted', {
+          ra,
+          dec,
+          error: msg,
+        });
         setLoadingState({ stage: 'error', message: msg });
-        notifications?.pushWarning({
+        notificationsRef.current?.pushWarning({
           id: 'patch-load-error',
           title: 'Sky patch stream interrupted',
           detail: msg,
@@ -535,7 +602,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         });
       }
     },
-    [applyLoadedPatch, notifications],
+    [applyLoadedPatch],
   );
 
   const navigateToCoordinates = useCallback(
@@ -566,11 +633,8 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setIsPlaying(false);
     setIsSpectraModalOpen(false);
     setIsBlinkerModalOpen(false);
-    // Pull back above the 0.5° patch-entry FoV threshold to avoid immediate re-triggering
-    if (skyFrustum.fovDeg < 0.65) {
-      requestGlobeFocus(coordinates.ra, coordinates.dec, 1.5);
-    }
-  }, [coordinates.dec, coordinates.ra, requestGlobeFocus, skyFrustum.fovDeg]);
+    observatoryLogger.info('blinker', 'Blinker modal closed');
+  }, []);
 
   const openSelectedSpectrum = useCallback(
     async (coords?: { ra: number; dec: number; label?: string }) => {
@@ -588,7 +652,15 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
 
       setIsSpectrumLoading(true);
-      notifications?.startAsyncTask('spectrum-fetch', 'Fetching 102-band SPHEREx spectrum...');
+      notificationsRef.current?.startAsyncTask(
+        'spectrum-fetch',
+        'Loading 102-band spectrum...',
+        'progress',
+      );
+      observatoryLogger.info('spectrum', 'Fetching 102-band spectrum', {
+        ra: targetRa,
+        dec: targetDec,
+      });
       try {
         const params = new URLSearchParams({
           ra: targetRa.toFixed(5),
@@ -602,13 +674,20 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
           const payload = (await res.json()) as SpectrumPayload;
           if (payload && Array.isArray(payload.channels) && payload.channels.length > 0) {
             setActiveSpectrum(payload);
+            observatoryLogger.info('spectrum', 'Loaded 102-band spectrum', {
+              channels: payload.channels.length,
+              label: payload.source_label,
+            });
             return;
           }
         }
         throw new Error(`Spectrum endpoint returned status ${res.status}`);
       } catch (err) {
+        observatoryLogger.warn('spectrum', 'Spectrum request failed', {
+          error: err instanceof Error ? err.message : 'unavailable',
+        });
         if (!activeSpectrum) {
-          notifications?.pushWarning({
+          notificationsRef.current?.pushWarning({
             id: 'spectrum-error',
             title: '102-band spectrum unavailable',
             detail:
@@ -620,10 +699,10 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }
       } finally {
         setIsSpectrumLoading(false);
-        notifications?.finishAsyncTask('spectrum-fetch');
+        notificationsRef.current?.finishAsyncTask('spectrum-fetch');
       }
     },
-    [activeSpectrum, coordinates.dec, coordinates.ra, notifications, selectedObject],
+    [activeSpectrum, coordinates.dec, coordinates.ra, selectedObject],
   );
 
   const closeSpectraModal = useCallback(() => {
@@ -669,7 +748,7 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
 
       if (result.status === 'no_body_found' || result.tracks.length === 0) {
-        notifications?.pushWarning({
+        notificationsRef.current?.pushWarning({
           id: 'no-body-clicked',
           title: 'No source detected at cursor',
           detail: result.message,
@@ -677,6 +756,12 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         });
         return;
       }
+
+      observatoryLogger.info('tracking', 'Tracked target(s) on canvas click', {
+        status: result.status,
+        tracksAdded: result.tracks.length,
+        labels: result.tracks.map((t) => t.matchedLabel || t.groupId),
+      });
 
       // Preserve the known object's assigned marker color when converting in-place to Square
       const colorMatchedTracks = result.tracks.map((track) => {
@@ -700,7 +785,6 @@ export const SkyExplorerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     [
       epochBuffers,
       manifest,
-      notifications,
       objectHighlighterColors,
       removeTrackedTarget,
       renderSettings.activeEpochIndex,

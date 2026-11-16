@@ -110,7 +110,7 @@ export const NotificationOverlay: React.FC = () => {
                   >
                     <span>
                       <strong style={{ color: 'var(--text-primary)' }}>{item.title}</strong>
-                      {item.detail ? ` — ${item.detail}` : ''}
+                      {item.detail ? `: ${item.detail}` : ''}
                     </span>
                     <button
                       type="button"
@@ -136,23 +136,48 @@ export const NotificationOverlay: React.FC = () => {
           aria-live="polite"
           data-testid="async-toast-stack"
         >
-          {asyncTasks.map((task) => (
-            <div key={task.id} className="async-toast-card">
-              <span style={{ color: 'var(--accent-cyan)', display: 'inline-flex' }}>
-                <SpinnerIcon size={14} />
-              </span>
-              <span>{task.label}</span>
-              <button
-                type="button"
-                className="hud-icon-btn"
-                style={{ width: 22, height: 22 }}
-                aria-label={`Close ${task.label} notification`}
-                onClick={() => finishAsyncTask(task.id)}
+          {asyncTasks.map((task) => {
+            const isSuccess = task.status === 'success';
+            return (
+              <div
+                key={task.id}
+                className="async-toast-card"
+                style={
+                  isSuccess
+                    ? { borderColor: 'rgba(16, 185, 129, 0.5)', color: '#d1fae5' }
+                    : undefined
+                }
               >
-                <CloseIcon size={12} />
-              </button>
-            </div>
-          ))}
+                {isSuccess ? (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      background: '#10b981',
+                      boxShadow: '0 0 8px rgba(16, 185, 129, 0.7)',
+                      flexShrink: 0,
+                    }}
+                  />
+                ) : (
+                  <span style={{ color: 'var(--accent-cyan)', display: 'inline-flex' }}>
+                    <SpinnerIcon size={14} />
+                  </span>
+                )}
+                <span>{task.label}</span>
+                <button
+                  type="button"
+                  className="hud-icon-btn"
+                  style={{ width: 22, height: 22 }}
+                  aria-label={`Close ${task.label} notification`}
+                  onClick={() => finishAsyncTask(task.id)}
+                >
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+            );
+          })}
 
           {tourPromptVisible && (
             <div

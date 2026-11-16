@@ -30,6 +30,10 @@ try:
 except ImportError:  # pragma: no cover
     TAPService = None  # type: ignore[assignment,misc]
 
+from .logging_config import get_logger
+
+logger = get_logger("spherex_ingest")
+
 
 # ---------------------------------------------------------
 # Configuration
@@ -47,7 +51,7 @@ SPHEREX_BANDPASSES = (
     "SPHEREx-D6",
 )
 
-DEFAULT_HTTP_TIMEOUT = 30.0
+DEFAULT_HTTP_TIMEOUT = 12.0
 DEFAULT_MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 
 
@@ -55,7 +59,7 @@ class TimeoutSession(requests.Session):
     """Requests session with bounded connection and response timeouts."""
 
     def request(self, method, url, **kwargs):
-        kwargs.setdefault("timeout", (10, 60))
+        kwargs.setdefault("timeout", (5, 12))
         return super().request(method, url, **kwargs)
 
 
@@ -315,6 +319,12 @@ def query_observations(
         raise SpherexIngestError("pyvo is required to query the IRSA TAP service.")
 
     try:
+        logger.info(
+            "Querying IRSA TAP for SPHEREx cutouts (ra=%.4f, dec=%.4f, fov_arcmin=%.2f)",
+            ra,
+            dec,
+            fov_arcmin,
+        )
         with TimeoutSession() as session:
             service = TAPService(
                 IRSA_TAP_URL,
@@ -350,9 +360,16 @@ def query_observations(
                 )
             )
 
+        logger.info(
+            "IRSA SPHEREx TAP returned %d observation(s) at ra=%.4f dec=%.4f",
+            len(observations),
+            ra,
+            dec,
+        )
         return observations
 
     except Exception as exc:
+        logger.warning("IRSA SPHEREx TAP query failed at ra=%.4f dec=%.4f: %s", ra, dec, exc)
         raise SpherexIngestError(f"IRSA TAP query failed: {exc}") from exc
 
 
@@ -1204,11 +1221,22 @@ def ingest_spherex_cutouts(
 
     if not observations:
         if not allow_synthetic_fallback:
+            logger.info(
+                "No live SPHEREx archival cutouts available at ra=%.4f dec=%.4f (%s)",
+                ra,
+                dec,
+                query_error or "zero observations",
+            )
             if query_error is not None:
                 raise SpherexIngestError(
                     f"IRSA is unreachable and no cached fixtures exist: {query_error}"
                 ) from query_error
             raise SpherexIngestError("No SPHEREx observations cover the requested position.")
+        logger.info(
+            "Falling back to SPHEREx local fixtures/synthetic cutouts at ra=%.4f dec=%.4f",
+            ra,
+            dec,
+        )
         return [
             _fallback_cutout(
                 ra=ra,
@@ -1238,7 +1266,13 @@ def ingest_spherex_cutouts(
                 uri=observation.uri,
                 source_name="irsa",
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Failed downloading SPHEREx cutout %s (%s): %s",
+                observation.bandpass,
+                observation.uri,
+                exc,
+            )
             if not allow_synthetic_fallback:
                 raise
             cutout = _fallback_cutout(
@@ -1251,6 +1285,13 @@ def ingest_spherex_cutouts(
             )
         cutouts.append(cutout)
 
+    logger.info(
+        "Ingested %d SPHEREx cutout(s) at ra=%.4f dec=%.4f (sources=%s)",
+        len(cutouts),
+        ra,
+        dec,
+        ",".join(sorted({c.source for c in cutouts})),
+    )
     return cutouts
 
 

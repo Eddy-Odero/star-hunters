@@ -7,8 +7,10 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { observatoryLogger } from '../utils/observatoryLogger';
 
 export type WarningLevel = 'warning' | 'error';
+export type AsyncToastStatus = 'progress' | 'success';
 
 export interface WarningAlert {
   id: string;
@@ -21,6 +23,7 @@ export interface WarningAlert {
 export interface AsyncTaskToast {
   id: string;
   label: string;
+  status?: AsyncToastStatus;
   startedAt: number;
 }
 
@@ -35,7 +38,12 @@ export interface NotificationContextValue {
   dismissWarning: (id: string) => void;
   clearWarnings: () => void;
   asyncTasks: AsyncTaskToast[];
-  startAsyncTask: (id: string, label: string) => void;
+  startAsyncTask: (
+    id: string,
+    label: string,
+    status?: AsyncToastStatus,
+    autoDismissMs?: number,
+  ) => void;
   finishAsyncTask: (id: string) => void;
   tourOpen: boolean;
   tourStepIndex: number;
@@ -66,6 +74,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   });
 
   const warningTimersRef = useRef<Map<string, number>>(new Map());
+  const asyncTimersRef = useRef<Map<string, number>>(new Map());
 
   const dismissWarning = useCallback((id: string) => {
     const existingTimer = warningTimersRef.current.get(id);
@@ -113,18 +122,42 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setAlerts([]);
   }, []);
 
-  const startAsyncTask = useCallback((id: string, label: string) => {
-    setAsyncTasks((prev) => {
-      const existing = prev.find((item) => item.id === id);
-      if (existing && existing.label === label) return prev;
-      const filtered = prev.filter((item) => item.id !== id);
-      return [...filtered, { id, label, startedAt: Date.now() }];
-    });
-  }, []);
-
   const finishAsyncTask = useCallback((id: string) => {
+    const existing = asyncTimersRef.current.get(id);
+    if (existing !== undefined) {
+      window.clearTimeout(existing);
+      asyncTimersRef.current.delete(id);
+    }
     setAsyncTasks((prev) => prev.filter((item) => item.id !== id));
   }, []);
+
+  const startAsyncTask = useCallback(
+    (id: string, label: string, status: AsyncToastStatus = 'progress', autoDismissMs?: number) => {
+      const existingTimer = asyncTimersRef.current.get(id);
+      if (existingTimer !== undefined) {
+        window.clearTimeout(existingTimer);
+        asyncTimersRef.current.delete(id);
+      }
+
+      setAsyncTasks((prev) => {
+        const existing = prev.find((item) => item.id === id);
+        if (existing && existing.label === label && (existing.status ?? 'progress') === status) {
+          return prev;
+        }
+        const filtered = prev.filter((item) => item.id !== id);
+        return [...filtered, { id, label, status, startedAt: Date.now() }];
+      });
+
+      if (typeof window !== 'undefined' && autoDismissMs && autoDismissMs > 0) {
+        const timerId = window.setTimeout(() => {
+          asyncTimersRef.current.delete(id);
+          setAsyncTasks((prev) => prev.filter((item) => item.id !== id));
+        }, autoDismissMs);
+        asyncTimersRef.current.set(id, timerId);
+      }
+    },
+    [],
+  );
 
   const dismissTourPrompt = useCallback(() => {
     setTourPromptVisible(false);
@@ -137,6 +170,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const startTour = useCallback(
     (stepIndex = 0) => {
+      observatoryLogger.info('tour', 'Guided tour opened', { stepIndex });
       setTourStepIndex(stepIndex);
       setTourOpen(true);
       dismissTourPrompt();
@@ -146,6 +180,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const closeTour = useCallback(
     (markSeen = true) => {
+      observatoryLogger.info('tour', 'Guided tour closed', { markSeen });
       setTourOpen(false);
       if (markSeen) {
         dismissTourPrompt();
@@ -156,11 +191,16 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   useEffect(() => {
     const timers = warningTimersRef.current;
+    const asyncTimers = asyncTimersRef.current;
     return () => {
       for (const timerId of timers.values()) {
         window.clearTimeout(timerId);
       }
       timers.clear();
+      for (const timerId of asyncTimers.values()) {
+        window.clearTimeout(timerId);
+      }
+      asyncTimers.clear();
     };
   }, []);
 

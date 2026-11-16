@@ -79,7 +79,7 @@
     "known_objects": [
       {
         "object_id": "gaia:4472832130942575872",
-        "label": "Barnard's Star (GJ 699 \u2014 Fastest Proper Motion Star)",
+        "label": "Barnard's Star (GJ 699: Fastest Proper Motion Star)",
         "catalog": "gaia_dr3",
         "object_type": "high_pm_star",
         "ra": 269.45341,

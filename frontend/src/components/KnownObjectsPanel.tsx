@@ -249,7 +249,7 @@ export const KnownObjectsPanel: React.FC = () => {
                 </option>
                 {BENCHMARK_TARGET_OPTIONS.map((b) => (
                   <option key={b.slug} value={b.slug}>
-                    {b.label} — {b.subtitle}
+                    {b.label} ({b.subtitle})
                   </option>
                 ))}
               </select>

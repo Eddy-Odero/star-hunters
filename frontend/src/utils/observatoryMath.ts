@@ -422,5 +422,5 @@ export function getMarkerShapeKind(
 
 export function formatRaDecCompact(ra: number, dec: number): string {
   const sign = dec >= 0 ? '+' : '';
-  return `${ra.toFixed(4)}°, ${sign}${dec.toFixed(4)}°`;
+  return `Right Ascension ${ra.toFixed(4)}°, Declination ${sign}${dec.toFixed(4)}°`;
 }

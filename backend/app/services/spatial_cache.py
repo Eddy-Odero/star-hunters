@@ -491,6 +491,44 @@ class SpatialSqliteCache:
             )
         return len(rows_to_insert)
 
+    def get_ephemeris_for_body(
+        self,
+        naif_id: str,
+        mjd: float,
+    ) -> dict[str, Any] | None:
+        """Return interpolated cached ephemeris for ``naif_id`` near ``mjd``, or ``None``."""
+        target_mjd = float(mjd)
+        buckets = (
+            mjd_to_date_bucket(target_mjd - 1.0),
+            mjd_to_date_bucket(target_mjd),
+            mjd_to_date_bucket(target_mjd + 1.0),
+        )
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT naif_id, body_name, body_class, date_bucket, mjd, ra, dec, vmag, source
+                FROM solar_system_ephemeris
+                WHERE naif_id = ?
+                  AND date_bucket IN (?, ?, ?)
+                ORDER BY mjd ASC
+                """,
+                (str(naif_id), *buckets),
+            ).fetchall()
+        if not rows:
+            return None
+        interp_ra, interp_dec, interp_vmag = self._interpolate_ephemeris_rows(rows, target_mjd)
+        first = rows[0]
+        return {
+            "naif_id": str(first["naif_id"]),
+            "body_name": str(first["body_name"]),
+            "body_class": str(first["body_class"]),
+            "mjd": target_mjd,
+            "ra": round(interp_ra, 6),
+            "dec": round(interp_dec, 6),
+            "vmag": round(interp_vmag, 3) if interp_vmag is not None else None,
+            "source": str(first["source"]),
+        }
+
     def query_ephemeris_in_fov(
         self,
         mjd: float,

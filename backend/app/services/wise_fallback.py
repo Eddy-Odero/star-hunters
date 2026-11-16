@@ -12,13 +12,19 @@ import csv
 import gzip
 import io
 import math
+import time
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
 import numpy as np
 import requests
+
+from app.services.logging_config import get_logger
+
+_logger = get_logger("wise_fallback")
 
 IRSA_INVENTORIES = (
     (
@@ -28,7 +34,7 @@ IRSA_INVENTORIES = (
     ),
     ("https://irsa.ipac.caltech.edu/ibe/search/wise/neowiser/p1bm_frm", "neowiser", "p1bm_frm"),
 )
-IRSA_TIMEOUT = 45.0
+IRSA_TIMEOUT = 12.0
 GRID_SIZE = 256
 WISE_ZERO_POINT_JY = {1: 309.540, 2: 171.787}
 
@@ -100,7 +106,10 @@ def query_wise_exposures(
     }
     exposures: list[WiseExposure] = []
     query_errors: list[str] = []
-    for endpoint, dataset, table in IRSA_INVENTORIES:
+
+    def _query_inventory(inv: tuple[str, str, str]) -> tuple[list[WiseExposure], str | None]:
+        endpoint, dataset, table = inv
+        inv_exposures: list[WiseExposure] = []
         try:
             response = session.get(endpoint, params=params, timeout=IRSA_TIMEOUT)
             response.raise_for_status()
@@ -114,7 +123,7 @@ def query_wise_exposures(
                 None,
             )
             if header_index is None:
-                continue
+                return inv_exposures, None
             reader = csv.DictReader(lines[header_index:])
             for row in reader:
                 normalized = {
@@ -138,17 +147,44 @@ def query_wise_exposures(
                 )
                 image_url = f"{base_path}-int-1b.fits?{cutout_query}"
                 uncertainty_url = f"{base_path}-unc-1b.fits.gz?{cutout_query}"
-                exposures.append(WiseExposure(band, mjd, image_url, uncertainty_url))
+                inv_exposures.append(WiseExposure(band, mjd, image_url, uncertainty_url))
+            return inv_exposures, None
         except Exception as exc:
-            query_errors.append(f"{dataset}: {exc}")
+            return inv_exposures, f"{dataset}: {exc}"
+
+    t0 = time.perf_counter()
+    if session is requests:
+        with ThreadPoolExecutor(max_workers=len(IRSA_INVENTORIES)) as pool:
+            inventory_results = list(pool.map(_query_inventory, IRSA_INVENTORIES))
+    else:
+        inventory_results = [_query_inventory(inv) for inv in IRSA_INVENTORIES]
+
+    for inv_rows, err in inventory_results:
+        exposures.extend(inv_rows)
+        if err:
+            query_errors.append(err)
 
     if not exposures:
         detail = "; ".join(query_errors) if query_errors else "no quality-screened rows"
+        _logger.info(
+            "WISE inventory returned 0 usable exposures for (%.4f, %.4f) in %.2fs",
+            ra,
+            dec,
+            time.perf_counter() - t0,
+        )
         raise WiseFallbackError(f"IRSA returned no usable WISE W1/W2 exposures ({detail}).")
     # The two inventory services can overlap at release boundaries. Deduplicate
     # identical band/time records while preserving distinct survey epochs.
     unique = {(item.band, item.mjd, item.intensity_url): item for item in exposures}
-    return sorted(unique.values(), key=lambda item: item.mjd)
+    sorted_exposures = sorted(unique.values(), key=lambda item: item.mjd)
+    _logger.info(
+        "WISE inventory discovered %d unique exposure(s) for (%.4f, %.4f) in %.2fs",
+        len(sorted_exposures),
+        ra,
+        dec,
+        time.perf_counter() - t0,
+    )
+    return sorted_exposures
 
 
 def _to_mjy_sr(
@@ -295,14 +331,26 @@ def fetch_wise_fallback(
     if 1 not in latest_exposure_by_band or 2 not in latest_exposure_by_band:
         raise WiseFallbackError("WISE archive did not provide both W1 (3.4 μm) and W2 (4.6 μm).")
 
+    t0 = time.perf_counter()
     latest_by_band: dict[int, tuple[float, np.ndarray]] = {}
-    for band, exposure in latest_exposure_by_band.items():
-        image, header = _download_fits(exposure.intensity_url, session=session)
-        calibrated = _to_mjy_sr(image, header, band)
-        projected = _reproject_to_target(calibrated, header, target_wcs_header)
+    for _band, exposure in latest_exposure_by_band.items():
         if not exposure.uncertainty_url:
             raise WiseFallbackError("WISE exposure is missing its uncertainty FITS URL.")
-        uncertainty, uncertainty_header = _download_fits(exposure.uncertainty_url, session=session)
+
+    def _download_band_pair(band: int, exposure: WiseExposure) -> tuple[int, float, np.ndarray]:
+        if session is requests:
+            with ThreadPoolExecutor(max_workers=2) as pair_pool:
+                fut_img = pair_pool.submit(_download_fits, exposure.intensity_url, session)
+                fut_unc = pair_pool.submit(_download_fits, exposure.uncertainty_url or "", session)
+                image, header = fut_img.result()
+                uncertainty, uncertainty_header = fut_unc.result()
+        else:
+            image, header = _download_fits(exposure.intensity_url, session=session)
+            uncertainty, uncertainty_header = _download_fits(
+                exposure.uncertainty_url or "", session=session
+            )
+        calibrated = _to_mjy_sr(image, header, band)
+        projected = _reproject_to_target(calibrated, header, target_wcs_header)
         uncertainty_mjy_sr = np.abs(
             _to_mjy_sr(uncertainty, uncertainty_header, band, calibration_header=header)
         )
@@ -310,7 +358,29 @@ def fetch_wise_fallback(
             uncertainty_mjy_sr, uncertainty_header, target_wcs_header
         )
         projected[~(np.isfinite(projected_uncertainty) & (projected_uncertainty > 0))] = np.nan
-        latest_by_band[band] = (exposure.mjd, projected)
+        return band, exposure.mjd, projected
+
+    if session is requests:
+        with ThreadPoolExecutor(max_workers=2) as band_pool:
+            band_futures = [
+                band_pool.submit(_download_band_pair, band, exp)
+                for band, exp in latest_exposure_by_band.items()
+            ]
+            for fut in band_futures:
+                b, ep_mjd, proj = fut.result()
+                latest_by_band[b] = (ep_mjd, proj)
+    else:
+        for band, exposure in latest_exposure_by_band.items():
+            b, ep_mjd, proj = _download_band_pair(band, exposure)
+            latest_by_band[b] = (ep_mjd, proj)
+
+    _logger.info(
+        "WISE W1/W2 fallback downloaded & reprojected %d exposure(s) for (%.4f, %.4f) in %.2fs",
+        len(exposures),
+        ra,
+        dec,
+        time.perf_counter() - t0,
+    )
 
     data, flags, detector_bytes, flags_bytes = assemble_wise_detector_planes(
         latest_by_band[1][1], latest_by_band[2][1]

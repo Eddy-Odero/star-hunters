@@ -79,7 +79,7 @@
     "known_objects": [
       {
         "object_id": "gaia:3864972938605115520",
-        "label": "Wolf 359 (CN Leonis \u2014 Nearby M6.5V High-PM Flare Star)",
+        "label": "Wolf 359 (CN Leonis: Nearby M6.5V High-PM Flare Star)",
         "catalog": "gaia_dr3",
         "object_type": "high_pm_star",
         "ra": 164.12161,

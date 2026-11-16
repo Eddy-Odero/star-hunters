@@ -79,7 +79,7 @@
     "known_objects": [
       {
         "object_id": "wise:J104915.53-531906.1",
-        "label": "Luhman 16 AB (WISE J1049-5319 \u2014 Closest Brown Dwarf Binary)",
+        "label": "Luhman 16 AB (WISE J1049-5319: Closest Brown Dwarf Binary)",
         "catalog": "wise",
         "object_type": "brown_dwarf_candidate",
         "ra": 162.33038,

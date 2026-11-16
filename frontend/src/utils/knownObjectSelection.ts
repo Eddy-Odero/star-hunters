@@ -118,13 +118,13 @@ export function isMovingSolarSystemObject(obj: KnownCelestialObject): boolean {
 
 export function formatMagnitude(magnitude: number | null): string {
   return magnitude === null || !Number.isFinite(magnitude)
-    ? 'mag —'
+    ? 'mag n/a'
     : `mag ${magnitude.toFixed(1)}`;
 }
 
 /** Proper motion in arcsec/yr; small values keep 3 decimals so Gaia field stars stay readable. */
 export function formatProperMotion(arcsecPerYr: number | null): string {
-  if (arcsecPerYr === null || !Number.isFinite(arcsecPerYr)) return 'μ —';
+  if (arcsecPerYr === null || !Number.isFinite(arcsecPerYr)) return 'μ n/a';
   return `μ ${arcsecPerYr.toFixed(arcsecPerYr < 1 ? 3 : 2)}″/yr`;
 }
 

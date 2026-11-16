@@ -515,11 +515,28 @@ SKY_PATCH_MANIFEST_JSON_SCHEMA: dict[str, Any] = {
                 "status_note",
             ],
             "properties": {
-                "primary_mission": {"type": "string", "enum": ["SPHEREx", "WISE"]},
+                "primary_mission": {
+                    "type": "string",
+                    "enum": [
+                        "SPHEREx",
+                        "WISE",
+                        "SkyView",
+                        "2MASS",
+                        "DSS2",
+                        "Horizons",
+                        "NEOSSat",
+                        "Simulated",
+                    ],
+                },
                 "has_multi_epoch_spherex": {"type": "boolean"},
                 "uses_wise_fallback": {"type": "boolean"},
                 "baseline_days": {"type": "number", "minimum": 0.0},
                 "status_note": {"type": "string"},
+                "provenance_tier": {
+                    "type": ["string", "null"],
+                    "enum": ["primary", "extension", "simulated", None],
+                },
+                "survey_name": {"type": ["string", "null"]},
             },
             "additionalProperties": False,
         },
@@ -542,7 +559,19 @@ SKY_PATCH_MANIFEST_JSON_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "epoch_id": {"type": "string"},
                     "label": {"type": "string"},
-                    "mission": {"type": "string", "enum": ["SPHEREx", "WISE"]},
+                    "mission": {
+                        "type": "string",
+                        "enum": [
+                            "SPHEREx",
+                            "WISE",
+                            "SkyView",
+                            "2MASS",
+                            "DSS2",
+                            "Horizons",
+                            "NEOSSat",
+                            "Simulated",
+                        ],
+                    },
                     "mjd": {"type": "number"},
                     "iso_date": {"type": "string"},
                     "detectors_data_url": {"type": "string"},
@@ -720,13 +749,27 @@ class TargetMetadata(_ContractModelMixin):
     constellation: str
 
 
+MissionLiteral = Literal[
+    "SPHEREx",
+    "WISE",
+    "SkyView",
+    "2MASS",
+    "DSS2",
+    "Horizons",
+    "NEOSSat",
+    "Simulated",
+]
+
+
 @dataclass
 class DataSourceSummary(_ContractModelMixin):
-    primary_mission: Literal["SPHEREx", "WISE"]
+    primary_mission: MissionLiteral
     has_multi_epoch_spherex: bool
     uses_wise_fallback: bool
     baseline_days: float
     status_note: str
+    provenance_tier: Literal["primary", "extension", "simulated"] | None = None
+    survey_name: str | None = None
 
 
 @dataclass
@@ -743,7 +786,7 @@ class WcsHeader(_ContractModelMixin):
 class EpochEntry(_ContractModelMixin):
     epoch_id: str
     label: str
-    mission: Literal["SPHEREx", "WISE"]
+    mission: MissionLiteral
     mjd: float
     iso_date: str
     detectors_data_url: str

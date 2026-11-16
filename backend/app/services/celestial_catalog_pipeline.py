@@ -14,16 +14,20 @@ import csv
 import io
 import math
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
+from .logging_config import get_logger
 from .spatial_cache import (
     DEFAULT_CATALOG_TTL_SECONDS,
     SpatialSqliteCache,
     angular_separation_deg,
 )
+
+_logger = get_logger("celestial_pipeline")
 
 # Official endpoints only — NEVER use cds.unistra.fr due to upstream outages.
 SIMBAD_TAP_ENDPOINTS: tuple[str, ...] = (
@@ -355,15 +359,41 @@ def parse_vizier_gaia_tsv(tsv_text: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _normalize_simbad_rows(raw_rows: list[dict[str, Any]], provider: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in raw_rows:
+        main_id = str(row.get("main_id") or "").strip()
+        ra = _safe_float(row.get("ra"))
+        dec = _safe_float(row.get("dec"))
+        if not main_id or ra is None or dec is None:
+            continue
+        otype = str(row.get("otype") or "").strip() or None
+        pmra = _safe_float(row.get("pmra"))
+        pmdec = _safe_float(row.get("pmdec"))
+        out.append(
+            {
+                "main_id": " ".join(main_id.split()),
+                "otype": otype,
+                "ra": ra % 360.0,
+                "dec": dec,
+                "pmra": pmra,
+                "pmdec": pmdec,
+                "provider": provider,
+            }
+        )
+    return out
+
+
 async def fetch_simbad_objects(
     ra_deg: float,
     dec_deg: float,
     radius_deg: float,
     client: httpx.AsyncClient | None = None,
     limit: int = 500,
-    timeout_s: float = 8.0,
+    timeout_s: float = 12.0,
+    parallel_mirrors: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Query SIMBAD TAP via official mirrors (`simbad.idia.ac.za` -> `simbad.cfa.harvard.edu`).
+    """Query SIMBAD TAP via official mirrors (`simbad.idia.ac.za`, `simbad.cfa.harvard.edu`).
 
     Never queries `cds.unistra.fr`. Returns `(normalized_records, provider_tag)`.
     """
@@ -384,36 +414,41 @@ async def fetch_simbad_objects(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=timeout_s)
     last_error = "unavailable"
+
+    async def _query_one(endpoint: str) -> tuple[list[dict[str, Any]], str]:
+        assert "cds.unistra.fr" not in endpoint
+        provider = "simbad_idia" if "idia.ac.za" in endpoint else "simbad_cfa"
+        resp = await http.get(endpoint, params=params, timeout=timeout_s)
+        resp.raise_for_status()
+        raw_rows = parse_tap_json_rows(resp.json())
+        return _normalize_simbad_rows(raw_rows, provider=provider), provider
+
     try:
+        if parallel_mirrors and len(SIMBAD_TAP_ENDPOINTS) > 1:
+            tasks = [asyncio.create_task(_query_one(ep)) for ep in SIMBAD_TAP_ENDPOINTS]
+            empty_fallback: tuple[list[dict[str, Any]], str] | None = None
+            try:
+                for fut in asyncio.as_completed(tasks):
+                    try:
+                        rows, provider = await fut
+                        if rows:
+                            return rows, provider
+                        empty_fallback = (rows, provider)
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = f"{type(exc).__name__}"
+                        continue
+            finally:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+            if empty_fallback is not None:
+                return empty_fallback
+            return [], f"unavailable:{last_error}"
+
         for endpoint in SIMBAD_TAP_ENDPOINTS:
-            assert "cds.unistra.fr" not in endpoint
             provider = "simbad_idia" if "idia.ac.za" in endpoint else "simbad_cfa"
             try:
-                resp = await http.get(endpoint, params=params, timeout=timeout_s)
-                resp.raise_for_status()
-                raw_rows = parse_tap_json_rows(resp.json())
-                out: list[dict[str, Any]] = []
-                for row in raw_rows:
-                    main_id = str(row.get("main_id") or "").strip()
-                    ra = _safe_float(row.get("ra"))
-                    dec = _safe_float(row.get("dec"))
-                    if not main_id or ra is None or dec is None:
-                        continue
-                    otype = str(row.get("otype") or "").strip() or None
-                    pmra = _safe_float(row.get("pmra"))
-                    pmdec = _safe_float(row.get("pmdec"))
-                    out.append(
-                        {
-                            "main_id": " ".join(main_id.split()),
-                            "otype": otype,
-                            "ra": ra % 360.0,
-                            "dec": dec,
-                            "pmra": pmra,
-                            "pmdec": pmdec,
-                            "provider": provider,
-                        }
-                    )
-                return out, provider
+                return await _query_one(endpoint)
             except Exception as exc:  # noqa: BLE001
                 last_error = f"{provider}:{type(exc).__name__}"
                 continue
@@ -430,7 +465,8 @@ async def fetch_gaia_dr3_objects(
     client: httpx.AsyncClient | None = None,
     limit: int = 1000,
     max_g_mag: float = 18.0,
-    timeout_s: float = 8.0,
+    timeout_s: float = 12.0,
+    parallel_mirrors: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     """Query ESA Gaia DR3 TAP (`gea.esac.esa.int`) with ARI TAP & VizieR CfA fallbacks."""
     clamped_limit = max(1, min(1000, int(limit)))
@@ -451,35 +487,64 @@ async def fetch_gaia_dr3_objects(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=timeout_s)
     last_error = "unavailable"
+
+    async def _query_tap(endpoint: str) -> tuple[list[dict[str, Any]], str]:
+        assert "cds.unistra.fr" not in endpoint
+        provider = "gaia_esa" if "esac.esa.int" in endpoint else "gaia_ari"
+        resp = await http.get(endpoint, params=params, timeout=timeout_s)
+        resp.raise_for_status()
+        raw_rows = parse_tap_json_rows(resp.json())
+        return _normalize_gaia_rows(raw_rows, provider=provider), provider
+
+    async def _query_vizier() -> tuple[list[dict[str, Any]], str]:
+        assert "cds.unistra.fr" not in VIZIER_GAIA_CFA_ENDPOINT
+        vz_params = {
+            "-source": "I/355/gaiadr3",
+            "-c": f"{ra_deg:.6f} {dec_deg:+.6f}",
+            "-c.rd": f"{radius_deg:.6f}",
+            "-out": "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,Gmag",
+            "-out.max": str(min(500, clamped_limit)),
+            "Gmag": f"<{max_g_mag:.2f}",
+        }
+        resp = await http.get(VIZIER_GAIA_CFA_ENDPOINT, params=vz_params, timeout=timeout_s)
+        resp.raise_for_status()
+        parsed_tsv = parse_vizier_gaia_tsv(resp.text)
+        return _normalize_gaia_rows(parsed_tsv, provider="gaia_vizier_cfa"), "gaia_vizier_cfa"
+
     try:
+        if parallel_mirrors:
+            tasks = [asyncio.create_task(_query_tap(ep)) for ep in GAIA_DR3_TAP_ENDPOINTS]
+            tasks.append(asyncio.create_task(_query_vizier()))
+            empty_fallback: tuple[list[dict[str, Any]], str] | None = None
+            try:
+                for fut in asyncio.as_completed(tasks):
+                    try:
+                        rows, provider = await fut
+                        if rows:
+                            return rows, provider
+                        empty_fallback = (rows, provider)
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = f"{type(exc).__name__}"
+                        continue
+            finally:
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+            if empty_fallback is not None:
+                return empty_fallback
+            return [], f"unavailable:{last_error}"
+
         for endpoint in GAIA_DR3_TAP_ENDPOINTS:
-            assert "cds.unistra.fr" not in endpoint
             provider = "gaia_esa" if "esac.esa.int" in endpoint else "gaia_ari"
             try:
-                resp = await http.get(endpoint, params=params, timeout=timeout_s)
-                resp.raise_for_status()
-                raw_rows = parse_tap_json_rows(resp.json())
-                out = _normalize_gaia_rows(raw_rows, provider=provider)
-                return out, provider
+                return await _query_tap(endpoint)
             except Exception as exc:  # noqa: BLE001
                 last_error = f"{provider}:{type(exc).__name__}"
                 continue
 
         # Fallback: VizieR Harvard CfA ASU-TSV mirror (zero-auth, no cds.unistra.fr)
         try:
-            assert "cds.unistra.fr" not in VIZIER_GAIA_CFA_ENDPOINT
-            vz_params = {
-                "-source": "I/355/gaiadr3",
-                "-c": f"{ra_deg:.6f} {dec_deg:+.6f}",
-                "-c.rd": f"{radius_deg:.6f}",
-                "-out": "Source,RA_ICRS,DE_ICRS,pmRA,pmDE,Plx,Gmag",
-                "-out.max": str(min(500, clamped_limit)),
-                "Gmag": f"<{max_g_mag:.2f}",
-            }
-            resp = await http.get(VIZIER_GAIA_CFA_ENDPOINT, params=vz_params, timeout=timeout_s)
-            resp.raise_for_status()
-            parsed_tsv = parse_vizier_gaia_tsv(resp.text)
-            return _normalize_gaia_rows(parsed_tsv, provider="gaia_vizier_cfa"), "gaia_vizier_cfa"
+            return await _query_vizier()
         except Exception as exc:  # noqa: BLE001
             last_error = f"{last_error}|vizier_cfa:{type(exc).__name__}"
     finally:
@@ -789,11 +854,30 @@ class AutomatedCelestialPipeline:
             )
             return stale if stale is not None else ([], "cache_only")
 
-        records, provider = await fetcher(
-            ra_deg=ra_deg,
-            dec_deg=dec_deg,
-            radius_deg=radius_deg,
-            client=self.http_client,
+        t0 = time.perf_counter()
+        try:
+            records, provider = await fetcher(
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                radius_deg=radius_deg,
+                client=self.http_client,
+                parallel_mirrors=True,
+            )
+        except TypeError:
+            records, provider = await fetcher(
+                ra_deg=ra_deg,
+                dec_deg=dec_deg,
+                radius_deg=radius_deg,
+                client=self.http_client,
+            )
+        _logger.info(
+            "Catalog %s query at (%.4f, %.4f) returned %d row(s) via %s in %.2fs",
+            source,
+            ra_deg,
+            dec_deg,
+            len(records),
+            provider,
+            time.perf_counter() - t0,
         )
         if records:
             self.cache.put_cached_catalog_region(
@@ -808,6 +892,42 @@ class AutomatedCelestialPipeline:
 
         stale = self._read_cached_region_sync(source, ra_deg, dec_deg, radius_deg, allow_stale=True)
         return stale if stale is not None else ([], provider)
+
+    async def resolve_live_horizons_for_body(
+        self,
+        body_spec: dict[str, str],
+        target_date: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        """Fetch and cache live JPL Horizons ephemeris around the active observation window."""
+        now_dt = target_date or datetime.now(UTC)
+        now_mjd = (now_dt - _MJD_EPOCH).total_seconds() / 86400.0
+        cached = self.cache.get_ephemeris_for_body(body_spec["naif_id"], now_mjd)
+        if cached is not None:
+            return cached
+        start_str = (now_dt.date() - timedelta(days=3)).isoformat()
+        stop_str = (now_dt.date() + timedelta(days=3)).isoformat()
+        points = await fetch_horizons_ephemeris(
+            naif_cmd=body_spec["cmd"],
+            naif_id=body_spec["naif_id"],
+            body_name=body_spec["name"],
+            body_class=body_spec["body_class"],
+            start_date=start_str,
+            stop_date=stop_str,
+            step_size="1d",
+            client=self.http_client,
+        )
+        if not points:
+            return None
+        self.cache.upsert_ephemeris_points(points)
+        closest = min(points, key=lambda pt: abs(float(pt["mjd"]) - now_mjd))
+        _logger.info(
+            "JPL Horizons resolved live ephemeris for %s (NAIF %s) at RA=%.4f Dec=%.4f",
+            body_spec["name"],
+            body_spec["naif_id"],
+            closest["ra"],
+            closest["dec"],
+        )
+        return closest
 
     async def get_simbad_region(
         self,
@@ -911,11 +1031,17 @@ class AutomatedCelestialPipeline:
         max_objects: int = 120,
     ) -> dict[str, Any]:
 
-        # Query SQLite solar_system_ephemeris at each epoch MJD
+        # Query SQLite solar_system_ephemeris at each epoch MJD. If extension plates predate
+        # modern Horizons windows (e.g. SkyView DSS2 MJD < 60000), resolve against the
+        # active reference epoch MJDs so Solar System targets remain trackable in FOV.
         solar_grouped: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
-        for ep in epochs_meta:
+        now_mjd = (datetime.now(UTC) - _MJD_EPOCH).total_seconds() / 86400.0
+        for ep_idx, ep in enumerate(epochs_meta):
+            query_mjd = float(ep["mjd"])
+            if query_mjd < 60000.0:
+                query_mjd = now_mjd + (0.0 if ep_idx == 0 else 2.0)
             ep_matches = self.cache.query_ephemeris_in_fov(
-                mjd=float(ep["mjd"]),
+                mjd=query_mjd,
                 ra=ra_deg,
                 dec=dec_deg,
                 radius_deg=radius_deg,

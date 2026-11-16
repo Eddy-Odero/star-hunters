@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSkyExplorer } from '../context/SkyExplorerContext';
 import { useOptionalNotifications } from '../context/NotificationContext';
 import { useDraggablePanel } from '../hooks/useDraggablePanel';
@@ -15,6 +15,7 @@ import {
   parseSkySearchInput,
   wrapRaDeg,
 } from '../utils/observatoryMath';
+import { observatoryLogger } from '../utils/observatoryLogger';
 import { ChevronIcon, CompassZenithIcon, DragGripIcon, SearchIcon } from './icons/ObservatoryIcons';
 
 function localApproximateZenith(latDeg: number, lonDeg: number, dateIso: string) {
@@ -54,6 +55,40 @@ export const FloatingSearchZenithMenu: React.FC = () => {
   const [searchExpanded, setSearchExpanded] = useState<boolean>(true);
   const [searchText, setSearchText] = useState<string>('');
   const [searchFocused, setSearchFocused] = useState<boolean>(false);
+  const [liveSearchState, setLiveSearchState] = useState<{
+    query: string;
+    results: GlobalKnownObjectEntry[];
+  }>({ query: '', results: [] });
+
+  useEffect(() => {
+    const q = searchText.trim();
+    if (q.length < 2 || parseSkySearchInput(q).kind === 'coords') {
+      return undefined;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/v1/catalogs/search?q=${encodeURIComponent(q)}&limit=10`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const payload = (await res.json()) as { results?: GlobalKnownObjectEntry[] };
+        if (Array.isArray(payload.results)) {
+          setLiveSearchState({ query: q.toLowerCase(), results: payload.results });
+          observatoryLogger.debug('search', 'Live catalog search updated', {
+            query: q,
+            count: payload.results.length,
+          });
+        }
+      } catch {
+        // Offline / aborted searches fall back silently to local catalog list.
+      }
+    }, 180);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [searchText]);
 
   // Earth-to-Sky Zenith converter state
   const [selectedCityName, setSelectedCityName] = useState<string>('Nairobi');
@@ -71,15 +106,33 @@ export const FloatingSearchZenithMenu: React.FC = () => {
   const searchSuggestions = useMemo(() => {
     const q = searchText.trim();
     if (!q || parseSkySearchInput(q).kind === 'coords') return [];
-    return fuzzySearchKnownObjects(globalKnownObjects, q).slice(0, 6);
-  }, [globalKnownObjects, searchText]);
+    const byId = new Map<string, GlobalKnownObjectEntry>();
+    for (const item of globalKnownObjects) {
+      byId.set(item.object_id, item);
+    }
+    // Live backend search overrides static Solar System coordinates with current-epoch JPL Horizons coords.
+    if (liveSearchState.query === q.toLowerCase()) {
+      for (const liveItem of liveSearchState.results) {
+        byId.set(liveItem.object_id, liveItem);
+      }
+    }
+    return fuzzySearchKnownObjects(Array.from(byId.values()), q).slice(0, 6);
+  }, [globalKnownObjects, liveSearchState, searchText]);
 
   const handleSelectSuggestion = (entry: GlobalKnownObjectEntry) => {
+    observatoryLogger.info('search', 'Selected target from search', {
+      label: entry.label,
+      ra: entry.ra,
+      dec: entry.dec,
+      source: entry.data_source,
+    });
     setSearchText(entry.label);
     setSearchFocused(false);
     requestGlobeFocus?.(entry.ra, entry.dec, 2.2);
     if (entry.target_slug && !entry.target_slug.startsWith('all_sky')) {
       selectPreset(entry.target_slug);
+    } else {
+      navigateToCoordinates(entry.ra, entry.dec, 5.0);
     }
   };
 
@@ -220,7 +273,7 @@ export const FloatingSearchZenithMenu: React.FC = () => {
             <input
               type="text"
               className="hud-input"
-              placeholder="Search object or RA, Dec..."
+              placeholder="Search object or Right Ascension, Declination..."
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
               onFocus={() => setSearchFocused(true)}
