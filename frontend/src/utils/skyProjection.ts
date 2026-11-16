@@ -4,7 +4,7 @@ const ALADIN_MODULE_URL = 'https://cdn.jsdelivr.net/npm/aladin-lite@3.8.2/dist/a
 const ALADIN_LOAD_TIMEOUT_MS = 12000;
 
 export interface AladinViewHandle {
-  redrawClbk?: () => void;
+  redrawClbk?: (timestamp?: number) => void;
   moving?: boolean;
   needRedraw?: boolean;
   wasm?: {
@@ -40,9 +40,10 @@ export interface AladinThrottlerOptions {
   idleIntervalMs?: number;
   /** Number of consecutive quiet frames before dropping from 60 FPS to idle. */
   quietFramesBeforeIdle?: number;
-  scheduleFrame?: (cb: () => void) => void;
+  scheduleFrame?: (cb: (timestamp?: number) => void) => void;
   scheduleTimer?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
   cancelTimer?: (id: ReturnType<typeof setTimeout>) => void;
+  now?: () => number;
 }
 
 /**
@@ -70,13 +71,19 @@ export function attachAladinIdleThrottler(
 
   const idleIntervalMs = options.idleIntervalMs ?? 500;
   const quietFramesBeforeIdle = options.quietFramesBeforeIdle ?? 2;
+  const getNow =
+    options.now ??
+    (() =>
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now());
   const scheduleFrame =
     options.scheduleFrame ??
-    ((cb: () => void) => {
+    ((cb: (timestamp?: number) => void) => {
       if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
         window.requestAnimationFrame(cb);
       } else {
-        setTimeout(cb, 16);
+        setTimeout(() => cb(getNow()), 16);
       }
     });
   const scheduleTimer =
@@ -88,6 +95,7 @@ export function attachAladinIdleThrottler(
   let stopped = false;
   let paused = false;
   let waitingResume = false;
+  let loopBroken = false;
   let woke = true;
   let quietFrames = 0;
   let idleTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -97,7 +105,30 @@ export function attachAladinIdleThrottler(
       view.moving || view.needRedraw || view.wasm?.isRendering?.() || view.wasm?.isInerting?.(),
     );
 
-  const throttledRedraw = () => {
+  const resolveTimestamp = (timestamp?: number): number =>
+    typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp : getNow();
+
+  const invokeOrigRedraw = (timestamp?: number) => {
+    try {
+      origRedraw(resolveTimestamp(timestamp));
+      loopBroken = false;
+    } catch {
+      loopBroken = true;
+      if (!stopped && !paused && idleTimerId === null) {
+        idleTimerId = scheduleTimer(() => {
+          idleTimerId = null;
+          if (stopped) return;
+          if (paused) {
+            waitingResume = true;
+            return;
+          }
+          scheduleFrame(throttledRedraw);
+        }, idleIntervalMs);
+      }
+    }
+  };
+
+  const throttledRedraw = (timestamp?: number) => {
     if (stopped) return;
     if (paused) {
       waitingResume = true;
@@ -107,13 +138,13 @@ export function attachAladinIdleThrottler(
     if (woke || isViewBusy()) {
       woke = false;
       quietFrames = 0;
-      origRedraw();
+      invokeOrigRedraw(timestamp);
       return;
     }
 
     quietFrames += 1;
     if (quietFrames < quietFramesBeforeIdle) {
-      origRedraw();
+      invokeOrigRedraw(timestamp);
       return;
     }
 
@@ -125,7 +156,7 @@ export function attachAladinIdleThrottler(
           waitingResume = true;
           return;
         }
-        origRedraw();
+        invokeOrigRedraw();
         if (isViewBusy()) {
           quietFrames = 0;
         }
@@ -145,8 +176,9 @@ export function attachAladinIdleThrottler(
         cancelTimer(idleTimerId);
         idleTimerId = null;
         scheduleFrame(throttledRedraw);
-      } else if (waitingResume) {
+      } else if (waitingResume || loopBroken) {
         waitingResume = false;
+        loopBroken = false;
         scheduleFrame(throttledRedraw);
       }
     },
@@ -162,8 +194,9 @@ export function attachAladinIdleThrottler(
       } else {
         woke = true;
         quietFrames = 0;
-        if (waitingResume) {
+        if (waitingResume || loopBroken) {
           waitingResume = false;
+          loopBroken = false;
           scheduleFrame(throttledRedraw);
         }
       }

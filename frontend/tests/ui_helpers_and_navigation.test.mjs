@@ -705,3 +705,71 @@ test('attachAladinIdleThrottler is event-driven on tile rendering/motion, pauses
   view.redrawClbk();
   assert.equal(redrawCount, 8);
 });
+
+test('attachAladinIdleThrottler forwards finite rAF timestamps and recovers from transient redraw errors', () => {
+  const receivedTimestamps = [];
+  const scheduledTimers = new Map();
+  const scheduledFrames = [];
+  let nextTimerId = 1;
+  let fakeNow = 1000;
+  let shouldThrow = false;
+
+  const view = {
+    moving: false,
+    needRedraw: false,
+    wasm: {
+      isRendering: () => false,
+      isInerting: () => false,
+    },
+    redrawClbk(ts) {
+      if (shouldThrow) {
+        shouldThrow = false;
+        throw new Error('transient wasm error');
+      }
+      receivedTimestamps.push(ts);
+    },
+  };
+  const instance = { gotoRaDec() {}, view };
+
+  const throttler = attachAladinIdleThrottler(instance, {
+    idleIntervalMs: 500,
+    quietFramesBeforeIdle: 2,
+    now: () => fakeNow,
+    scheduleFrame: (cb) => scheduledFrames.push(cb),
+    scheduleTimer: (cb) => {
+      const id = nextTimerId++;
+      scheduledTimers.set(id, cb);
+      return id;
+    },
+    cancelTimer: (id) => {
+      scheduledTimers.delete(id);
+    },
+  });
+
+  // rAF timestamp is forwarded directly so Aladin dt = ts - prevTime never becomes NaN
+  view.redrawClbk(16.67);
+  view.redrawClbk(33.34);
+  assert.deepEqual(receivedTimestamps, [16.67, 33.34]);
+
+  // Idle timer tick supplies a finite fallback timestamp
+  view.redrawClbk(50.0);
+  assert.equal(scheduledTimers.size, 1);
+  fakeNow = 550.0;
+  const [idleCb] = [...scheduledTimers.values()];
+  scheduledTimers.clear();
+  idleCb();
+  assert.deepEqual(receivedTimestamps, [16.67, 33.34, 550.0]);
+
+  // Transient redraw throw schedules recovery instead of permanently killing the loop
+  shouldThrow = true;
+  throttler.wake();
+  assert.equal(scheduledTimers.size, 0);
+  view.redrawClbk(566.67);
+  assert.equal(scheduledTimers.size, 1);
+
+  // Calling wake() while loopBroken recovers immediately onto the next frame
+  throttler.wake();
+  assert.equal(scheduledFrames.length, 1);
+  scheduledFrames.shift()(583.34);
+  assert.deepEqual(receivedTimestamps, [16.67, 33.34, 550.0, 583.34]);
+});
