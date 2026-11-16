@@ -38,7 +38,13 @@ Star Hunters turns this workflow into a fast, browser-based discovery tool with 
 | `ENABLE_ARCHIVAL_DATA` | `"false"` locally (`"true"` in `fly.toml`) | Enables live remote archival cutout fetching in `/api/v1/sky-patch` using the ordered fallback chain: **SPHEREx IRSA** -> **WISE / NEOWISE** -> **NASA SkyView (2MASS / DSS2 IR / Red)** -> **Labeled Simulated Multi-Band Baseline**, with optional **JPL Horizons** ephemeris rendering when an active Solar System body crosses the patch. When `"false"`, live uncached patches return the labeled simulated baseline cleanly for offline/test determinism. |
 | `SQLITE_DB_PATH` | `backend/data/spherex_cache.db` (`/data/spherex_cache.db` on Fly.io) | Path to the WAL-mode SQLite spatial and ephemeris cache database. |
 | `LOG_LEVEL` | `INFO` | Backend startup logging threshold (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). |
-| `LOG_FORMAT` | `text` | Backend log output format (`text` for human-readable structured lines, `json` for single-line JSON log records). |
+| `LOG_FORMAT` | `text` | Backend log output format (`text` for human-readable structured lines, `json` for single-line JSON log records) unified across `star_hunters`, `uvicorn`, and `astropy`. |
+| `IRSA_CONNECT_TIMEOUT_S` | `3.5` | TCP connect timeout (seconds) for upstream IRSA requests. |
+| `IRSA_DISCOVERY_TIMEOUT_S` | `10.0` | Read timeout (seconds) for IRSA SIA/TAP observation discovery. |
+| `IRSA_CUTOUT_TIMEOUT_S` | `8.0` | Read timeout (seconds) per SPHEREx FITS cutout download. |
+| `SPHEREX_INGEST_BUDGET_S` | `16.0` | Total wall-clock budget (seconds) for SPHEREx cutout downloads per patch/spectrum before failing fast or falling back. |
+| `ARCHIVAL_RESOLVE_BUDGET_S` | `18.0` | Shared deadline (seconds) across the `SPHEREx -> WISE -> SkyView` archival fallback chain. |
+| `IRSA_CIRCUIT_COOLDOWN_S` | `45.0` | Cooldown duration (seconds) for the shared IRSA outage circuit breaker. |
 | `PORT` | `8000` | HTTP listen port for FastAPI / Uvicorn. |
 
 ### Frontend Build & Runtime Logging Configuration
@@ -53,7 +59,7 @@ Star Hunters turns this workflow into a fast, browser-based discovery tool with 
 ## Interactive Observatory Features
 
 - **Curated NASA Curtain Landing:** Random high-definition landscape NASA imagery with attribution badge while background warmup fetches `/health` and the 12 showcase presets.
-- **Night-Sky Globe & Progressive Click Zoom:** Starry black WebGL sphere powered by Aladin Lite v3 with IRSA `allWISE`, `2MASS`, and `SPHEREx` HiPS Level-of-Detail switching, toggleable IAU constellation lines and labels, accessible `N / W / S / E` pan and `+/- / Reset` zoom controls, progressive 2-click zoom into visible $0.05^\circ$ sky panels, and direct click-to-inspect inside any panel.
+- **Night-Sky Globe & Progressive Click Zoom:** Starry black WebGL sphere powered by Aladin Lite v3 with IRSA `allWISE`, `2MASS`, and `SPHEREx` HiPS Level-of-Detail switching, toggleable IAU constellation lines and labels, North-up arrow (`↑ / ← / ↓ / →`) pan and `+ / - / Reset` zoom controls plus focus-scoped keyboard shortcuts (`Arrow` keys / `WASD`, `Shift` fine step, `+`/`-`, `0` reset), progressive 2-click zoom into visible $0.05^\circ$ sky panels, and direct click-to-inspect inside any panel.
 - **Multi-Pass Blinker & Provenance Display:** Synchronized `(6, 256, 256)` scientific cutouts supporting Blink, Subtract (`IMAGE - ZODI`), and Co-Add stacking modes, dual-thumb `0.75-5.0 um` wavelength slider, explicit image survey provenance pill (`SPHEREx Archival (Primary)`, `WISE / NEOWISE (Extension)`, `NASA SkyView (DSS2 IR / Red)`, `JPL Horizons Ephemeris`, or `Simulated Multi-Band Baseline`), and an inline **Known Objects** tab inside Blinker controls for quick checking/unchecking without leaving the inspector.
 - **Hover-Delay & Click-Locked Callout Details:** Hovering a labeled source shows a frosted glass callout card after a short delay without occluding the object (flipping away from edges and controls automatically), while clicking locks the card until clicking elsewhere or closing it.
 - **102-Band Forced Photometry Spectra:** Interactive spectral plot with a reserved bottom readout strip below the plot canvas so hovering across channels causes zero layout jitter, plus CSV export.
@@ -134,8 +140,14 @@ pnpm --dir frontend build
 ```
 
 ### 4. Production Deployment (Fly.io)
+Manual deploy:
 ```bash
 flyctl deploy
+```
+Automatic CI-gated deployment from `main` is configured in [.github/workflows/fly-deploy.yml](.github/workflows/fly-deploy.yml) (runs `flyctl deploy --remote-only` only after `Star Hunters CI (Lint, Typecheck & Tests)` succeeds on `main`). To enable it once:
+```bash
+flyctl tokens create deploy -a star-hunters-spherex -x 999999h \
+  | gh secret set FLY_API_TOKEN --repo Eddy-Odero/star-hunters
 ```
 See [ARCHITECTURE.md](ARCHITECTURE.md) for container lifecycle, binary streaming format, archival fallback flow, and client-side rendering details.
 
