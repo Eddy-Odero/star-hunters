@@ -16,7 +16,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
-from app.models.contracts import convert_float32_bytes_to_float16_bytes
+from app.models.contracts import (
+    BINARY_DETECTOR_FLOAT32_BYTES,
+    convert_float16_bytes_to_float32_bytes,
+    convert_float32_bytes_to_float16_bytes,
+)
 from app.utils.astronomy import angular_separation_deg, mjd_to_date_bucket
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
@@ -292,6 +296,7 @@ class SpatialSqliteCache:
                     filename TEXT NOT NULL,
                     compressed_blob BLOB NOT NULL,
                     raw_byte_size INTEGER NOT NULL,
+                    encoding TEXT NOT NULL DEFAULT 'zlib_raw',
                     PRIMARY KEY (grid_key, filename),
                     FOREIGN KEY (grid_key) REFERENCES sky_patches(grid_key) ON DELETE CASCADE
                 );
@@ -351,6 +356,14 @@ class SpatialSqliteCache:
                 ON solar_system_ephemeris(date_bucket, ra_bucket, dec_bucket);
                 """
             )
+            cols = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
+            }
+            if "encoding" not in cols:
+                conn.execute(
+                    "ALTER TABLE binary_frames ADD COLUMN encoding TEXT NOT NULL DEFAULT 'zlib_raw'"
+                )
 
     def _invalidate_grid_key_memory(self, grid_key: str) -> None:
         """Remove all in-process LRU cache entries associated with ``grid_key``."""
@@ -401,6 +414,44 @@ class SpatialSqliteCache:
         if mem_key is not None:
             self._mem_cache.put(mem_key, raw_json.encode("utf-8"))
         return json.loads(raw_json)
+
+    def peek_manifest_memory(self, grid_key: str) -> dict[str, Any] | None:
+        """Fetch a sky-patch manifest solely from the in-process RAM LRU cache."""
+        cached_bytes = self._mem_cache.get(f"manifest:{grid_key}")
+        if cached_bytes is None:
+            return None
+        manifest: dict[str, Any] = json.loads(cached_bytes)
+        manifest["query"]["cached"] = True
+        return manifest
+
+    def peek_catalogs_memory(self, grid_key: str) -> dict[str, Any] | None:
+        """Fetch cached catalog overlays solely from the in-process RAM LRU cache."""
+        cached_bytes = self._mem_cache.get(f"catalogs:{grid_key}")
+        if cached_bytes is None:
+            return None
+        payload: dict[str, Any] = json.loads(cached_bytes)
+        payload["query"]["cached"] = True
+        return payload
+
+    def peek_spectrum_memory(self, spectrum_key: str) -> dict[str, Any] | None:
+        """Fetch a cached 102-band spectrum solely from the in-process RAM LRU cache."""
+        cached_bytes = self._mem_cache.get(f"spectrum:{spectrum_key}")
+        if cached_bytes is None:
+            return None
+        return json.loads(cached_bytes)
+
+    def peek_frame_gzip_memory(
+        self,
+        grid_key: str,
+        filename: str,
+        precision: Literal["float32", "float16"] = "float32",
+    ) -> tuple[bytes, str] | None:
+        """Fetch a pre-gzipped binary frame solely from the in-process RAM LRU cache."""
+        dtype_header = "uint8" if filename.endswith("_flags.bin") else precision
+        cached_gz = self._mem_cache.get(f"frame_gz:{grid_key}:{filename}:{dtype_header}")
+        if cached_gz is None:
+            return None
+        return cached_gz, dtype_header
 
     def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
         """Fetch a cached sky-patch manifest, rehydrating deduplicated catalog overlays.
@@ -460,13 +511,15 @@ class SpatialSqliteCache:
             payload["query"]["cached"] = True
         return payload
 
-    def _read_raw_frame_from_sqlite(self, grid_key: str, filename: str) -> bytes | None:
-        """Read and decompress a binary frame from SQLite without touching ``_mem_cache``."""
+    def _read_encoded_frame_from_sqlite(
+        self, grid_key: str, filename: str
+    ) -> tuple[bytes, str] | None:
+        """Read stored frame bytes and encoding tag from SQLite without touching ``_mem_cache``."""
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
                 """
-                SELECT bf.compressed_blob, sp.last_accessed
+                SELECT bf.compressed_blob, bf.encoding, sp.last_accessed
                 FROM binary_frames bf
                 JOIN sky_patches sp ON sp.grid_key = bf.grid_key
                 WHERE bf.grid_key = ? AND bf.filename = ?
@@ -480,7 +533,19 @@ class SpatialSqliteCache:
                     "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
                     (now, grid_key),
                 )
-            return zlib.decompress(row["compressed_blob"])
+            return bytes(row["compressed_blob"]), str(row["encoding"])
+
+    def _read_raw_frame_from_sqlite(self, grid_key: str, filename: str) -> bytes | None:
+        """Read and decode a binary frame to raw bytes without touching ``_mem_cache``."""
+        encoded = self._read_encoded_frame_from_sqlite(grid_key, filename)
+        if encoded is None:
+            return None
+        blob, encoding = encoded
+        if encoding == "gzip_float16":
+            return convert_float16_bytes_to_float32_bytes(gzip.decompress(blob))
+        if encoding == "gzip_uint8":
+            return gzip.decompress(blob)
+        return zlib.decompress(blob)
 
     def get_frame(self, grid_key: str, filename: str) -> bytes | None:
         """Fetch and decompress a cached binary frame buffer.
@@ -509,7 +574,7 @@ class SpatialSqliteCache:
         filename: str,
         precision: Literal["float32", "float16"] = "float32",
     ) -> tuple[bytes, str] | None:
-        """Fetch a cached binary frame pre-converted and gzip-compressed in RAM.
+        """Fetch a wire-ready gzipped binary frame from RAM or SQLite with zero redundant work.
 
         Args:
             grid_key: Quantized spatial grid identifier.
@@ -526,13 +591,40 @@ class SpatialSqliteCache:
             return cached_gz, dtype_header
 
         raw = self._mem_cache.get(f"frame_raw:{grid_key}:{filename}")
-        if raw is None:
-            raw = self._read_raw_frame_from_sqlite(grid_key, filename)
-        if raw is None:
-            return None
+        if raw is not None:
+            payload = (
+                convert_float32_bytes_to_float16_bytes(raw) if dtype_header == "float16" else raw
+            )
+            gz_bytes = gzip.compress(payload, compresslevel=3)
+            self._mem_cache.put(gz_key, gz_bytes)
+            return gz_bytes, dtype_header
 
-        payload = convert_float32_bytes_to_float16_bytes(raw) if dtype_header == "float16" else raw
-        gz_bytes = gzip.compress(payload, compresslevel=6)
+        encoded = self._read_encoded_frame_from_sqlite(grid_key, filename)
+        if encoded is None:
+            return None
+        blob, encoding = encoded
+
+        # Wire-ready SQLite fast path: zero decompress, zero downcast, zero recompress
+        if (encoding == "gzip_float16" and dtype_header == "float16") or (
+            encoding == "gzip_uint8" and dtype_header == "uint8"
+        ):
+            self._mem_cache.put(gz_key, blob)
+            return blob, dtype_header
+
+        if encoding == "gzip_float16" and dtype_header == "float32":
+            raw32 = convert_float16_bytes_to_float32_bytes(gzip.decompress(blob))
+            gz_bytes = gzip.compress(raw32, compresslevel=3)
+        elif encoding == "gzip_uint8":
+            gz_bytes = blob
+        else:
+            raw_legacy = zlib.decompress(blob)
+            payload = (
+                convert_float32_bytes_to_float16_bytes(raw_legacy)
+                if dtype_header == "float16"
+                else raw_legacy
+            )
+            gz_bytes = gzip.compress(payload, compresslevel=3)
+
         self._mem_cache.put(gz_key, gz_bytes)
         return gz_bytes, dtype_header
 
@@ -545,7 +637,7 @@ class SpatialSqliteCache:
         manifest: dict[str, Any],
         frames: dict[str, bytes],
     ) -> None:
-        """Persist a sky-patch manifest, catalog overlays, and compressed frames.
+        """Persist a sky-patch manifest, catalog overlays, and wire-ready compressed frames.
 
         Args:
             grid_key: Quantized spatial grid identifier.
@@ -565,11 +657,20 @@ class SpatialSqliteCache:
         }
         catalogs_str = json.dumps(catalogs_payload, separators=(",", ":"))
 
-        frame_rows: list[tuple[str, str, bytes, int]] = []
+        frame_rows: list[tuple[str, str, bytes, int, str]] = []
         total_bytes = len(manifest_str.encode("utf-8")) + len(catalogs_str.encode("utf-8"))
         for fname, raw_bytes in frames.items():
-            comp = zlib.compress(raw_bytes, level=6)
-            frame_rows.append((grid_key, fname, comp, len(raw_bytes)))
+            if not fname.endswith("_flags.bin") and len(raw_bytes) == BINARY_DETECTOR_FLOAT32_BYTES:
+                f16_bytes = convert_float32_bytes_to_float16_bytes(raw_bytes)
+                comp = gzip.compress(f16_bytes, compresslevel=3)
+                encoding = "gzip_float16"
+            elif fname.endswith("_flags.bin"):
+                comp = gzip.compress(raw_bytes, compresslevel=3)
+                encoding = "gzip_uint8"
+            else:
+                comp = zlib.compress(raw_bytes, level=6)
+                encoding = "zlib_raw"
+            frame_rows.append((grid_key, fname, comp, len(raw_bytes), encoding))
             total_bytes += len(comp)
 
         with self.connection() as conn:
@@ -599,8 +700,10 @@ class SpatialSqliteCache:
             if frame_rows:
                 conn.executemany(
                     """
-                    INSERT INTO binary_frames (grid_key, filename, compressed_blob, raw_byte_size)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO binary_frames (
+                        grid_key, filename, compressed_blob, raw_byte_size, encoding
+                    )
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     frame_rows,
                 )

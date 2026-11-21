@@ -2,25 +2,41 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response as StarletteResponse
 from starlette.types import Scope
 
-from app.services.backend_service import StarHuntersBackendService
+from app.services.backend_service import ColdMissRateLimitError, StarHuntersBackendService
 from app.services.logging_config import configure_backend_logging
 from app.services.spectrum_extractor import SpectrumExtractionError
 
 _HTTP_CLIENT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 _HTTP_CLIENT_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+
+
+def _extract_client_ip(request: Request) -> str:
+    """Resolve originating client IP behind Fly.io / reverse-proxy headers."""
+    fly_ip = request.headers.get("fly-client-ip")
+    if fly_ip and fly_ip.strip():
+        return fly_ip.strip()
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
 
 
 class CachedStaticFiles(StaticFiles):
@@ -195,7 +211,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         mjd: float | None = Query(None),
     ) -> dict[str, Any]:
         """Query cached Solar System ephemerides falling within the requested FOV."""
-        return active_service.get_solar_system_in_fov(ra=ra, dec=dec, fov=fov, mjd=mjd)
+        return await active_service.get_solar_system_in_fov_async(ra=ra, dec=dec, fov=fov, mjd=mjd)
 
     @fastapi_app.get("/api/v1/solar-system/most")
     @fastapi_app.get("/api/solar-system/most")
@@ -210,6 +226,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
     @fastapi_app.get("/api/v1/sky-patch")
     @fastapi_app.get("/api/sky-patch")
     async def get_sky_patch(
+        request: Request,
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),
         dec: float = Query(..., ge=-90.0, le=90.0),
@@ -224,7 +241,14 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
                 dec=dec,
                 fov=fov,
                 live_catalogs=live_catalogs,
+                client_ip=_extract_client_ip(request),
             )
+        except ColdMissRateLimitError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": str(max(1, math.ceil(exc.retry_after_s)))},
+            ) from exc
         except HTTPException:
             raise
         except Exception as exc:
@@ -243,7 +267,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """Stream a packed binary detector cube or uint8 hygiene mask."""
         accept_gzip = "gzip" in (accept_encoding or "").lower()
         try:
-            body, headers = active_service.get_frame_bytes(
+            body, headers = await active_service.get_frame_bytes_async(
                 grid_key=grid_key,
                 filename=filename,
                 precision=precision,
@@ -260,6 +284,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
     @fastapi_app.get("/api/v1/spectrum")
     @fastapi_app.get("/api/spectrum")
     async def get_spectrum(
+        request: Request,
         response: Response,
         ra: float = Query(..., ge=0.0, le=360.0),
         dec: float = Query(..., ge=-90.0, le=90.0),
@@ -268,6 +293,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """Extract or retrieve a 102-channel SPHEREx spectrum at ``(ra, dec)``.
 
         Args:
+            request: Incoming FastAPI request used to resolve client IP.
             response: FastAPI response object for cache-control headers.
             ra: Target Right Ascension in degrees.
             dec: Target Declination in degrees.
@@ -278,7 +304,18 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """
         response.headers["Cache-Control"] = "public, max-age=3600"
         try:
-            return await active_service.get_forced_spectrum_async(ra=ra, dec=dec, label=label)
+            return await active_service.get_forced_spectrum_async(
+                ra=ra,
+                dec=dec,
+                label=label,
+                client_ip=_extract_client_ip(request),
+            )
+        except ColdMissRateLimitError as exc:
+            raise HTTPException(
+                status_code=429,
+                detail=str(exc),
+                headers={"Retry-After": str(max(1, math.ceil(exc.retry_after_s)))},
+            ) from exc
         except TimeoutError as exc:
             raise HTTPException(
                 status_code=504,

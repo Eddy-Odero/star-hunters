@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gzip
 import importlib.util
 import json
+import os
 import re
 import tempfile
+import time
 import unittest
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -20,6 +24,8 @@ from fastapi.testclient import TestClient
 from app.main import CachedStaticFiles, create_app
 from app.models.contracts import (
     BINARY_DETECTOR_FLOAT16_BYTES,
+    BINARY_DETECTOR_FLOAT32_BYTES,
+    BINARY_FLAGS_UINT8_BYTES,
     SHOWCASE_TARGETS,
     TRACKING_SQUARE_COLORS,
     convert_float32_bytes_to_float16_bytes,
@@ -630,6 +636,7 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         grid_key = manifest["query"]["grid_key"]
         client = TestClient(create_app(service))
 
+        # Float16 gzip payload is precomputed at put_sky_patch time -> 0 conversions on read
         with patch(
             "app.services.spatial_cache.convert_float32_bytes_to_float16_bytes",
             wraps=convert_float32_bytes_to_float16_bytes,
@@ -644,16 +651,25 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
                 params={"precision": "float16"},
                 headers={"Accept-Encoding": "gzip"},
             )
-            self.assertEqual(mock_f16.call_count, 1)
+            self.cache._mem_cache.clear()
+            r3 = client.get(
+                f"/api/v1/frames/{grid_key}/pass_1.bin",
+                params={"precision": "float16"},
+                headers={"Accept-Encoding": "gzip"},
+            )
+            self.assertEqual(mock_f16.call_count, 0)
 
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r3.status_code, 200)
         self.assertEqual(r1.headers.get("content-encoding"), "gzip")
         self.assertEqual(r2.headers.get("content-encoding"), "gzip")
+        self.assertEqual(r3.headers.get("content-encoding"), "gzip")
         self.assertIn("Accept-Encoding", r1.headers.get("vary", ""))
         self.assertEqual(r1.headers.get("x-binary-dtype"), "float16")
         self.assertEqual(len(r1.content), BINARY_DETECTOR_FLOAT16_BYTES)
         self.assertEqual(r1.content, r2.content)
+        self.assertEqual(r1.content, r3.content)
         # get_frame_gzip must cache only frame_gz without polluting _mem_cache with frame_raw
         self.assertIsNotNone(self.cache._mem_cache.get(f"frame_gz:{grid_key}:pass_1.bin:float16"))
         self.assertIsNone(self.cache._mem_cache.get(f"frame_raw:{grid_key}:pass_1.bin"))
@@ -733,15 +749,155 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
 
         from app.services.backend_service import compute_max_concurrent_coadds
 
-        # <= 6 cores: reserve half for asyncio
+        # <= 6 cores: reserve half for IO/asyncio
         self.assertEqual(compute_max_concurrent_coadds(1), 1)
         self.assertEqual(compute_max_concurrent_coadds(2), 1)
         self.assertEqual(compute_max_concurrent_coadds(4), 2)
         self.assertEqual(compute_max_concurrent_coadds(6), 3)
-        # > 6 cores: reserve a quarter for asyncio
-        self.assertEqual(compute_max_concurrent_coadds(8), 6)
+        # > 6 cores: reserve at least 3 (or ceil(total/4)) for IO/asyncio
+        self.assertEqual(compute_max_concurrent_coadds(7), 4)
+        self.assertEqual(compute_max_concurrent_coadds(8), 5)
+        self.assertEqual(compute_max_concurrent_coadds(10), 7)
         self.assertEqual(compute_max_concurrent_coadds(12), 9)
         self.assertEqual(compute_max_concurrent_coadds(16), 12)
+
+    def test_wire_ready_sqlite_encoding_and_legacy_zlib_fallback(self) -> None:
+        meta = SHOWCASE_TARGETS["wise_0855"]
+        manifest = build_sky_patch_manifest_payload(
+            ra=meta["ra"], dec=meta["dec"], fov_arcmin=5.0, slug="wise_0855"
+        )
+        frames = generate_synthetic_epoch_frames(slug="wise_0855", manifest=manifest)
+        grid_key, ra_q, dec_q = compute_grid_key(meta["ra"], meta["dec"], 5.0)
+        self.cache.put_sky_patch(grid_key, ra_q, dec_q, 5.0, manifest, frames)
+
+        with self.cache.connection() as conn:
+            rows = conn.execute(
+                "SELECT filename, encoding, compressed_blob FROM binary_frames WHERE grid_key = ?",
+                (grid_key,),
+            ).fetchall()
+        enc_by_name = {str(r["filename"]): str(r["encoding"]) for r in rows}
+        self.assertEqual(enc_by_name["pass_1.bin"], "gzip_float16")
+        self.assertEqual(enc_by_name["pass_1_flags.bin"], "gzip_uint8")
+
+        raw32 = self.cache.get_frame(grid_key, "pass_1.bin")
+        assert raw32 is not None
+        self.assertEqual(len(raw32), BINARY_DETECTOR_FLOAT32_BYTES)
+        flags_raw = self.cache.get_frame(grid_key, "pass_1_flags.bin")
+        assert flags_raw is not None
+        self.assertEqual(len(flags_raw), BINARY_FLAGS_UINT8_BYTES)
+
+        # Simulate a legacy zlib_raw row on disk and verify backwards-compatible decoding
+        with self.cache.connection() as conn:
+            conn.execute(
+                "UPDATE binary_frames SET compressed_blob = ?, encoding = 'zlib_raw' "
+                "WHERE grid_key = ? AND filename = ?",
+                (zlib.compress(frames["pass_2.bin"], level=1), grid_key, "pass_2.bin"),
+            )
+        self.cache._mem_cache.clear()
+        legacy_gz = self.cache.get_frame_gzip(grid_key, "pass_2.bin", precision="float16")
+        assert legacy_gz is not None
+        self.assertEqual(legacy_gz[1], "float16")
+        self.assertEqual(len(gzip.decompress(legacy_gz[0])), BINARY_DETECTOR_FLOAT16_BYTES)
+
+    def test_cpu_and_io_executor_isolation(self) -> None:
+        async def _verify_isolation() -> None:
+            seed_svc = StarHuntersBackendService(cache=self.cache, enable_archival_data=False)
+            warm = await seed_svc.get_sky_patch_async(133.7951, -7.2451, 5.0, live_catalogs=False)
+            warm_gk = warm["query"]["grid_key"]
+            self.cache._mem_cache.clear()
+
+            from app.services.skyview_fallback import SkyViewFallbackError
+            from app.services.wise_fallback import WiseFallbackError
+
+            def _raise_wise(**_kw: object) -> object:
+                raise WiseFallbackError("offline")
+
+            def _raise_skyview(**_kw: object) -> object:
+                raise SkyViewFallbackError("offline")
+
+            with patch.dict(os.environ, {"ARCHIVAL_MAX_CONCURRENT_COADDS": "1"}):
+                svc = StarHuntersBackendService(
+                    cache=self.cache,
+                    enable_archival_data=True,
+                    spherex_cutout_fetcher=lambda **_kw: (time.sleep(0.35), [])[1],
+                    wise_fallback_fetcher=_raise_wise,
+                    skyview_fallback_fetcher=_raise_skyview,
+                    cold_miss_rate_limit_per_min=0,
+                )
+
+            slow_tasks = [
+                asyncio.create_task(
+                    svc.get_sky_patch_async(40.0 + i * 2.0, 10.0, 5.0, live_catalogs=False)
+                )
+                for i in range(4)
+            ]
+            await asyncio.sleep(0.03)
+            t0 = time.perf_counter()
+            e2s, (frame_body, _hdr) = await asyncio.gather(
+                svc.get_earth_to_sky_async(lat=51.5, lon=-0.12, prewarm_patch=False),
+                svc.get_frame_bytes_async(
+                    warm_gk, "pass_1.bin", precision="float16", accept_gzip=True
+                ),
+            )
+            io_elapsed_s = time.perf_counter() - t0
+            self.assertIn("zenith_icrs", e2s)
+            self.assertGreater(len(frame_body), 0)
+            self.assertLess(io_elapsed_s, 0.25)
+            await asyncio.gather(*slow_tasks)
+
+        asyncio.run(_verify_isolation())
+
+    def test_cold_miss_per_ip_rate_limiter_allows_cached_reads(self) -> None:
+        service = StarHuntersBackendService(
+            cache=self.cache,
+            enable_archival_data=False,
+            cold_miss_rate_limit_per_min=2,
+        )
+        # Pre-seed one cached patch before creating client
+        cached_manifest = service.get_sky_patch(133.7951, -7.2451, 5.0)
+        self.assertIsNotNone(cached_manifest)
+        client = TestClient(create_app(service))
+
+        bot_headers = {"fly-client-ip": "203.0.113.10"}
+        human_headers = {"fly-client-ip": "203.0.113.99"}
+
+        r1 = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 20.0, "dec": 10.0, "live_catalogs": "false"},
+            headers=bot_headers,
+        )
+        r2 = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 25.0, "dec": 12.0, "live_catalogs": "false"},
+            headers=bot_headers,
+        )
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+
+        # 3rd cold miss from same IP hits 429 with Retry-After
+        r3_cold = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 30.0, "dec": 14.0, "live_catalogs": "false"},
+            headers=bot_headers,
+        )
+        self.assertEqual(r3_cold.status_code, 429)
+        self.assertIn("retry-after", {k.lower() for k in r3_cold.headers})
+
+        # Cached read from that same IP is never throttled
+        r4_cached = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 133.7951, "dec": -7.2451, "live_catalogs": "false"},
+            headers=bot_headers,
+        )
+        self.assertEqual(r4_cached.status_code, 200)
+
+        # Different IP still has its own fresh cold-miss quota
+        r5_other_ip = client.get(
+            "/api/v1/sky-patch",
+            params={"ra": 30.0, "dec": 14.0, "live_catalogs": "false"},
+            headers=human_headers,
+        )
+        self.assertEqual(r5_other_ip.status_code, 200)
 
 
 if __name__ == "__main__":

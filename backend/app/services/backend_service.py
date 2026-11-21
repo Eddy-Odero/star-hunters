@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import gzip
 import math
 import os
 import threading
 import time
+import weakref
+from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -58,12 +62,57 @@ from app.utils.astronomy import datetime_to_mjd
 
 _logger = get_logger("backend")
 
+DEFAULT_COLD_MISS_RATE_LIMIT_PER_MIN = 30
+
+
+class ColdMissRateLimitError(Exception):
+    """Raised when a single client IP exceeds the cold archival synthesis rate limit."""
+
+    def __init__(self, retry_after_s: float, limit_per_min: int) -> None:
+        self.retry_after_s = max(1.0, float(retry_after_s))
+        self.limit_per_min = int(limit_per_min)
+        super().__init__(
+            f"Cold archival synthesis rate limit exceeded ({self.limit_per_min}/min); "
+            f"retry after {math.ceil(self.retry_after_s)}s"
+        )
+
+
+class ColdMissRateLimiter:
+    """Thread-safe per-IP 60s sliding-window rate limiter for uncached cold synthesis misses."""
+
+    def __init__(self, limit_per_min: int) -> None:
+        self.limit_per_min = max(0, int(limit_per_min))
+        self._lock = threading.Lock()
+        self._events: dict[str, deque[float]] = {}
+
+    def allow(self, client_ip: str) -> tuple[bool, float]:
+        """Record a cold miss if under quota; return ``(allowed, retry_after_s)``."""
+        if self.limit_per_min <= 0:
+            return True, 0.0
+        now = time.monotonic()
+        cutoff = now - 60.0
+        key = client_ip or "unknown"
+        with self._lock:
+            if len(self._events) > 4096:
+                stale_ips = [ip for ip, dq in self._events.items() if not dq or dq[-1] <= cutoff]
+                for ip in stale_ips:
+                    self._events.pop(ip, None)
+            dq = self._events.setdefault(key, deque())
+            while dq and dq[0] <= cutoff:
+                dq.popleft()
+            if len(dq) >= self.limit_per_min:
+                retry_after = max(1.0, 60.0 - (now - dq[0]))
+                return False, retry_after
+            dq.append(now)
+            return True, 0.0
+
 
 def compute_max_concurrent_coadds(cpu_cores: int | None = None) -> int:
     """Compute dynamic max concurrent archival co-add workers from available CPU cores.
 
-    If there are 6 or fewer cores, reserves half of them for asyncio; if there are
-    more than 6 cores, reserves a quarter of them for asyncio.
+    If there are 6 or fewer cores, reserves half of them for asyncio/I/O; if there
+    are more than 6 cores, reserves a quarter of them with a minimum floor of 3 so
+    I/O capacity stays monotonic across 6-12 cores.
 
     Args:
         cpu_cores: Optional explicit core count. Defaults to affinity-visible cores
@@ -82,10 +131,10 @@ def compute_max_concurrent_coadds(cpu_cores: int | None = None) -> int:
             cpu_cores = os.cpu_count() or 2
     total = max(1, int(cpu_cores))
     if total <= 6:
-        reserved_for_asyncio = max(1, math.ceil(total / 2))
+        reserved_for_io = max(1, math.ceil(total / 2))
     else:
-        reserved_for_asyncio = max(1, math.ceil(total / 4))
-    return max(1, total - reserved_for_asyncio)
+        reserved_for_io = max(3, math.ceil(total / 4))
+    return max(1, total - reserved_for_io)
 
 
 class StarHuntersBackendService:
@@ -103,6 +152,7 @@ class StarHuntersBackendService:
         spectrum_extractor: Callable[..., dict[str, Any]] = extract_forced_spectrum,
         catalog_pipeline: AutomatedCelestialPipeline | None = None,
         archival_resolver: ArchivalResolver | None = None,
+        cold_miss_rate_limit_per_min: int | None = None,
     ) -> None:
         """Initialize the backend service with optional injected dependencies.
 
@@ -147,11 +197,67 @@ class StarHuntersBackendService:
         max_coadds = (
             max(1, int(raw_max_coadds)) if raw_max_coadds else compute_max_concurrent_coadds()
         )
-        self._archival_semaphore = threading.BoundedSemaphore(max_coadds)
-        _logger.info(
-            "StarHuntersBackendService initialized (enable_archival_data=%s)",
-            self.enable_archival_data,
+        self._max_concurrent_coadds = max_coadds
+        io_workers = max(8, min(32, (os.cpu_count() or 4) * 4))
+        self._cpu_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_coadds,
+            thread_name_prefix="spherex-cpu",
         )
+        self._io_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=io_workers,
+            thread_name_prefix="spherex-io",
+        )
+        self._executor_finalizer = weakref.finalize(
+            self,
+            self._shutdown_executors,
+            self._cpu_executor,
+            self._io_executor,
+        )
+        self._cpu_semaphores: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, asyncio.Semaphore
+        ] = weakref.WeakKeyDictionary()
+        self._archival_semaphore = threading.BoundedSemaphore(max_coadds)
+
+        if cold_miss_rate_limit_per_min is not None:
+            cold_limit = max(0, int(cold_miss_rate_limit_per_min))
+        else:
+            raw_limit = os.environ.get("COLD_MISS_RATE_LIMIT_PER_IP_PER_MIN", "").strip()
+            try:
+                cold_limit = (
+                    max(0, int(raw_limit)) if raw_limit else DEFAULT_COLD_MISS_RATE_LIMIT_PER_MIN
+                )
+            except ValueError:
+                cold_limit = DEFAULT_COLD_MISS_RATE_LIMIT_PER_MIN
+        self._cold_miss_limiter = ColdMissRateLimiter(cold_limit)
+        _logger.info(
+            "StarHuntersBackendService initialized (enable_archival_data=%s, cpu_workers=%d, "
+            "io_workers=%d, cold_miss_limit=%d/min)",
+            self.enable_archival_data,
+            self._max_concurrent_coadds,
+            io_workers,
+            cold_limit,
+        )
+
+    @staticmethod
+    def _shutdown_executors(
+        cpu_pool: concurrent.futures.ThreadPoolExecutor,
+        io_pool: concurrent.futures.ThreadPoolExecutor,
+    ) -> None:
+        """Shutdown worker thread pools cleanly on service garbage collection."""
+        for pool in (cpu_pool, io_pool):
+            try:
+                pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
+    def _get_cpu_semaphore(self) -> asyncio.Semaphore:
+        """Return an ``asyncio.Semaphore`` bound to the current running event loop."""
+        loop = asyncio.get_running_loop()
+        sem = self._cpu_semaphores.get(loop)
+        if sem is None:
+            sem = asyncio.Semaphore(self._max_concurrent_coadds)
+            self._cpu_semaphores[loop] = sem
+        return sem
 
     def cancel_background_tasks(self) -> None:
         """Cancel any pending background prewarm tasks."""
@@ -409,8 +515,10 @@ class StarHuntersBackendService:
         timeout_s: float = 24.0,
     ) -> dict[str, Any]:
         """Offload Earth-to-Sky zenith lookup off the ASGI event loop and prewarm in background."""
-        payload = await asyncio.wait_for(
-            asyncio.to_thread(
+        loop = asyncio.get_running_loop()
+        worker_fut = loop.run_in_executor(
+            self._io_executor,
+            functools.partial(
                 self.get_earth_to_sky,
                 lat=lat,
                 lon=lon,
@@ -418,8 +526,9 @@ class StarHuntersBackendService:
                 fallback_seed=fallback_seed,
                 prewarm_patch=False,
             ),
-            timeout=timeout_s,
         )
+        worker_fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+        payload = await asyncio.wait_for(worker_fut, timeout=timeout_s)
         if prewarm_patch:
             earth = payload.get("earth", {})
             is_fallback = bool(earth.get("is_fallback_capital"))
@@ -433,7 +542,11 @@ class StarHuntersBackendService:
                 ra = float(payload["zenith_icrs"]["ra"])
                 dec = float(payload["zenith_icrs"]["dec"])
                 grid_key, _, _ = compute_grid_key(ra, dec, 5.0)
-                cached_patch = self.cache.get_manifest(grid_key)
+                cached_patch = self.cache.peek_manifest_memory(grid_key)
+                if cached_patch is None:
+                    cached_patch = await loop.run_in_executor(
+                        self._io_executor, self.cache.get_manifest, grid_key
+                    )
                 needs_refresh = self.enable_archival_data and self._is_pending_archival_demo(
                     cached_patch
                 )
@@ -552,18 +665,19 @@ class StarHuntersBackendService:
         Returns:
             Schema-validated ``CatalogsResponse`` dictionary.
         """
+        loop = asyncio.get_running_loop()
         grid_key, _, _ = compute_grid_key(ra, dec, fov)
-        cached_catalogs = self.cache.get_catalogs(grid_key)
+        cached_catalogs = self.cache.peek_catalogs_memory(grid_key)
+        if cached_catalogs is None:
+            cached_catalogs = await loop.run_in_executor(
+                self._io_executor, self.cache.get_catalogs, grid_key
+            )
         if cached_catalogs is not None:
             _logger.info("Catalogs cache hit for %s", grid_key)
             validate_catalogs_response(cached_catalogs)
             return cached_catalogs
 
         async def _build_catalogs() -> dict[str, Any]:
-            cached_again = self.cache.get_catalogs(grid_key)
-            if cached_again is not None:
-                validate_catalogs_response(cached_again)
-                return cached_again
             manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
             pipeline_result = await self._run_singleflight(
                 f"catalog_pipeline:{grid_key}:live{int(live_catalogs)}",
@@ -654,6 +768,7 @@ class StarHuntersBackendService:
         dec: float,
         fov: float = 5.0,
         live_catalogs: bool = True,
+        client_ip: str | None = None,
     ) -> dict[str, Any]:
         """Asynchronously resolve, validate, and cache a sky-patch manifest and frames.
 
@@ -662,13 +777,22 @@ class StarHuntersBackendService:
             dec: Field center Declination in degrees.
             fov: Field of view in arcminutes.
             live_catalogs: Whether live SIMBAD/Gaia queries are allowed on cache miss.
+            client_ip: Optional client IP address for cold-miss archival rate limiting.
 
         Returns:
             Validated ``SkyPatchManifest`` dictionary.
+
+        Raises:
+            ColdMissRateLimitError: If ``client_ip`` exceeds the cold archival rate limit.
         """
         t0 = time.perf_counter()
+        loop = asyncio.get_running_loop()
         grid_key, ra_q, dec_q = compute_grid_key(ra, dec, fov)
-        cached_manifest = self.cache.get_manifest(grid_key)
+        cached_manifest = self.cache.peek_manifest_memory(grid_key)
+        if cached_manifest is None:
+            cached_manifest = await loop.run_in_executor(
+                self._io_executor, self.cache.get_manifest, grid_key
+            )
         if cached_manifest is not None:
             is_legacy_demo = self._is_pending_archival_demo(cached_manifest)
             if not (self.enable_archival_data and is_legacy_demo):
@@ -676,81 +800,25 @@ class StarHuntersBackendService:
                 validate_sky_patch_manifest(cached_manifest)
                 return cached_manifest
 
-        async def _compute_patch() -> dict[str, Any]:
-            base_manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
-            slug = base_manifest["target_metadata"]["slug"]
-            if slug in SHOWCASE_TARGETS:
-                self.cache.pin_grid_key(grid_key)
-            synthetic_frames = generate_synthetic_epoch_frames(slug=slug, manifest=base_manifest)
-
-            catalog_coro = self._run_singleflight(
-                f"catalog_pipeline:{grid_key}:live{int(live_catalogs)}",
-                lambda: self.catalog_pipeline.resolve_patch_objects(
-                    ra_deg=ra,
-                    dec_deg=dec,
-                    fov_arcmin=fov,
-                    wcs=base_manifest["wcs"],
-                    epochs_meta=base_manifest["epochs"],
-                    allow_live=live_catalogs,
-                ),
-            )
-
-            if self.enable_archival_data:
-                archival_timeout_s = _env_float("ARCHIVAL_RESOLVE_BUDGET_S", 18.0) + 6.0
-
-                def _run_coadd_throttled() -> tuple[dict[str, Any], dict[str, bytes]]:
-                    with self._archival_semaphore:
-                        return self.archival_resolver.resolve_archival_patch_sync(
-                            manifest=base_manifest,
-                            grid_key=grid_key,
-                            ra=ra,
-                            dec=dec,
-                            fov=fov,
-                            fallback_frames=synthetic_frames,
-                        )
-
-                async def _resolve_archival_bounded() -> tuple[dict[str, Any], dict[str, bytes]]:
-                    worker_fut = asyncio.ensure_future(asyncio.to_thread(_run_coadd_throttled))
-                    worker_fut.add_done_callback(
-                        lambda f: f.exception() if not f.cancelled() else None
-                    )
-                    try:
-                        return await asyncio.wait_for(
-                            worker_fut,
-                            timeout=archival_timeout_s,
-                        )
-                    except TimeoutError:
-                        _logger.warning(
-                            "Archival resolution for %s exceeded %.1fs; "
-                            "serving labeled simulated baseline",
-                            grid_key,
-                            archival_timeout_s,
-                        )
-                        timed_out_manifest = dict(base_manifest)
-                        timed_out_manifest["data_source_summary"] = {
-                            "primary_mission": "Simulated",
-                            "has_multi_epoch_spherex": False,
-                            "uses_wise_fallback": False,
-                            "baseline_days": float(
-                                base_manifest["data_source_summary"].get("baseline_days", 182.7)
-                            ),
-                            "status_note": (
-                                f"Archival retrieval timed out after {archival_timeout_s:.0f}s; "
-                                "simulated baseline"
-                            ),
-                            "provenance_tier": "simulated",
-                            "survey_name": "Simulated Multi-Band Baseline",
-                        }
-                        return timed_out_manifest, dict(synthetic_frames)
-
-                pipeline_result, (resolved_manifest, frames) = await asyncio.gather(
-                    catalog_coro, _resolve_archival_bounded()
+        sf_key = f"patch:{grid_key}:arch{int(self.enable_archival_data)}:live{int(live_catalogs)}"
+        existing_sf = self._inflight_tasks.get(sf_key)
+        is_coalesced = (
+            existing_sf is not None and not existing_sf.done() and existing_sf.get_loop() is loop
+        )
+        if client_ip and not is_coalesced:
+            allowed, retry_after_s = self._cold_miss_limiter.allow(client_ip)
+            if not allowed:
+                raise ColdMissRateLimitError(
+                    retry_after_s=retry_after_s,
+                    limit_per_min=self._cold_miss_limiter.limit_per_min,
                 )
-            else:
-                pipeline_result = await catalog_coro
-                resolved_manifest = base_manifest
-                frames = synthetic_frames
 
+        def _finalize_and_store_patch(
+            base_manifest: dict[str, Any],
+            resolved_manifest: dict[str, Any],
+            frames: dict[str, bytes],
+            pipeline_result: dict[str, Any],
+        ) -> dict[str, Any]:
             epoch_ids_before = [e["epoch_id"] for e in base_manifest["epochs"]]
             epoch_ids_after = [e["epoch_id"] for e in resolved_manifest["epochs"]]
             if epoch_ids_after != epoch_ids_before:
@@ -783,6 +851,106 @@ class StarHuntersBackendService:
                 frames=frames,
             )
             validate_sky_patch_manifest(merged_manifest)
+            return merged_manifest
+
+        async def _compute_patch() -> dict[str, Any]:
+            base_manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
+            slug = base_manifest["target_metadata"]["slug"]
+            if slug in SHOWCASE_TARGETS:
+                self.cache.pin_grid_key(grid_key)
+
+            catalog_coro = self._run_singleflight(
+                f"catalog_pipeline:{grid_key}:live{int(live_catalogs)}",
+                lambda: self.catalog_pipeline.resolve_patch_objects(
+                    ra_deg=ra,
+                    dec_deg=dec,
+                    fov_arcmin=fov,
+                    wcs=base_manifest["wcs"],
+                    epochs_meta=base_manifest["epochs"],
+                    allow_live=live_catalogs,
+                ),
+            )
+            frames_fut = loop.run_in_executor(
+                self._io_executor,
+                functools.partial(
+                    generate_synthetic_epoch_frames,
+                    slug=slug,
+                    manifest=base_manifest,
+                ),
+            )
+
+            if self.enable_archival_data:
+                archival_timeout_s = _env_float("ARCHIVAL_RESOLVE_BUDGET_S", 18.0) + 6.0
+
+                async def _resolve_in_cpu_pool(
+                    fallback_frames: dict[str, bytes],
+                ) -> tuple[dict[str, Any], dict[str, bytes]]:
+                    async with self._get_cpu_semaphore():
+                        cpu_fut = loop.run_in_executor(
+                            self._cpu_executor,
+                            functools.partial(
+                                self.archival_resolver.resolve_archival_patch_sync,
+                                manifest=base_manifest,
+                                grid_key=grid_key,
+                                ra=ra,
+                                dec=dec,
+                                fov=fov,
+                                fallback_frames=fallback_frames,
+                            ),
+                        )
+                        cpu_fut.add_done_callback(
+                            lambda f: f.exception() if not f.cancelled() else None
+                        )
+                        return await cpu_fut
+
+                async def _resolve_archival_bounded() -> tuple[dict[str, Any], dict[str, bytes]]:
+                    fallback_frames = await frames_fut
+                    try:
+                        return await asyncio.wait_for(
+                            _resolve_in_cpu_pool(fallback_frames),
+                            timeout=archival_timeout_s,
+                        )
+                    except TimeoutError:
+                        _logger.warning(
+                            "Archival resolution for %s exceeded %.1fs; "
+                            "serving labeled simulated baseline",
+                            grid_key,
+                            archival_timeout_s,
+                        )
+                        timed_out_manifest = dict(base_manifest)
+                        timed_out_manifest["data_source_summary"] = {
+                            "primary_mission": "Simulated",
+                            "has_multi_epoch_spherex": False,
+                            "uses_wise_fallback": False,
+                            "baseline_days": float(
+                                base_manifest["data_source_summary"].get("baseline_days", 182.7)
+                            ),
+                            "status_note": (
+                                f"Archival retrieval timed out after {archival_timeout_s:.0f}s; "
+                                "simulated baseline"
+                            ),
+                            "provenance_tier": "simulated",
+                            "survey_name": "Simulated Multi-Band Baseline",
+                        }
+                        return timed_out_manifest, dict(fallback_frames)
+
+                pipeline_result, (resolved_manifest, frames) = await asyncio.gather(
+                    catalog_coro, _resolve_archival_bounded()
+                )
+            else:
+                pipeline_result, frames = await asyncio.gather(catalog_coro, frames_fut)
+                resolved_manifest = base_manifest
+
+            merged_manifest = await loop.run_in_executor(
+                self._io_executor,
+                functools.partial(
+                    _finalize_and_store_patch,
+                    base_manifest,
+                    resolved_manifest,
+                    frames,
+                    pipeline_result,
+                ),
+            )
             _logger.info(
                 "Sky patch %s assembled (mission=%s, tier=%s, epochs=%d, known=%d, note=%s) "
                 "in %.2fs",
@@ -796,10 +964,7 @@ class StarHuntersBackendService:
             )
             return merged_manifest
 
-        return await self._run_singleflight(
-            f"patch:{grid_key}:arch{int(self.enable_archival_data)}:live{int(live_catalogs)}",
-            _compute_patch,
-        )
+        return await self._run_singleflight(sf_key, _compute_patch)
 
     def get_solar_system_in_fov(
         self,
@@ -837,6 +1002,20 @@ class StarHuntersBackendService:
             "bodies": matches,
             "ephemeris_cache": self.cache.get_ephemeris_stats(),
         }
+
+    async def get_solar_system_in_fov_async(
+        self,
+        ra: float,
+        dec: float,
+        fov: float = 5.0,
+        mjd: float | None = None,
+    ) -> dict[str, Any]:
+        """Offload SQLite ephemeris cone lookup onto the dedicated I/O executor."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._io_executor,
+            functools.partial(self.get_solar_system_in_fov, ra=ra, dec=dec, fov=fov, mjd=mjd),
+        )
 
     async def lookup_most_object(self, obj_name: str) -> dict[str, Any]:
         """Query cached or live NASA/IPAC IRSA MOST intersections for a Solar System target.
@@ -908,6 +1087,15 @@ class StarHuntersBackendService:
                     "Content-Encoding": "gzip",
                     "Vary": "Accept-Encoding",
                 }
+        elif precision == "float16" and not filename.endswith("_flags.bin"):
+            cached_gz = self.cache.get_frame_gzip(grid_key, filename, precision="float16")
+            if cached_gz is not None:
+                gz_bytes, dtype_header = cached_gz
+                return gzip.decompress(gz_bytes), {
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Binary-Dtype": dtype_header,
+                    "Content-Type": "application/octet-stream",
+                }
 
         raw = self.cache.get_frame(grid_key, filename)
         if raw is None:
@@ -940,10 +1128,41 @@ class StarHuntersBackendService:
             "Content-Type": "application/octet-stream",
         }
         if accept_gzip:
-            body = gzip.compress(body, compresslevel=6)
+            body = gzip.compress(body, compresslevel=3)
             headers["Content-Encoding"] = "gzip"
             headers["Vary"] = "Accept-Encoding"
         return body, headers
+
+    async def get_frame_bytes_async(
+        self,
+        grid_key: str,
+        filename: str,
+        precision: Literal["float32", "float16"] = "float32",
+        accept_gzip: bool = False,
+    ) -> tuple[bytes, dict[str, str]]:
+        """Serve RAM LRU frame hits synchronously and offload SQLite reads to ``_io_executor``."""
+        if accept_gzip:
+            peeked = self.cache.peek_frame_gzip_memory(grid_key, filename, precision=precision)
+            if peeked is not None:
+                gz_bytes, dtype_header = peeked
+                return gz_bytes, {
+                    "Cache-Control": "public, max-age=31536000, immutable",
+                    "X-Binary-Dtype": dtype_header,
+                    "Content-Type": "application/octet-stream",
+                    "Content-Encoding": "gzip",
+                    "Vary": "Accept-Encoding",
+                }
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._io_executor,
+            functools.partial(
+                self.get_frame_bytes,
+                grid_key=grid_key,
+                filename=filename,
+                precision=precision,
+                accept_gzip=accept_gzip,
+            ),
+        )
 
     def get_forced_spectrum(
         self,
@@ -1002,33 +1221,56 @@ class StarHuntersBackendService:
         dec: float,
         label: str | None = None,
         timeout_s: float = 20.0,
+        client_ip: str | None = None,
     ) -> dict[str, Any]:
-        """Asynchronously compute/fetch a 102-band forced spectrum off the event loop."""
+        """Fetch or compute a 102-band forced spectrum using separated I/O and CPU pools."""
         clean_label = label.strip() if label and label.strip() else None
         resolved_label = clean_label or "Selected sky position"
         spectrum_key = f"spec_forced_ra{round(ra, 4):.4f}_dec{round(dec, 4):.4f}"
-        cached_spec = self.cache.get_spectrum(spectrum_key)
+        loop = asyncio.get_running_loop()
+        cached_spec = self.cache.peek_spectrum_memory(spectrum_key)
+        if cached_spec is None:
+            cached_spec = await loop.run_in_executor(
+                self._io_executor, self.cache.get_spectrum, spectrum_key
+            )
         if cached_spec is not None:
             cached_spec["source_label"] = resolved_label
             validate_spectrum_payload(cached_spec)
             return cached_spec
 
-        async def _compute() -> dict[str, Any]:
-            worker_fut = asyncio.ensure_future(
-                asyncio.to_thread(
-                    self.get_forced_spectrum,
-                    ra=ra,
-                    dec=dec,
-                    label=resolved_label,
+        sf_key = f"spectrum:{spectrum_key}"
+        existing_sf = self._inflight_tasks.get(sf_key)
+        is_coalesced = (
+            existing_sf is not None and not existing_sf.done() and existing_sf.get_loop() is loop
+        )
+        if client_ip and not is_coalesced:
+            allowed, retry_after_s = self._cold_miss_limiter.allow(client_ip)
+            if not allowed:
+                raise ColdMissRateLimitError(
+                    retry_after_s=retry_after_s,
+                    limit_per_min=self._cold_miss_limiter.limit_per_min,
                 )
-            )
-            worker_fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-            return await asyncio.wait_for(
-                worker_fut,
-                timeout=timeout_s,
-            )
 
-        payload = await self._run_singleflight(f"spectrum:{spectrum_key}", _compute)
+        async def _compute() -> dict[str, Any]:
+            async def _run_in_cpu_pool() -> dict[str, Any]:
+                async with self._get_cpu_semaphore():
+                    cpu_fut = loop.run_in_executor(
+                        self._cpu_executor,
+                        functools.partial(
+                            self.get_forced_spectrum,
+                            ra=ra,
+                            dec=dec,
+                            label=resolved_label,
+                        ),
+                    )
+                    cpu_fut.add_done_callback(
+                        lambda f: f.exception() if not f.cancelled() else None
+                    )
+                    return await cpu_fut
+
+            return await asyncio.wait_for(_run_in_cpu_pool(), timeout=timeout_s)
+
+        payload = await self._run_singleflight(sf_key, _compute)
         if payload.get("source_label") != resolved_label:
             payload = dict(payload)
             payload["source_label"] = resolved_label

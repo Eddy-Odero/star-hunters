@@ -26,9 +26,9 @@ primary_region = "iad"
   processes = ["app"]
 
   [http_service.concurrency]
-    type = "requests"
-    soft_limit = 20
-    hard_limit = 40
+    type = "connections"
+    soft_limit = 15
+    hard_limit = 25
 
   [[http_service.checks]]
     grace_period = "15s"
