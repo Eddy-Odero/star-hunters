@@ -71,6 +71,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         try:
             yield
         finally:
+            active_service.cancel_background_tasks()
             try:
                 if managed_http_client is not None:
                     if active_service.catalog_pipeline.http_client is managed_http_client:
@@ -297,6 +298,7 @@ def create_app(service: StarHuntersBackendService | None = None) -> FastAPI:
         """Clear all SQLite spatial cache tables when authorized via ``X-Admin-Token``."""
         if x_admin_token != active_service.admin_token:
             raise HTTPException(status_code=403, detail="Invalid X-Admin-Token")
+        active_service.cancel_background_tasks()
         active_service.cache.clear()
         return {"status": "cleared"}
 

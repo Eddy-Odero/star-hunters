@@ -6,6 +6,7 @@ import asyncio
 import gzip
 import math
 import os
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -56,6 +57,35 @@ from app.services.zenith_bridge import (
 from app.utils.astronomy import datetime_to_mjd
 
 _logger = get_logger("backend")
+
+
+def compute_max_concurrent_coadds(cpu_cores: int | None = None) -> int:
+    """Compute dynamic max concurrent archival co-add workers from available CPU cores.
+
+    If there are 6 or fewer cores, reserves half of them for asyncio; if there are
+    more than 6 cores, reserves a quarter of them for asyncio.
+
+    Args:
+        cpu_cores: Optional explicit core count. Defaults to affinity-visible cores
+            (``os.sched_getaffinity(0)``) or ``os.cpu_count()``.
+
+    Returns:
+        Maximum concurrent archival co-add worker threads (at least ``1``).
+    """
+    if cpu_cores is None:
+        if hasattr(os, "sched_getaffinity"):
+            try:
+                cpu_cores = len(os.sched_getaffinity(0))
+            except OSError:
+                cpu_cores = os.cpu_count() or 2
+        else:
+            cpu_cores = os.cpu_count() or 2
+    total = max(1, int(cpu_cores))
+    if total <= 6:
+        reserved_for_asyncio = max(1, math.ceil(total / 2))
+    else:
+        reserved_for_asyncio = max(1, math.ceil(total / 4))
+    return max(1, total - reserved_for_asyncio)
 
 
 class StarHuntersBackendService:
@@ -112,10 +142,46 @@ class StarHuntersBackendService:
             skyview_fallback_fetcher=skyview_fallback_fetcher,
         )
         self._inflight_tasks: dict[str, asyncio.Future[Any]] = {}
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        raw_max_coadds = os.environ.get("ARCHIVAL_MAX_CONCURRENT_COADDS", "").strip()
+        max_coadds = (
+            max(1, int(raw_max_coadds)) if raw_max_coadds else compute_max_concurrent_coadds()
+        )
+        self._archival_semaphore = threading.BoundedSemaphore(max_coadds)
         _logger.info(
             "StarHuntersBackendService initialized (enable_archival_data=%s)",
             self.enable_archival_data,
         )
+
+    def cancel_background_tasks(self) -> None:
+        """Cancel any pending background prewarm tasks."""
+        for task in list(self._background_tasks):
+            task.cancel()
+        self._background_tasks.clear()
+
+    def _schedule_background_patch_prewarm(self, ra: float, dec: float) -> None:
+        """Schedule a non-blocking single-flight sky-patch prewarm on the active event loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def _runner() -> None:
+            try:
+                await self.get_sky_patch_async(ra=ra, dec=dec, fov=5.0, live_catalogs=False)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _logger.debug(
+                    "Background zenith patch prewarm for (%.2f, %.2f) skipped: %s",
+                    ra,
+                    dec,
+                    exc,
+                )
+
+        task = loop.create_task(_runner())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def prewarm_known_data(self) -> int:
         """Pre-warm all showcase manifests, spectra, frames, and the search index.
@@ -342,32 +408,38 @@ class StarHuntersBackendService:
         prewarm_patch: bool = True,
         timeout_s: float = 24.0,
     ) -> dict[str, Any]:
-        """Offload Earth-to-Sky zenith lookup off the ASGI event loop."""
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.get_earth_to_sky,
-                    lat=lat,
-                    lon=lon,
-                    iso_time=iso_time,
-                    fallback_seed=fallback_seed,
-                    prewarm_patch=prewarm_patch,
-                ),
-                timeout=timeout_s,
-            )
-        except TimeoutError:
-            _logger.warning(
-                "Earth-to-Sky prewarm exceeded %.1fs; returning zenith coordinates without prewarm",
-                timeout_s,
-            )
-            return await asyncio.to_thread(
+        """Offload Earth-to-Sky zenith lookup off the ASGI event loop and prewarm in background."""
+        payload = await asyncio.wait_for(
+            asyncio.to_thread(
                 self.get_earth_to_sky,
                 lat=lat,
                 lon=lon,
                 iso_time=iso_time,
                 fallback_seed=fallback_seed,
                 prewarm_patch=False,
+            ),
+            timeout=timeout_s,
+        )
+        if prewarm_patch:
+            earth = payload.get("earth", {})
+            is_fallback = bool(earth.get("is_fallback_capital"))
+            matched_capital = (
+                True
+                if is_fallback
+                else find_matching_capital_city(float(earth["lat"]), float(earth["lon"]))
+                is not None
             )
+            if matched_capital:
+                ra = float(payload["zenith_icrs"]["ra"])
+                dec = float(payload["zenith_icrs"]["dec"])
+                grid_key, _, _ = compute_grid_key(ra, dec, 5.0)
+                cached_patch = self.cache.get_manifest(grid_key)
+                needs_refresh = self.enable_archival_data and self._is_pending_archival_demo(
+                    cached_patch
+                )
+                if cached_patch is None or needs_refresh:
+                    self._schedule_background_patch_prewarm(ra=ra, dec=dec)
+        return payload
 
     def _apply_cached_pipeline_sync(
         self,
@@ -435,6 +507,7 @@ class StarHuntersBackendService:
             return await asyncio.shield(existing)
 
         fut: asyncio.Future[Any] = loop.create_future()
+        fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
         self._inflight_tasks[key] = fut
         try:
             result = await coro_factory()
@@ -625,18 +698,25 @@ class StarHuntersBackendService:
             if self.enable_archival_data:
                 archival_timeout_s = _env_float("ARCHIVAL_RESOLVE_BUDGET_S", 18.0) + 6.0
 
+                def _run_coadd_throttled() -> tuple[dict[str, Any], dict[str, bytes]]:
+                    with self._archival_semaphore:
+                        return self.archival_resolver.resolve_archival_patch_sync(
+                            manifest=base_manifest,
+                            grid_key=grid_key,
+                            ra=ra,
+                            dec=dec,
+                            fov=fov,
+                            fallback_frames=synthetic_frames,
+                        )
+
                 async def _resolve_archival_bounded() -> tuple[dict[str, Any], dict[str, bytes]]:
+                    worker_fut = asyncio.ensure_future(asyncio.to_thread(_run_coadd_throttled))
+                    worker_fut.add_done_callback(
+                        lambda f: f.exception() if not f.cancelled() else None
+                    )
                     try:
                         return await asyncio.wait_for(
-                            asyncio.to_thread(
-                                self.archival_resolver.resolve_archival_patch_sync,
-                                manifest=base_manifest,
-                                grid_key=grid_key,
-                                ra=ra,
-                                dec=dec,
-                                fov=fov,
-                                fallback_frames=synthetic_frames,
-                            ),
+                            worker_fut,
                             timeout=archival_timeout_s,
                         )
                     except TimeoutError:
@@ -934,13 +1014,17 @@ class StarHuntersBackendService:
             return cached_spec
 
         async def _compute() -> dict[str, Any]:
-            return await asyncio.wait_for(
+            worker_fut = asyncio.ensure_future(
                 asyncio.to_thread(
                     self.get_forced_spectrum,
                     ra=ra,
                     dec=dec,
                     label=resolved_label,
-                ),
+                )
+            )
+            worker_fut.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
+            return await asyncio.wait_for(
+                worker_fut,
                 timeout=timeout_s,
             )
 

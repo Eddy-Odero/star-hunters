@@ -29,7 +29,12 @@ def _synthetic_arrays(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Generate deterministic ``IMAGE``, ``ZODI``, ``VARIANCE``, and ``FLAGS`` arrays."""
     height, width = shape
-    rng = np.random.default_rng(seed if seed is not None else int(ra * 1000 + dec * 1000))
+    resolved_seed = (
+        seed
+        if seed is not None
+        else abs(int(round(ra * 1000)) * 10_000 + int(round((dec + 90.0) * 1000)))
+    )
+    rng = np.random.default_rng(resolved_seed)
 
     yy, xx = np.mgrid[0:height, 0:width]
     x_norm = (xx - (width - 1) / 2.0) / max(width, 1)

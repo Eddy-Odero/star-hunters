@@ -460,21 +460,8 @@ class SpatialSqliteCache:
             payload["query"]["cached"] = True
         return payload
 
-    def get_frame(self, grid_key: str, filename: str) -> bytes | None:
-        """Fetch and decompress a cached binary frame buffer.
-
-        Args:
-            grid_key: Quantized spatial grid identifier.
-            filename: Frame filename (e.g. ``"pass_1.bin"``).
-
-        Returns:
-            Decompressed binary frame bytes, or ``None`` if missing.
-        """
-        mem_key = f"frame_raw:{grid_key}:{filename}"
-        cached_raw = self._mem_cache.get(mem_key)
-        if cached_raw is not None:
-            return cached_raw
-
+    def _read_raw_frame_from_sqlite(self, grid_key: str, filename: str) -> bytes | None:
+        """Read and decompress a binary frame from SQLite without touching ``_mem_cache``."""
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
@@ -493,7 +480,26 @@ class SpatialSqliteCache:
                     "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
                     (now, grid_key),
                 )
-            raw_bytes = zlib.decompress(row["compressed_blob"])
+            return zlib.decompress(row["compressed_blob"])
+
+    def get_frame(self, grid_key: str, filename: str) -> bytes | None:
+        """Fetch and decompress a cached binary frame buffer.
+
+        Args:
+            grid_key: Quantized spatial grid identifier.
+            filename: Frame filename (e.g. ``"pass_1.bin"``).
+
+        Returns:
+            Decompressed binary frame bytes, or ``None`` if missing.
+        """
+        mem_key = f"frame_raw:{grid_key}:{filename}"
+        cached_raw = self._mem_cache.get(mem_key)
+        if cached_raw is not None:
+            return cached_raw
+
+        raw_bytes = self._read_raw_frame_from_sqlite(grid_key, filename)
+        if raw_bytes is None:
+            return None
         self._mem_cache.put(mem_key, raw_bytes)
         return raw_bytes
 
@@ -519,7 +525,9 @@ class SpatialSqliteCache:
         if cached_gz is not None:
             return cached_gz, dtype_header
 
-        raw = self.get_frame(grid_key, filename)
+        raw = self._mem_cache.get(f"frame_raw:{grid_key}:{filename}")
+        if raw is None:
+            raw = self._read_raw_frame_from_sqlite(grid_key, filename)
         if raw is None:
             return None
 

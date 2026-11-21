@@ -654,6 +654,9 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         self.assertEqual(r1.headers.get("x-binary-dtype"), "float16")
         self.assertEqual(len(r1.content), BINARY_DETECTOR_FLOAT16_BYTES)
         self.assertEqual(r1.content, r2.content)
+        # get_frame_gzip must cache only frame_gz without polluting _mem_cache with frame_raw
+        self.assertIsNotNone(self.cache._mem_cache.get(f"frame_gz:{grid_key}:pass_1.bin:float16"))
+        self.assertIsNone(self.cache._mem_cache.get(f"frame_raw:{grid_key}:pass_1.bin"))
 
         identity_resp = client.get(
             f"/api/v1/frames/{grid_key}/pass_1.bin",
@@ -690,6 +693,55 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         html_resp = client.get("/index.html")
         self.assertEqual(html_resp.status_code, 200)
         self.assertEqual(html_resp.headers.get("cache-control"), "no-cache")
+
+    def test_southern_sky_synthetic_cutout_and_async_earth_to_sky_background_prewarm(
+        self,
+    ) -> None:
+        from app.services.spherex_synthetic import generate_synthetic_spherex_cutout
+
+        # Southern-sky coordinates where ra + dec < 0 must not raise ValueError on seed=None
+        cutout = generate_synthetic_spherex_cutout(
+            ra=10.25,
+            dec=-65.5,
+            fov_arcmin=5.0,
+            bandpass="SPHEREx-D1",
+            shape=(32, 32),
+            seed=None,
+        )
+        self.assertEqual(cutout.clean_image.shape, (32, 32))
+
+        async def _verify_non_blocking_prewarm() -> None:
+            service = StarHuntersBackendService(cache=self.cache, enable_archival_data=False)
+            payload = await service.get_earth_to_sky_async(
+                lat=None,
+                lon=None,
+                iso_time="2026-11-21T12:00:00Z",
+                fallback_seed=11,
+                prewarm_patch=True,
+            )
+            self.assertTrue(payload["earth"]["is_fallback_capital"])
+            if service._background_tasks:
+                await asyncio.gather(*list(service._background_tasks))
+            gk, _, _ = compute_grid_key(
+                float(payload["zenith_icrs"]["ra"]),
+                float(payload["zenith_icrs"]["dec"]),
+                5.0,
+            )
+            self.assertIsNotNone(self.cache.get_manifest(gk))
+
+        asyncio.run(_verify_non_blocking_prewarm())
+
+        from app.services.backend_service import compute_max_concurrent_coadds
+
+        # <= 6 cores: reserve half for asyncio
+        self.assertEqual(compute_max_concurrent_coadds(1), 1)
+        self.assertEqual(compute_max_concurrent_coadds(2), 1)
+        self.assertEqual(compute_max_concurrent_coadds(4), 2)
+        self.assertEqual(compute_max_concurrent_coadds(6), 3)
+        # > 6 cores: reserve a quarter for asyncio
+        self.assertEqual(compute_max_concurrent_coadds(8), 6)
+        self.assertEqual(compute_max_concurrent_coadds(12), 9)
+        self.assertEqual(compute_max_concurrent_coadds(16), 12)
 
 
 if __name__ == "__main__":
