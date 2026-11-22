@@ -14,6 +14,7 @@ import zlib
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 from app.models.contracts import (
@@ -28,6 +29,21 @@ DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
 DEFAULT_MAX_MEMORY_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB
 DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 LAST_ACCESS_UPDATE_INTERVAL_SECONDS = 300.0  # 5 minutes
+SCHEMA_VERSION = 3
+_SCHEMA_PATH = Path(__file__).with_name("spatial_cache_schema.sql")
+
+
+def _resolve_max_cache_bytes(max_cache_bytes: int | None) -> int:
+    """Resolve SQLite byte budget from argument or ``SQLITE_MAX_CACHE_MB``."""
+    if max_cache_bytes is not None:
+        return max(0, int(max_cache_bytes))
+    raw = os.environ.get("SQLITE_MAX_CACHE_MB", "").strip()
+    if not raw:
+        return DEFAULT_MAX_CACHE_BYTES
+    try:
+        return max(0, int(float(raw) * 1024 * 1024))
+    except ValueError:
+        return DEFAULT_MAX_CACHE_BYTES
 
 
 def _resolve_max_memory_bytes(max_memory_bytes: int | None) -> int:
@@ -50,7 +66,31 @@ class _MemoryLruCache:
         self.max_bytes = max(0, int(max_bytes))
         self._lock = threading.RLock()
         self._entries: OrderedDict[str, bytes] = OrderedDict()
+        self._tag_to_keys: dict[str, set[str]] = {}
         self._current_bytes = 0
+
+    @staticmethod
+    def _grid_tag_for_key(key: str) -> str | None:
+        """Extract owning ``grid_key`` tag for O(1) multi-key patch invalidation."""
+        if key.startswith(("manifest:", "catalogs:", "frame_raw:", "frame_gz:")):
+            parts = key.split(":", 2)
+            if len(parts) >= 2 and parts[1]:
+                return parts[1]
+        return None
+
+    def _index_key(self, key: str) -> None:
+        tag = self._grid_tag_for_key(key)
+        if tag is not None:
+            self._tag_to_keys.setdefault(tag, set()).add(key)
+
+    def _unindex_key(self, key: str) -> None:
+        tag = self._grid_tag_for_key(key)
+        if tag is not None:
+            keys = self._tag_to_keys.get(tag)
+            if keys is not None:
+                keys.discard(key)
+                if not keys:
+                    self._tag_to_keys.pop(tag, None)
 
     @property
     def current_bytes(self) -> int:
@@ -84,13 +124,16 @@ class _MemoryLruCache:
             old = self._entries.pop(key, None)
             if old is not None:
                 self._current_bytes -= len(old)
+                self._unindex_key(key)
             if size > self.max_bytes:
                 return
             while self._entries and self._current_bytes + size > self.max_bytes:
-                _, evicted = self._entries.popitem(last=False)
+                evicted_key, evicted = self._entries.popitem(last=False)
                 self._current_bytes -= len(evicted)
+                self._unindex_key(evicted_key)
             self._entries[key] = value
             self._current_bytes += size
+            self._index_key(key)
 
     def delete(self, key: str) -> None:
         """Remove ``key`` if present."""
@@ -98,6 +141,18 @@ class _MemoryLruCache:
             old = self._entries.pop(key, None)
             if old is not None:
                 self._current_bytes -= len(old)
+                self._unindex_key(key)
+
+    def delete_tag(self, tag: str) -> None:
+        """Remove all cached entries associated with ``tag`` in O(k) time."""
+        with self._lock:
+            keys = self._tag_to_keys.pop(tag, None)
+            if not keys:
+                return
+            for key in keys:
+                old = self._entries.pop(key, None)
+                if old is not None:
+                    self._current_bytes -= len(old)
 
     def delete_prefix(self, prefix: str) -> None:
         """Remove all entries whose keys begin with ``prefix``."""
@@ -106,11 +161,13 @@ class _MemoryLruCache:
             for key in keys:
                 old = self._entries.pop(key)
                 self._current_bytes -= len(old)
+                self._unindex_key(key)
 
     def clear(self) -> None:
         """Remove all cached entries."""
         with self._lock:
             self._entries.clear()
+            self._tag_to_keys.clear()
             self._current_bytes = 0
 
 
@@ -169,7 +226,7 @@ class SpatialSqliteCache:
     def __init__(
         self,
         db_path: str | None = None,
-        max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
+        max_cache_bytes: int | None = None,
         pinned_grid_keys: set[str] | None = None,
         max_memory_bytes: int | None = None,
         last_access_update_interval: float = LAST_ACCESS_UPDATE_INTERVAL_SECONDS,
@@ -190,7 +247,7 @@ class SpatialSqliteCache:
                 ``last_accessed`` timestamp writes for the same row.
         """
         self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
-        self.max_cache_bytes = max_cache_bytes
+        self.max_cache_bytes = _resolve_max_cache_bytes(max_cache_bytes)
         self.pinned_grid_keys: set[str] = set(pinned_grid_keys or ())
         self.last_access_update_interval = max(0.0, float(last_access_update_interval))
         self._mem_cache = _MemoryLruCache(max_bytes=_resolve_max_memory_bytes(max_memory_bytes))
@@ -274,103 +331,37 @@ class SpatialSqliteCache:
             yield conn
 
     def _init_db(self) -> None:
-        """Enable persistent WAL mode and create required tables and indices."""
+        """Enable persistent WAL mode, apply schema DDL, and run versioned migrations."""
+        schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sky_patches (
-                    grid_key TEXT PRIMARY KEY,
-                    ra_center REAL NOT NULL,
-                    dec_center REAL NOT NULL,
-                    fov_arcmin REAL NOT NULL,
-                    manifest_json TEXT NOT NULL,
-                    catalogs_json TEXT NOT NULL,
-                    byte_size INTEGER NOT NULL,
-                    created_at REAL NOT NULL,
-                    last_accessed REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS binary_frames (
-                    grid_key TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    compressed_blob BLOB NOT NULL,
-                    raw_byte_size INTEGER NOT NULL,
-                    encoding TEXT NOT NULL DEFAULT 'zlib_raw',
-                    PRIMARY KEY (grid_key, filename),
-                    FOREIGN KEY (grid_key) REFERENCES sky_patches(grid_key) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS spectra_cache (
-                    spectrum_key TEXT PRIMARY KEY,
-                    ra REAL NOT NULL,
-                    dec REAL NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    last_accessed REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS capital_zenith_cache (
-                    cache_key TEXT PRIMARY KEY,
-                    city_slug TEXT,
-                    lat REAL NOT NULL,
-                    lon REAL NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    last_accessed REAL NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS catalog_region_cache (
-                    region_key TEXT PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    ra_bucket REAL NOT NULL,
-                    dec_bucket REAL NOT NULL,
-                    radius_bucket REAL NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    byte_size INTEGER NOT NULL,
-                    fetched_at REAL NOT NULL,
-                    expires_at REAL NOT NULL,
-                    last_accessed REAL NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_catalog_region_lookup
-                ON catalog_region_cache(source, ra_bucket, dec_bucket, radius_bucket);
-
-                CREATE TABLE IF NOT EXISTS solar_system_ephemeris (
-                    naif_id TEXT NOT NULL,
-                    body_name TEXT NOT NULL,
-                    body_class TEXT NOT NULL,
-                    date_bucket TEXT NOT NULL,
-                    mjd REAL NOT NULL,
-                    ra REAL NOT NULL,
-                    dec REAL NOT NULL,
-                    vmag REAL,
-                    ra_bucket REAL NOT NULL,
-                    dec_bucket REAL NOT NULL,
-                    source TEXT NOT NULL,
-                    fetched_at REAL NOT NULL,
-                    PRIMARY KEY (naif_id, date_bucket)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ephem_lookup
-                ON solar_system_ephemeris(date_bucket, ra_bucket, dec_bucket);
-                """
-            )
-            cols = {
-                str(row["name"])
-                for row in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
-            }
-            if "encoding" not in cols:
+            current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            conn.executescript(schema_sql)
+            if current_version < 2:
+                cols = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
+                }
+                if "encoding" not in cols:
+                    conn.execute(
+                        "ALTER TABLE binary_frames ADD COLUMN encoding "
+                        "TEXT NOT NULL DEFAULT 'zlib_raw'"
+                    )
+            if current_version < 3:
                 conn.execute(
-                    "ALTER TABLE binary_frames ADD COLUMN encoding TEXT NOT NULL DEFAULT 'zlib_raw'"
+                    "CREATE INDEX IF NOT EXISTS idx_sky_patches_last_accessed "
+                    "ON sky_patches(last_accessed)"
                 )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_catalog_region_last_accessed "
+                    "ON catalog_region_cache(last_accessed)"
+                )
+            if current_version < SCHEMA_VERSION:
+                conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _invalidate_grid_key_memory(self, grid_key: str) -> None:
-        """Remove all in-process LRU cache entries associated with ``grid_key``."""
-        self._mem_cache.delete(f"manifest:{grid_key}")
-        self._mem_cache.delete(f"catalogs:{grid_key}")
-        self._mem_cache.delete_prefix(f"frame_raw:{grid_key}:")
-        self._mem_cache.delete_prefix(f"frame_gz:{grid_key}:")
+        """Remove all in-process LRU cache entries associated with ``grid_key`` in O(1)."""
+        self._mem_cache.delete_tag(grid_key)
 
     def _get_json_row(
         self,

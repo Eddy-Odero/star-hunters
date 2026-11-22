@@ -256,7 +256,7 @@ async def resolve_object_observation_epochs(
     catalog_pipeline: AutomatedCelestialPipeline,
     enable_archival_data: bool,
     lookup_most_fn: Callable[[str], Awaitable[dict[str, Any]]],
-    query_observations_fn: Callable[..., list[SpherexObservation]] = query_observations,
+    query_observations_fn: Callable[..., list[SpherexObservation]] | None = None,
     presets_dir: Path = DEFAULT_PRESETS_DIR,
 ) -> dict[str, Any]:
     """Resolve constrained observation epochs (Current Time + SPHEREx passes only)."""
@@ -392,7 +392,8 @@ async def resolve_object_observation_epochs(
             passes_status = "ok" if pass_entries else "no_spherex_passes"
         else:
             try:
-                obs = await asyncio.to_thread(query_observations_fn, cur_ra, cur_dec, 5.0)
+                obs_fn = query_observations_fn or query_observations
+                obs = await asyncio.to_thread(obs_fn, cur_ra, cur_dec, 5.0)
                 pass_entries = cluster_spherex_obs_into_passes(obs, ra=cur_ra, dec=cur_dec)
                 passes_status = "ok" if pass_entries else "no_spherex_passes"
                 if pass_entries:

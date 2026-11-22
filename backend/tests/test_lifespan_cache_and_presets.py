@@ -726,14 +726,13 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         )
         self.assertEqual(cutout.clean_image.shape, (32, 32))
 
-        async def _verify_non_blocking_prewarm() -> None:
+        async def _verify_no_speculative_prewarm_by_default() -> None:
             service = StarHuntersBackendService(cache=self.cache, enable_archival_data=False)
             payload = await service.get_earth_to_sky_async(
                 lat=None,
                 lon=None,
                 iso_time="2026-11-21T12:00:00Z",
                 fallback_seed=11,
-                prewarm_patch=True,
             )
             self.assertTrue(payload["earth"]["is_fallback_capital"])
             if service._background_tasks:
@@ -743,23 +742,22 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
                 float(payload["zenith_icrs"]["dec"]),
                 5.0,
             )
-            self.assertIsNotNone(self.cache.get_manifest(gk))
+            self.assertIsNone(self.cache.get_manifest(gk))
 
-        asyncio.run(_verify_non_blocking_prewarm())
+        asyncio.run(_verify_no_speculative_prewarm_by_default())
 
         from app.services.backend_service import compute_max_concurrent_coadds
 
-        # <= 6 cores: reserve half for IO/asyncio
+        # Readable ~2/3 formula: reserved_for_io = max(1, total // 3)
         self.assertEqual(compute_max_concurrent_coadds(1), 1)
         self.assertEqual(compute_max_concurrent_coadds(2), 1)
-        self.assertEqual(compute_max_concurrent_coadds(4), 2)
-        self.assertEqual(compute_max_concurrent_coadds(6), 3)
-        # > 6 cores: reserve at least 3 (or ceil(total/4)) for IO/asyncio
-        self.assertEqual(compute_max_concurrent_coadds(7), 4)
-        self.assertEqual(compute_max_concurrent_coadds(8), 5)
+        self.assertEqual(compute_max_concurrent_coadds(4), 3)
+        self.assertEqual(compute_max_concurrent_coadds(6), 4)
+        self.assertEqual(compute_max_concurrent_coadds(7), 5)
+        self.assertEqual(compute_max_concurrent_coadds(8), 6)
         self.assertEqual(compute_max_concurrent_coadds(10), 7)
-        self.assertEqual(compute_max_concurrent_coadds(12), 9)
-        self.assertEqual(compute_max_concurrent_coadds(16), 12)
+        self.assertEqual(compute_max_concurrent_coadds(12), 8)
+        self.assertEqual(compute_max_concurrent_coadds(16), 11)
 
     def test_wire_ready_sqlite_encoding_and_legacy_zlib_fallback(self) -> None:
         meta = SHOWCASE_TARGETS["wise_0855"]
@@ -898,6 +896,117 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
             headers=human_headers,
         )
         self.assertEqual(r5_other_ip.status_code, 200)
+
+    def test_sqlite_schema_user_version_and_last_accessed_index(self) -> None:
+        with self.cache.connection() as conn:
+            ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(ver, 3)
+            patch_idx = {
+                str(r["name"]) for r in conn.execute("PRAGMA index_list(sky_patches)").fetchall()
+            }
+            cat_idx = {
+                str(r["name"])
+                for r in conn.execute("PRAGMA index_list(catalog_region_cache)").fetchall()
+            }
+        self.assertIn("idx_sky_patches_last_accessed", patch_idx)
+        self.assertIn("idx_catalog_region_last_accessed", cat_idx)
+
+        # Simulate upgrading an older v0 SQLite DB without encoding column or new indices
+        import sqlite3
+
+        legacy_db = str(self.tmp_path / "legacy_v0.db")
+        raw_conn = sqlite3.connect(legacy_db)
+        raw_conn.executescript(
+            """
+            CREATE TABLE sky_patches (
+                grid_key TEXT PRIMARY KEY, ra_center REAL NOT NULL,
+                dec_center REAL NOT NULL, fov_arcmin REAL NOT NULL,
+                manifest_json TEXT NOT NULL, catalogs_json TEXT NOT NULL,
+                byte_size INTEGER NOT NULL, created_at REAL NOT NULL, last_accessed REAL NOT NULL
+            );
+            CREATE TABLE binary_frames (
+                grid_key TEXT NOT NULL, filename TEXT NOT NULL,
+                compressed_blob BLOB NOT NULL, raw_byte_size INTEGER NOT NULL,
+                PRIMARY KEY (grid_key, filename)
+            );
+            PRAGMA user_version = 0;
+            """
+        )
+        raw_conn.close()
+
+        migrated = SpatialSqliteCache(db_path=legacy_db)
+        try:
+            with migrated.connection() as conn:
+                self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 3)
+                cols = {
+                    str(r["name"])
+                    for r in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
+                }
+                self.assertIn("encoding", cols)
+                migrated_idx = {
+                    str(r["name"])
+                    for r in conn.execute("PRAGMA index_list(sky_patches)").fetchall()
+                }
+                self.assertIn("idx_sky_patches_last_accessed", migrated_idx)
+        finally:
+            migrated.close()
+
+    def test_memory_lru_o1_tag_invalidation(self) -> None:
+        gk1 = "ra10.00_dec20.00_fov5.0"
+        gk2 = "ra50.00_dec-10.00_fov5.0"
+        self.cache._mem_cache.put(f"manifest:{gk1}", b"{}")
+        self.cache._mem_cache.put(f"frame_gz:{gk1}:pass_1.bin:float16", b"abc")
+        self.cache._mem_cache.put(f"manifest:{gk2}", b"{}")
+
+        self.cache._invalidate_grid_key_memory(gk1)
+        self.assertIsNone(self.cache._mem_cache.get(f"manifest:{gk1}"))
+        self.assertIsNone(self.cache._mem_cache.get(f"frame_gz:{gk1}:pass_1.bin:float16"))
+        self.assertNotIn(gk1, self.cache._mem_cache._tag_to_keys)
+        self.assertIsNotNone(self.cache._mem_cache.get(f"manifest:{gk2}"))
+
+    def test_aging_priority_cpu_gate_spectrum_fast_lane_and_starvation_mode(self) -> None:
+        from app.services.backend_service import (
+            CPU_PRIORITY_SKY_PATCH,
+            CPU_PRIORITY_SPECTRUM,
+            _AgingPrioritySemaphore,
+        )
+
+        async def _verify_gate() -> None:
+            gate = _AgingPrioritySemaphore(capacity=1, starvation_threshold_s=0.06)
+            order: list[str] = []
+
+            async def _task(tag: str, prio: int, hold: float = 0.03) -> None:
+                async with gate.slot(prio):
+                    order.append(tag)
+                    await asyncio.sleep(hold)
+
+            holder = asyncio.create_task(_task("holder", CPU_PRIORITY_SKY_PATCH, hold=0.04))
+            await asyncio.sleep(0.005)
+            p1 = asyncio.create_task(_task("patch_1", CPU_PRIORITY_SKY_PATCH, hold=0.04))
+            s1 = asyncio.create_task(_task("spec_1", CPU_PRIORITY_SPECTRUM, hold=0.04))
+            await asyncio.sleep(0.07)  # patch_1 ages past 0.06s while holder + spec_1 run
+            s2 = asyncio.create_task(_task("spec_2", CPU_PRIORITY_SPECTRUM, hold=0.01))
+            await asyncio.gather(holder, p1, s1, s2)
+            # spec_1 jumps ahead of unstarved patch_1; then aged patch_1 beats newly arrived spec_2
+            self.assertEqual(order, ["holder", "spec_1", "patch_1", "spec_2"])
+
+        asyncio.run(_verify_gate())
+
+    def test_search_known_objects_lru_cache_and_immutability(self) -> None:
+        from app.services.object_search import _search_known_objects_cached, search_known_objects
+
+        _search_known_objects_cached.cache_clear()
+        res1 = search_known_objects("Saturn", limit=10)
+        res2 = search_known_objects("  saturn ", limit=10)
+        self.assertGreater(len(res1), 0)
+        self.assertEqual(res1, res2)
+        self.assertGreaterEqual(_search_known_objects_cached.cache_info().hits, 1)
+
+        # Mutating caller copy must not corrupt cached result
+        orig_label = res1[0]["label"]
+        res1[0]["label"] = "MUTATED"
+        res3 = search_known_objects("saturn", limit=10)
+        self.assertEqual(res3[0]["label"], orig_label)
 
 
 if __name__ == "__main__":

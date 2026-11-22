@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 from astropy.wcs import WCS
-from reproject import reproject_interp
+from scipy.ndimage import map_coordinates
 
 from app.models.contracts import (
     BINARY_DETECTOR_FLOAT32_BYTES,
@@ -22,11 +22,16 @@ from app.models.contracts import (
     GRID_WIDTH,
     NUM_DETECTORS,
 )
-from app.services.spherex_fits import SpherexCutout, SpherexValidationError
+from app.services.spherex_fits import (
+    SpherexCutout,
+    SpherexValidationError,
+    sanitized_fits_wcs_header,
+)
 from app.services.spherex_flags import FLAG_BAD_REFERENCE
 from app.utils.astronomy import build_tan_wcs_header
 
 DEFAULT_EPOCH_GAP_DAYS = 60.0
+_TARGET_Y_GRID, _TARGET_X_GRID = np.mgrid[0:GRID_HEIGHT, 0:GRID_WIDTH]
 
 
 class SpherexCoaddError(ValueError):
@@ -216,12 +221,14 @@ def _detector_index(cutout: SpherexCutout) -> int:
     return detector - 1
 
 
-def _source_wcs(cutout: SpherexCutout) -> WCS:
-    """Extract a validated celestial Astropy WCS from a cutout's header."""
-    from app.services.spherex_fits import sanitized_fits_wcs_header
-
+def _source_wcs_and_signature(
+    cutout: SpherexCutout,
+    shape: tuple[int, int],
+) -> tuple[WCS, tuple[Any, ...]]:
+    """Extract a validated celestial Astropy WCS and cache signature from a cutout header."""
     try:
-        source_wcs = WCS(sanitized_fits_wcs_header(cutout.header)).celestial
+        sanitized = sanitized_fits_wcs_header(cutout.header)
+        source_wcs = WCS(sanitized).celestial
     except Exception as exc:
         raise SpherexCoaddError(
             f"Cutout {cutout.bandpass} at MJD {cutout.mjd_obs} has an invalid WCS header."
@@ -230,49 +237,70 @@ def _source_wcs(cutout: SpherexCutout) -> WCS:
         raise SpherexCoaddError(
             f"Cutout {cutout.bandpass} at MJD {cutout.mjd_obs} has no celestial WCS."
         )
-    return source_wcs
+    sig = (shape, tuple(sorted((str(k), repr(v)) for k, v in sanitized.items())))
+    return source_wcs, sig
 
 
 def _reproject_cutout(
     cutout: SpherexCutout,
     target_wcs: WCS,
+    *,
+    target_world: tuple[np.ndarray, np.ndarray] | None = None,
+    coord_cache: dict[
+        tuple[Any, ...],
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ]
+    | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Reproject one cutout's image, variance, and flags onto ``target_wcs``."""
+    """Reproject one cutout's image, variance, and flags onto ``target_wcs`` in one pass."""
     image = np.asarray(cutout.clean_image, dtype=np.float32)
     variance = np.asarray(cutout.variance, dtype=np.float32)
     flags = np.asarray(cutout.flags_mask, dtype=np.uint8)
-    source_wcs = _source_wcs(cutout)
+    source_wcs, sig = _source_wcs_and_signature(cutout, (int(image.shape[0]), int(image.shape[1])))
+
+    cached_coords = coord_cache.get(sig) if coord_cache is not None else None
+    if cached_coords is None:
+        if target_world is None:
+            world_ra, world_dec = target_wcs.pixel_to_world_values(_TARGET_X_GRID, _TARGET_Y_GRID)
+        else:
+            world_ra, world_dec = target_world
+        x_in, y_in = source_wcs.world_to_pixel_values(world_ra, world_dec)
+        in_h, in_w = int(image.shape[0]), int(image.shape[1])
+        in_bounds = (
+            np.isfinite(x_in)
+            & np.isfinite(y_in)
+            & (x_in >= -0.5)
+            & (x_in <= in_w - 0.5)
+            & (y_in >= -0.5)
+            & (y_in <= in_h - 0.5)
+        )
+        y_in_safe = np.where(in_bounds, y_in, 0.0)
+        x_in_safe = np.where(in_bounds, x_in, 0.0)
+        yi = np.clip(np.rint(y_in_safe).astype(np.intp), 0, max(0, in_h - 1))
+        xi = np.clip(np.rint(x_in_safe).astype(np.intp), 0, max(0, in_w - 1))
+        cached_coords = (y_in_safe, x_in_safe, in_bounds, yi, xi)
+        if coord_cache is not None:
+            coord_cache[sig] = cached_coords
+    else:
+        y_in_safe, x_in_safe, in_bounds, yi, xi = cached_coords
 
     valid = np.isfinite(image) & np.isfinite(variance) & (variance > 0.0) & (flags == 0)
-    masked_image = image.astype(np.float64, copy=True)
-    masked_image[~valid] = np.nan
-    shape_out = (GRID_HEIGHT, GRID_WIDTH)
-    projected_image, image_footprint = reproject_interp(
-        (masked_image, source_wcs), target_wcs, shape_out=shape_out, order="bilinear"
-    )
-    # Nearest-neighbour variance avoids inventing a lower variance by
-    # interpolating independent input-pixel variances as ordinary intensities.
-    masked_variance = variance.astype(np.float64, copy=True)
-    masked_variance[~valid] = np.nan
-    projected_variance, variance_footprint = reproject_interp(
-        (masked_variance, source_wcs),
-        target_wcs,
-        shape_out=shape_out,
-        order="nearest-neighbor",
-    )
-    projected_flags, flags_footprint = reproject_interp(
-        (flags, source_wcs),
-        target_wcs,
-        shape_out=shape_out,
-        order="nearest-neighbor",
-    )
+    masked_image = np.where(valid, image.astype(np.float64), np.nan)
+    masked_variance = np.where(valid, variance.astype(np.float64), np.nan)
 
-    footprint = (image_footprint > 0) & (variance_footprint > 0) & (flags_footprint > 0)
-    projected_image = np.asarray(projected_image, dtype=np.float64)
-    projected_variance = np.asarray(projected_variance, dtype=np.float64)
-    projected_flags = np.nan_to_num(projected_flags, nan=0.0).astype(np.uint8)
+    projected_image = map_coordinates(
+        masked_image,
+        [y_in_safe, x_in_safe],
+        order=1,
+        mode="nearest",
+        prefilter=False,
+    )
+    projected_image[~in_bounds] = np.nan
+    projected_variance = np.where(in_bounds, masked_variance[yi, xi], np.nan)
+    projected_flags = np.where(in_bounds, flags[yi, xi], np.uint8(0))
+
     valid_projected = (
-        footprint
+        in_bounds
         & (projected_flags == 0)
         & np.isfinite(projected_image)
         & np.isfinite(projected_variance)
@@ -285,6 +313,14 @@ def coadd_spherex_epoch(
     cutouts: Sequence[SpherexCutout],
     target_wcs_header: dict[str, Any],
     epoch_id: str = "pass_1",
+    *,
+    _target_wcs: WCS | None = None,
+    _target_world: tuple[np.ndarray, np.ndarray] | None = None,
+    _coord_cache: dict[
+        tuple[Any, ...],
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ]
+    | None = None,
 ) -> SpherexEpochCoadd:
     """Reproject and inverse-variance co-add one epoch onto the target grid.
 
@@ -302,7 +338,13 @@ def coadd_spherex_epoch(
     if not cutouts:
         raise SpherexCoaddError("Cannot co-add an empty SPHEREx epoch.")
 
-    target_wcs = WCS(target_wcs_header).celestial
+    target_wcs = _target_wcs if _target_wcs is not None else WCS(target_wcs_header).celestial
+    target_world = (
+        _target_world
+        if _target_world is not None
+        else target_wcs.pixel_to_world_values(_TARGET_X_GRID, _TARGET_Y_GRID)
+    )
+    coord_cache = _coord_cache if _coord_cache is not None else {}
     detector_numerator = np.zeros((NUM_DETECTORS, GRID_HEIGHT, GRID_WIDTH), dtype=np.float64)
     detector_weight = np.zeros_like(detector_numerator)
     combined_flags = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
@@ -310,7 +352,12 @@ def coadd_spherex_epoch(
 
     for cutout in cutouts:
         detector = _detector_index(cutout)
-        image, variance, flags, valid = _reproject_cutout(cutout, target_wcs)
+        image, variance, flags, valid = _reproject_cutout(
+            cutout,
+            target_wcs,
+            target_world=target_world,
+            coord_cache=coord_cache,
+        )
         combined_flags |= flags
         weights = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.float64)
         weights[valid] = 1.0 / variance[valid]
@@ -377,8 +424,21 @@ def coadd_spherex_epochs(
     ordered = _validate_cutouts(cutouts)
     clusters = cluster_spherex_epochs(ordered, gap_days=gap_days)
     target_header = build_target_wcs_header(ra, dec, fov_deg)
+    target_wcs = WCS(target_header).celestial
+    target_world = target_wcs.pixel_to_world_values(_TARGET_X_GRID, _TARGET_Y_GRID)
+    coord_cache: dict[
+        tuple[Any, ...],
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    ] = {}
     epochs = [
-        coadd_spherex_epoch(cluster, target_header, epoch_id=f"pass_{index + 1}")
+        coadd_spherex_epoch(
+            cluster,
+            target_header,
+            epoch_id=f"pass_{index + 1}",
+            _target_wcs=target_wcs,
+            _target_world=target_world,
+            _coord_cache=coord_cache,
+        )
         for index, cluster in enumerate(clusters)
     ]
     baseline = float(ordered[-1].mjd_obs) - float(ordered[0].mjd_obs) if len(ordered) >= 2 else 0.0

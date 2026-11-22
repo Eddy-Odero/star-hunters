@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 from typing import Any
 
 from app.models.contracts import SHOWCASE_TARGETS
@@ -136,6 +137,52 @@ def _infer_object_class(obj: dict[str, Any]) -> str:
     return "star"
 
 
+@functools.lru_cache(maxsize=512)
+def _search_known_objects_cached(
+    clean_q_lower: str,
+    clamped_limit: int,
+    index_len: int,
+) -> tuple[dict[str, Any], ...]:
+    """Run deterministic fuzzy search against the global index and cache results."""
+    _ = index_len
+    index = get_global_known_objects_index()
+    if not clean_q_lower:
+        sorted_default = sorted(
+            index,
+            key=lambda item: (
+                0 if item.get("object_id", "").startswith("primary_") else 1,
+                float(item.get("magnitude") or 20.0),
+            ),
+        )
+        return tuple(copy.deepcopy(sorted_default[:clamped_limit]))
+
+    scored: list[tuple[float, int, float, dict[str, Any]]] = []
+    for item in index:
+        searchable_fields = [
+            str(item.get("label", "")),
+            str(item.get("object_id", "")),
+            str(item.get("source_id", "")),
+            str(item.get("object_type", "")),
+            str(item.get("catalog", "")),
+            str(item.get("target_name", "")),
+            str(item.get("target_slug", "")),
+            str(item.get("constellation", "")),
+        ]
+        best = max(fuzzy_score_text(clean_q_lower, field) for field in searchable_fields if field)
+        if best >= 0.45:
+            is_primary = 0 if str(item.get("object_id", "")).startswith("primary_") else 1
+            mag = float(item.get("magnitude") or 20.0)
+            scored.append((best, -is_primary, -mag, item))
+
+    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    results: list[dict[str, Any]] = []
+    for score, _, _, item in scored[:clamped_limit]:
+        entry = copy.deepcopy(item)
+        entry["match_score"] = round(score, 4)
+        results.append(entry)
+    return tuple(results)
+
+
 def search_known_objects(
     query: str = "",
     limit: int = 30,
@@ -150,42 +197,9 @@ def search_known_objects(
         Ranked list of matching known-object dictionaries.
     """
     index = get_global_known_objects_index()
-    clean_q = query.strip()
-    if not clean_q:
-        sorted_default = sorted(
-            index,
-            key=lambda item: (
-                0 if item.get("object_id", "").startswith("primary_") else 1,
-                float(item.get("magnitude") or 20.0),
-            ),
-        )
-        return copy.deepcopy(sorted_default[: max(1, min(limit, 200))])
-
-    scored: list[tuple[float, int, float, dict[str, Any]]] = []
-    for item in index:
-        searchable_fields = [
-            str(item.get("label", "")),
-            str(item.get("object_id", "")),
-            str(item.get("source_id", "")),
-            str(item.get("object_type", "")),
-            str(item.get("catalog", "")),
-            str(item.get("target_name", "")),
-            str(item.get("target_slug", "")),
-            str(item.get("constellation", "")),
-        ]
-        best = max(fuzzy_score_text(clean_q, field) for field in searchable_fields if field)
-        if best >= 0.45:
-            is_primary = 0 if str(item.get("object_id", "")).startswith("primary_") else 1
-            mag = float(item.get("magnitude") or 20.0)
-            scored.append((best, -is_primary, -mag, item))
-
-    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
-    results: list[dict[str, Any]] = []
-    for score, _, _, item in scored[: max(1, min(limit, 200))]:
-        entry = copy.deepcopy(item)
-        entry["match_score"] = round(score, 4)
-        results.append(entry)
-    return results
+    clamped_limit = max(1, min(limit, 200))
+    cached = _search_known_objects_cached(query.strip().lower(), clamped_limit, len(index))
+    return [copy.deepcopy(item) for item in cached]
 
 
 async def search_known_objects_async(

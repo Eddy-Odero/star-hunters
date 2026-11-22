@@ -12,7 +12,8 @@ import threading
 import time
 import weakref
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -63,6 +64,77 @@ from app.utils.astronomy import datetime_to_mjd
 _logger = get_logger("backend")
 
 DEFAULT_COLD_MISS_RATE_LIMIT_PER_MIN = 30
+CPU_PRIORITY_SPECTRUM = 0
+CPU_PRIORITY_SKY_PATCH = 10
+DEFAULT_CPU_STARVATION_THRESHOLD_S = 2.0
+
+
+class _AgingPrioritySemaphore:
+    """Async semaphore with priority ordering and anti-starvation aging."""
+
+    def __init__(
+        self,
+        capacity: int,
+        starvation_threshold_s: float = DEFAULT_CPU_STARVATION_THRESHOLD_S,
+    ) -> None:
+        self._capacity = max(1, int(capacity))
+        self._starvation_threshold_s = max(0.01, float(starvation_threshold_s))
+        self._in_use = 0
+        self._seq = 0
+        self._waiters: list[tuple[int, float, int, asyncio.Future[None]]] = []
+
+    def _prune_done_waiters(self) -> None:
+        if self._waiters:
+            self._waiters = [w for w in self._waiters if not w[3].done()]
+
+    async def acquire(self, priority: int) -> None:
+        """Acquire a CPU slot, queueing by priority when saturated."""
+        self._prune_done_waiters()
+        if self._in_use < self._capacity and not self._waiters:
+            self._in_use += 1
+            return
+
+        fut = asyncio.get_running_loop().create_future()
+        self._seq += 1
+        entry = (priority, time.monotonic(), self._seq, fut)
+        self._waiters.append(entry)
+        try:
+            await fut
+        except BaseException:
+            if entry in self._waiters:
+                self._waiters.remove(entry)
+            if fut.done() and not fut.cancelled():
+                self.release()
+            raise
+
+    def release(self) -> None:
+        """Release a slot, promoting any waiter past ``starvation_threshold_s`` first."""
+        self._prune_done_waiters()
+        if not self._waiters:
+            self._in_use = max(0, self._in_use - 1)
+            return
+
+        now = time.monotonic()
+        best_idx = 0
+        best_key: tuple[int, int, float, int] | None = None
+        for idx, (prio, enq, seq, _fut) in enumerate(self._waiters):
+            starved = (now - enq) >= self._starvation_threshold_s
+            key = (0, 0, enq, seq) if starved else (1, prio, enq, seq)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_idx = idx
+
+        _prio, _enq, _seq, winner_fut = self._waiters.pop(best_idx)
+        winner_fut.set_result(None)
+
+    @asynccontextmanager
+    async def slot(self, priority: int) -> AsyncIterator[None]:
+        """Acquire and deterministically release a prioritized CPU slot."""
+        await self.acquire(priority)
+        try:
+            yield
+        finally:
+            self.release()
 
 
 class ColdMissRateLimitError(Exception):
@@ -108,11 +180,10 @@ class ColdMissRateLimiter:
 
 
 def compute_max_concurrent_coadds(cpu_cores: int | None = None) -> int:
-    """Compute dynamic max concurrent archival co-add workers from available CPU cores.
+    """Compute dynamic max concurrent archival co-add workers (~2/3 of available CPU cores).
 
-    If there are 6 or fewer cores, reserves half of them for asyncio/I/O; if there
-    are more than 6 cores, reserves a quarter of them with a minimum floor of 3 so
-    I/O capacity stays monotonic across 6-12 cores.
+    Reserves ``max(1, total // 3)`` cores for ``asyncio`` + ``_io_executor`` so
+    I/O always retains at least 1 core while giving ~2/3 of cores to CPU coadds.
 
     Args:
         cpu_cores: Optional explicit core count. Defaults to affinity-visible cores
@@ -130,10 +201,7 @@ def compute_max_concurrent_coadds(cpu_cores: int | None = None) -> int:
         else:
             cpu_cores = os.cpu_count() or 2
     total = max(1, int(cpu_cores))
-    if total <= 6:
-        reserved_for_io = max(1, math.ceil(total / 2))
-    else:
-        reserved_for_io = max(3, math.ceil(total / 4))
+    reserved_for_io = max(1, total // 3)
     return max(1, total - reserved_for_io)
 
 
@@ -213,8 +281,8 @@ class StarHuntersBackendService:
             self._cpu_executor,
             self._io_executor,
         )
-        self._cpu_semaphores: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, asyncio.Semaphore
+        self._cpu_gates: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, _AgingPrioritySemaphore
         ] = weakref.WeakKeyDictionary()
         self._archival_semaphore = threading.BoundedSemaphore(max_coadds)
 
@@ -250,14 +318,14 @@ class StarHuntersBackendService:
             except Exception:
                 pass
 
-    def _get_cpu_semaphore(self) -> asyncio.Semaphore:
-        """Return an ``asyncio.Semaphore`` bound to the current running event loop."""
+    def _get_cpu_gate(self) -> _AgingPrioritySemaphore:
+        """Return an aging priority gate bound to the current running event loop."""
         loop = asyncio.get_running_loop()
-        sem = self._cpu_semaphores.get(loop)
-        if sem is None:
-            sem = asyncio.Semaphore(self._max_concurrent_coadds)
-            self._cpu_semaphores[loop] = sem
-        return sem
+        gate = self._cpu_gates.get(loop)
+        if gate is None:
+            gate = _AgingPrioritySemaphore(self._max_concurrent_coadds)
+            self._cpu_gates[loop] = gate
+        return gate
 
     def cancel_background_tasks(self) -> None:
         """Cancel any pending background prewarm tasks."""
@@ -415,7 +483,7 @@ class StarHuntersBackendService:
         lon: float | None = None,
         iso_time: str | None = None,
         fallback_seed: int | None = None,
-        prewarm_patch: bool = True,
+        prewarm_patch: bool = False,
     ) -> dict[str, Any]:
         """Compute or retrieve cached Earth-to-Sky zenith coordinates.
 
@@ -511,7 +579,7 @@ class StarHuntersBackendService:
         lon: float | None = None,
         iso_time: str | None = None,
         fallback_seed: int | None = None,
-        prewarm_patch: bool = True,
+        prewarm_patch: bool = False,
         timeout_s: float = 24.0,
     ) -> dict[str, Any]:
         """Offload Earth-to-Sky zenith lookup off the ASGI event loop and prewarm in background."""
@@ -885,7 +953,7 @@ class StarHuntersBackendService:
                 async def _resolve_in_cpu_pool(
                     fallback_frames: dict[str, bytes],
                 ) -> tuple[dict[str, Any], dict[str, bytes]]:
-                    async with self._get_cpu_semaphore():
+                    async with self._get_cpu_gate().slot(CPU_PRIORITY_SKY_PATCH):
                         cpu_fut = loop.run_in_executor(
                             self._cpu_executor,
                             functools.partial(
@@ -1253,7 +1321,7 @@ class StarHuntersBackendService:
 
         async def _compute() -> dict[str, Any]:
             async def _run_in_cpu_pool() -> dict[str, Any]:
-                async with self._get_cpu_semaphore():
+                async with self._get_cpu_gate().slot(CPU_PRIORITY_SPECTRUM):
                     cpu_fut = loop.run_in_executor(
                         self._cpu_executor,
                         functools.partial(
