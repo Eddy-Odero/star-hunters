@@ -897,6 +897,57 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         )
         self.assertEqual(r5_other_ip.status_code, 200)
 
+    def test_extract_client_ip_supports_agnostic_proxy_headers(self) -> None:
+        from starlette.requests import Request
+
+        from app.main import _extract_client_ip
+
+        def make_request(
+            headers: dict[str, str] | None = None,
+            client: tuple[str, int] | None = ("127.0.0.1", 12345),
+        ) -> Request:
+            raw_headers = [
+                (k.lower().encode("latin-1"), v.encode("latin-1"))
+                for k, v in (headers or {}).items()
+            ]
+            scope = {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": raw_headers,
+                "client": client,
+            }
+            return Request(scope)
+
+        self.assertEqual(
+            _extract_client_ip(make_request({"CF-Connecting-IP": "198.51.100.7"})),
+            "198.51.100.7",
+        )
+        self.assertEqual(
+            _extract_client_ip(make_request({"X-Real-IP": "198.51.100.8:443"})),
+            "198.51.100.8",
+        )
+        self.assertEqual(
+            _extract_client_ip(
+                make_request({"Forwarded": 'for="[2001:db8:cafe::17]:4711";proto=https'})
+            ),
+            "2001:db8:cafe::17",
+        )
+        self.assertEqual(
+            _extract_client_ip(
+                make_request({"X-Forwarded-For": "not-an-ip, 203.0.113.42, 10.0.0.1"})
+            ),
+            "203.0.113.42",
+        )
+        self.assertEqual(
+            _extract_client_ip(make_request(client=("192.0.2.5", 5000))),
+            "192.0.2.5",
+        )
+        self.assertEqual(
+            _extract_client_ip(make_request(client=None)),
+            "unknown",
+        )
+
     def test_sqlite_schema_user_version_and_last_accessed_index(self) -> None:
         from app.services.spatial_cache import SCHEMA_VERSION
 
