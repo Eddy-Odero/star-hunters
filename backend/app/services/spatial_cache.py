@@ -9,7 +9,6 @@ import sqlite3
 import threading
 import time
 import weakref
-import zlib
 from collections import OrderedDict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -18,7 +17,6 @@ from typing import Any, Literal
 
 from app.models.contracts import (
     BINARY_DETECTOR_FLOAT32_BYTES,
-    convert_float16_bytes_to_float32_bytes,
     convert_float32_bytes_to_float16_bytes,
 )
 from app.utils.astronomy import (
@@ -32,6 +30,7 @@ DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
 DEFAULT_MAX_MEMORY_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB
 DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+DEFAULT_SKY_PATCH_TTL_SECONDS = 7 * 24 * 3600  # 7 days (weekly SPHEREx IRSA releases)
 LAST_ACCESS_UPDATE_INTERVAL_SECONDS = 300.0  # 5 minutes
 SCHEMA_VERSION = 1
 _SCHEMA_PATH = Path(__file__).with_name("spatial_cache_schema.sql")
@@ -61,6 +60,19 @@ def _resolve_max_memory_bytes(max_memory_bytes: int | None) -> int:
         return max(0, int(float(raw) * 1024 * 1024))
     except ValueError:
         return DEFAULT_MAX_MEMORY_CACHE_BYTES
+
+
+def _resolve_patch_ttl_seconds(patch_ttl_seconds: float | None) -> float:
+    """Resolve sky-patch & spectrum TTL from argument or ``SKY_PATCH_TTL_SECONDS``."""
+    if patch_ttl_seconds is not None:
+        return max(0.0, float(patch_ttl_seconds))
+    raw = os.environ.get("SKY_PATCH_TTL_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_SKY_PATCH_TTL_SECONDS)
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return float(DEFAULT_SKY_PATCH_TTL_SECONDS)
 
 
 class _MemoryLruCache:
@@ -234,6 +246,7 @@ class SpatialSqliteCache:
         pinned_grid_keys: set[str] | None = None,
         max_memory_bytes: int | None = None,
         last_access_update_interval: float = LAST_ACCESS_UPDATE_INTERVAL_SECONDS,
+        patch_ttl_seconds: float | None = None,
     ) -> None:
         """Initialize the SQLite spatial cache and schema.
 
@@ -249,11 +262,14 @@ class SpatialSqliteCache:
                 Defaults to ``IN_MEMORY_CACHE_MB`` env var or 128 MB (``0`` disables).
             last_access_update_interval: Minimum seconds between SQLite
                 ``last_accessed`` timestamp writes for the same row.
+            patch_ttl_seconds: TTL in seconds for ``sky_patches`` and
+                ``spectra_cache`` entries before revalidation (default 7 days).
         """
         self.db_path = db_path or os.environ.get("SQLITE_DB_PATH", "/tmp/star_hunters_cache.db")
         self.max_cache_bytes = _resolve_max_cache_bytes(max_cache_bytes)
         self.pinned_grid_keys: set[str] = set(pinned_grid_keys or ())
         self.last_access_update_interval = max(0.0, float(last_access_update_interval))
+        self.patch_ttl_seconds = _resolve_patch_ttl_seconds(patch_ttl_seconds)
         self._mem_cache = _MemoryLruCache(max_bytes=_resolve_max_memory_bytes(max_memory_bytes))
         self._local = threading.local()
         self._pool_lock = threading.Lock()
@@ -348,6 +364,34 @@ class SpatialSqliteCache:
         """Remove all in-process LRU cache entries associated with ``grid_key`` in O(1)."""
         self._mem_cache.delete_tag(grid_key)
 
+    def _is_entry_expired(self, created_at: float, now: float) -> bool:
+        """Return True when a cached row has exceeded ``self.patch_ttl_seconds``."""
+        if self.patch_ttl_seconds <= 0.0:
+            return True
+        return (now - float(created_at)) > self.patch_ttl_seconds
+
+    def _decode_ttl_mem_entry(
+        self, cached_bytes: bytes, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
+        """Decode a ``{"created_at", "payload"}`` RAM cache entry, honoring TTL."""
+        wrapper = json.loads(cached_bytes)
+        if isinstance(wrapper, dict) and "created_at" in wrapper and "payload" in wrapper:
+            if not allow_stale and self._is_entry_expired(
+                float(wrapper["created_at"]), time.time()
+            ):
+                return None
+            payload: dict[str, Any] = wrapper["payload"]
+            return payload
+        return wrapper
+
+    @staticmethod
+    def _encode_ttl_mem_entry(created_at: float, payload: dict[str, Any]) -> bytes:
+        """Serialize a ``{"created_at", "payload"}`` wrapper for ``_mem_cache``."""
+        return json.dumps(
+            {"created_at": float(created_at), "payload": payload},
+            separators=(",", ":"),
+        ).encode("utf-8")
+
     def _get_json_row(
         self,
         table: Literal["sky_patches", "spectra_cache", "capital_zenith_cache"],
@@ -355,31 +399,32 @@ class SpatialSqliteCache:
         key_column: Literal["grid_key", "spectrum_key", "cache_key"],
         key_value: str,
         mem_key: str | None = None,
+        *,
+        enforce_ttl: bool = False,
+        allow_stale: bool = False,
     ) -> dict[str, Any] | None:
-        """Fetch a JSON payload from memory or SQLite and throttle ``last_accessed`` writes.
-
-        Args:
-            table: Target SQLite cache table name.
-            json_column: Column holding serialized JSON text.
-            key_column: Primary key column name to filter on.
-            key_value: Lookup key value.
-            mem_key: Optional in-process LRU cache key.
-
-        Returns:
-            Deserialized JSON dictionary, or ``None`` on cache miss.
-        """
+        """Fetch a JSON payload from memory or SQLite and throttle ``last_accessed`` writes."""
         if mem_key is not None:
             cached_bytes = self._mem_cache.get(mem_key)
             if cached_bytes is not None:
-                return json.loads(cached_bytes)
+                if enforce_ttl:
+                    decoded = self._decode_ttl_mem_entry(cached_bytes, allow_stale=allow_stale)
+                    if decoded is not None:
+                        return decoded
+                else:
+                    return json.loads(cached_bytes)
 
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
-                f"SELECT {json_column}, last_accessed FROM {table} WHERE {key_column} = ?",
+                f"SELECT {json_column}, created_at, last_accessed "
+                f"FROM {table} WHERE {key_column} = ?",
                 (key_value,),
             ).fetchone()
             if not row:
+                return None
+            created_at = float(row["created_at"])
+            if enforce_ttl and not allow_stale and self._is_entry_expired(created_at, now):
                 return None
             if now - float(row["last_accessed"]) >= self.last_access_update_interval:
                 conn.execute(
@@ -387,34 +432,50 @@ class SpatialSqliteCache:
                     (now, key_value),
                 )
             raw_json = str(row[json_column])
+        payload: dict[str, Any] = json.loads(raw_json)
         if mem_key is not None:
-            self._mem_cache.put(mem_key, raw_json.encode("utf-8"))
-        return json.loads(raw_json)
+            encoded = (
+                self._encode_ttl_mem_entry(created_at, payload)
+                if enforce_ttl
+                else raw_json.encode("utf-8")
+            )
+            self._mem_cache.put(mem_key, encoded)
+        return payload
 
-    def peek_manifest_memory(self, grid_key: str) -> dict[str, Any] | None:
+    def peek_manifest_memory(
+        self, grid_key: str, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
         """Fetch a sky-patch manifest solely from the in-process RAM LRU cache."""
         cached_bytes = self._mem_cache.get(f"manifest:{grid_key}")
         if cached_bytes is None:
             return None
-        manifest: dict[str, Any] = json.loads(cached_bytes)
+        manifest = self._decode_ttl_mem_entry(cached_bytes, allow_stale=allow_stale)
+        if manifest is None:
+            return None
         manifest["query"]["cached"] = True
         return manifest
 
-    def peek_catalogs_memory(self, grid_key: str) -> dict[str, Any] | None:
+    def peek_catalogs_memory(
+        self, grid_key: str, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
         """Fetch cached catalog overlays solely from the in-process RAM LRU cache."""
         cached_bytes = self._mem_cache.get(f"catalogs:{grid_key}")
         if cached_bytes is None:
             return None
-        payload: dict[str, Any] = json.loads(cached_bytes)
+        payload = self._decode_ttl_mem_entry(cached_bytes, allow_stale=allow_stale)
+        if payload is None:
+            return None
         payload["query"]["cached"] = True
         return payload
 
-    def peek_spectrum_memory(self, spectrum_key: str) -> dict[str, Any] | None:
+    def peek_spectrum_memory(
+        self, spectrum_key: str, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
         """Fetch a cached 102-band spectrum solely from the in-process RAM LRU cache."""
         cached_bytes = self._mem_cache.get(f"spectrum:{spectrum_key}")
         if cached_bytes is None:
             return None
-        return json.loads(cached_bytes)
+        return self._decode_ttl_mem_entry(cached_bytes, allow_stale=allow_stale)
 
     def peek_frame_gzip_memory(
         self,
@@ -429,11 +490,12 @@ class SpatialSqliteCache:
             return None
         return cached_gz, dtype_header
 
-    def get_manifest(self, grid_key: str) -> dict[str, Any] | None:
+    def get_manifest(self, grid_key: str, *, allow_stale: bool = False) -> dict[str, Any] | None:
         """Fetch a cached sky-patch manifest, rehydrating deduplicated catalog overlays.
 
         Args:
             grid_key: Quantized spatial grid identifier.
+            allow_stale: When ``True``, return entries older than ``patch_ttl_seconds``.
 
         Returns:
             Manifest dictionary with ``query.cached = True``, or ``None``.
@@ -441,18 +503,22 @@ class SpatialSqliteCache:
         mem_key = f"manifest:{grid_key}"
         cached_bytes = self._mem_cache.get(mem_key)
         if cached_bytes is not None:
-            manifest: dict[str, Any] = json.loads(cached_bytes)
-            manifest["query"]["cached"] = True
-            return manifest
+            manifest = self._decode_ttl_mem_entry(cached_bytes, allow_stale=allow_stale)
+            if manifest is not None:
+                manifest["query"]["cached"] = True
+                return manifest
 
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT manifest_json, catalogs_json, last_accessed "
+                "SELECT manifest_json, catalogs_json, created_at, last_accessed "
                 "FROM sky_patches WHERE grid_key = ?",
                 (grid_key,),
             ).fetchone()
             if not row:
+                return None
+            created_at = float(row["created_at"])
+            if not allow_stale and self._is_entry_expired(created_at, now):
                 return None
             if now - float(row["last_accessed"]) >= self.last_access_update_interval:
                 conn.execute(
@@ -464,14 +530,15 @@ class SpatialSqliteCache:
                 catalogs_payload = json.loads(row["catalogs_json"])
                 manifest["catalog_overlays"] = catalogs_payload["catalog_overlays"]
         manifest["query"]["cached"] = True
-        self._mem_cache.put(mem_key, json.dumps(manifest, separators=(",", ":")).encode("utf-8"))
+        self._mem_cache.put(mem_key, self._encode_ttl_mem_entry(created_at, manifest))
         return manifest
 
-    def get_catalogs(self, grid_key: str) -> dict[str, Any] | None:
+    def get_catalogs(self, grid_key: str, *, allow_stale: bool = False) -> dict[str, Any] | None:
         """Fetch cached catalog overlays for a sky patch and mark as cached.
 
         Args:
             grid_key: Quantized spatial grid identifier.
+            allow_stale: When ``True``, return entries older than ``patch_ttl_seconds``.
 
         Returns:
             Catalogs dictionary with ``query.cached = True``, or ``None``.
@@ -482,25 +549,27 @@ class SpatialSqliteCache:
             "grid_key",
             grid_key,
             mem_key=f"catalogs:{grid_key}",
+            enforce_ttl=True,
+            allow_stale=allow_stale,
         )
         if payload is not None:
             payload["query"]["cached"] = True
         return payload
 
     def _read_encoded_frame_from_sqlite(
-        self, grid_key: str, filename: str
-    ) -> tuple[bytes, str] | None:
-        """Read stored frame bytes and encoding tag from SQLite without touching ``_mem_cache``."""
+        self, grid_key: str, filename: str, encoding: str
+    ) -> bytes | None:
+        """Read stored pre-gzipped frame bytes from SQLite without touching ``_mem_cache``."""
         now = time.time()
         with self.connection() as conn:
             row = conn.execute(
                 """
-                SELECT bf.compressed_blob, bf.encoding, sp.last_accessed
+                SELECT bf.compressed_blob, sp.last_accessed
                 FROM binary_frames bf
                 JOIN sky_patches sp ON sp.grid_key = bf.grid_key
-                WHERE bf.grid_key = ? AND bf.filename = ?
+                WHERE bf.grid_key = ? AND bf.filename = ? AND bf.encoding = ?
                 """,
-                (grid_key, filename),
+                (grid_key, filename, encoding),
             ).fetchone()
             if not row:
                 return None
@@ -509,19 +578,15 @@ class SpatialSqliteCache:
                     "UPDATE sky_patches SET last_accessed = ? WHERE grid_key = ?",
                     (now, grid_key),
                 )
-            return bytes(row["compressed_blob"]), str(row["encoding"])
+            return bytes(row["compressed_blob"])
 
     def _read_raw_frame_from_sqlite(self, grid_key: str, filename: str) -> bytes | None:
-        """Read and decode a binary frame to raw bytes without touching ``_mem_cache``."""
-        encoded = self._read_encoded_frame_from_sqlite(grid_key, filename)
-        if encoded is None:
+        """Read and decompress a binary frame to raw bytes without touching ``_mem_cache``."""
+        encoding = "gzip_uint8" if filename.endswith("_flags.bin") else "gzip_float32"
+        blob = self._read_encoded_frame_from_sqlite(grid_key, filename, encoding)
+        if blob is None:
             return None
-        blob, encoding = encoded
-        if encoding == "gzip_float16":
-            return convert_float16_bytes_to_float32_bytes(gzip.decompress(blob))
-        if encoding == "gzip_uint8":
-            return gzip.decompress(blob)
-        return zlib.decompress(blob)
+        return gzip.decompress(blob)
 
     def get_frame(self, grid_key: str, filename: str) -> bytes | None:
         """Fetch and decompress a cached binary frame buffer.
@@ -550,7 +615,7 @@ class SpatialSqliteCache:
         filename: str,
         precision: Literal["float32", "float16"] = "float32",
     ) -> tuple[bytes, str] | None:
-        """Fetch a wire-ready gzipped binary frame from RAM or SQLite with zero redundant work.
+        """Fetch a wire-ready gzipped binary frame from RAM or SQLite with zero recompression.
 
         Args:
             grid_key: Quantized spatial grid identifier.
@@ -561,48 +626,18 @@ class SpatialSqliteCache:
             Tuple of ``(gzip_bytes, dtype_header)``, or ``None`` if missing.
         """
         dtype_header = "uint8" if filename.endswith("_flags.bin") else precision
+        target_encoding = "gzip_uint8" if dtype_header == "uint8" else f"gzip_{dtype_header}"
         gz_key = f"frame_gz:{grid_key}:{filename}:{dtype_header}"
         cached_gz = self._mem_cache.get(gz_key)
         if cached_gz is not None:
             return cached_gz, dtype_header
 
-        raw = self._mem_cache.get(f"frame_raw:{grid_key}:{filename}")
-        if raw is not None:
-            payload = (
-                convert_float32_bytes_to_float16_bytes(raw) if dtype_header == "float16" else raw
-            )
-            gz_bytes = gzip.compress(payload, compresslevel=3)
-            self._mem_cache.put(gz_key, gz_bytes)
-            return gz_bytes, dtype_header
-
-        encoded = self._read_encoded_frame_from_sqlite(grid_key, filename)
-        if encoded is None:
+        blob = self._read_encoded_frame_from_sqlite(grid_key, filename, target_encoding)
+        if blob is None:
             return None
-        blob, encoding = encoded
 
-        # Wire-ready SQLite fast path: zero decompress, zero downcast, zero recompress
-        if (encoding == "gzip_float16" and dtype_header == "float16") or (
-            encoding == "gzip_uint8" and dtype_header == "uint8"
-        ):
-            self._mem_cache.put(gz_key, blob)
-            return blob, dtype_header
-
-        if encoding == "gzip_float16" and dtype_header == "float32":
-            raw32 = convert_float16_bytes_to_float32_bytes(gzip.decompress(blob))
-            gz_bytes = gzip.compress(raw32, compresslevel=3)
-        elif encoding == "gzip_uint8":
-            gz_bytes = blob
-        else:
-            raw_legacy = zlib.decompress(blob)
-            payload = (
-                convert_float32_bytes_to_float16_bytes(raw_legacy)
-                if dtype_header == "float16"
-                else raw_legacy
-            )
-            gz_bytes = gzip.compress(payload, compresslevel=3)
-
-        self._mem_cache.put(gz_key, gz_bytes)
-        return gz_bytes, dtype_header
+        self._mem_cache.put(gz_key, blob)
+        return blob, dtype_header
 
     def put_sky_patch(
         self,
@@ -613,7 +648,11 @@ class SpatialSqliteCache:
         manifest: dict[str, Any],
         frames: dict[str, bytes],
     ) -> None:
-        """Persist a sky-patch manifest, catalog overlays, and wire-ready compressed frames.
+        """Persist a sky-patch manifest, catalog overlays, and dual-precision frames.
+
+        Stores both ``gzip_float32`` and ``gzip_float16`` rows for detector cubes
+        (and ``gzip_uint8`` for flag masks) so subsequent cache hits serve either
+        precision with zero runtime compression or conversion.
 
         Args:
             grid_key: Quantized spatial grid identifier.
@@ -637,17 +676,20 @@ class SpatialSqliteCache:
         total_bytes = len(manifest_str.encode("utf-8")) + len(catalogs_str.encode("utf-8"))
         for fname, raw_bytes in frames.items():
             if not fname.endswith("_flags.bin") and len(raw_bytes) == BINARY_DETECTOR_FLOAT32_BYTES:
+                gz32 = gzip.compress(raw_bytes, compresslevel=3)
                 f16_bytes = convert_float32_bytes_to_float16_bytes(raw_bytes)
-                comp = gzip.compress(f16_bytes, compresslevel=3)
-                encoding = "gzip_float16"
+                gz16 = gzip.compress(f16_bytes, compresslevel=3)
+                frame_rows.append((grid_key, fname, gz32, len(raw_bytes), "gzip_float32"))
+                frame_rows.append((grid_key, fname, gz16, len(f16_bytes), "gzip_float16"))
+                total_bytes += len(gz32) + len(gz16)
             elif fname.endswith("_flags.bin"):
                 comp = gzip.compress(raw_bytes, compresslevel=3)
-                encoding = "gzip_uint8"
+                frame_rows.append((grid_key, fname, comp, len(raw_bytes), "gzip_uint8"))
+                total_bytes += len(comp)
             else:
-                comp = zlib.compress(raw_bytes, level=6)
-                encoding = "zlib_raw"
-            frame_rows.append((grid_key, fname, comp, len(raw_bytes), encoding))
-            total_bytes += len(comp)
+                comp = gzip.compress(raw_bytes, compresslevel=3)
+                frame_rows.append((grid_key, fname, comp, len(raw_bytes), "gzip_float32"))
+                total_bytes += len(comp)
 
         with self.connection() as conn:
             conn.execute(
@@ -702,11 +744,14 @@ class SpatialSqliteCache:
             ).fetchone()
             return int(row["byte_size"]) if row else 0
 
-    def get_spectrum(self, spectrum_key: str) -> dict[str, Any] | None:
+    def get_spectrum(
+        self, spectrum_key: str, *, allow_stale: bool = False
+    ) -> dict[str, Any] | None:
         """Fetch a cached 102-band spectrum payload.
 
         Args:
             spectrum_key: Cache key for the sky position's spectrum.
+            allow_stale: When ``True``, return entries older than ``patch_ttl_seconds``.
 
         Returns:
             Cached spectrum payload dictionary, or ``None``.
@@ -717,6 +762,8 @@ class SpatialSqliteCache:
             "spectrum_key",
             spectrum_key,
             mem_key=f"spectrum:{spectrum_key}",
+            enforce_ttl=True,
+            allow_stale=allow_stale,
         )
 
     def put_spectrum(

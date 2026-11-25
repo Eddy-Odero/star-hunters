@@ -18,10 +18,10 @@ ON sky_patches(last_accessed);
 CREATE TABLE IF NOT EXISTS binary_frames (
     grid_key TEXT NOT NULL,
     filename TEXT NOT NULL,
+    encoding TEXT NOT NULL,
     compressed_blob BLOB NOT NULL,
     raw_byte_size INTEGER NOT NULL,
-    encoding TEXT NOT NULL DEFAULT 'zlib_raw',
-    PRIMARY KEY (grid_key, filename),
+    PRIMARY KEY (grid_key, filename, encoding),
     FOREIGN KEY (grid_key) REFERENCES sky_patches(grid_key) ON DELETE CASCADE
 );
 

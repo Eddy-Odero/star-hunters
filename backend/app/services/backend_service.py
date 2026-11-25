@@ -828,6 +828,10 @@ class StarHuntersBackendService:
                 validate_sky_patch_manifest(cached_manifest)
                 return cached_manifest
 
+        stale_manifest = self.cache.get_manifest(grid_key, allow_stale=True)
+        if stale_manifest is not None and self._is_pending_archival_demo(stale_manifest):
+            stale_manifest = None
+
         manifest = build_sky_patch_manifest_payload(ra=ra, dec=dec, fov_arcmin=fov)
         manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
         slug = manifest["target_metadata"]["slug"]
@@ -836,14 +840,33 @@ class StarHuntersBackendService:
         frames = generate_synthetic_epoch_frames(slug=slug, manifest=manifest)
 
         if self.enable_archival_data:
-            manifest, frames = self.archival_resolver.resolve_archival_patch_sync(
-                manifest=manifest,
-                grid_key=grid_key,
-                ra=ra,
-                dec=dec,
-                fov=fov,
-                fallback_frames=frames,
-            )
+            try:
+                manifest, frames = self.archival_resolver.resolve_archival_patch_sync(
+                    manifest=manifest,
+                    grid_key=grid_key,
+                    ra=ra,
+                    dec=dec,
+                    fov=fov,
+                    fallback_frames=frames,
+                )
+            except Exception as exc:
+                if stale_manifest is not None:
+                    _logger.warning(
+                        "Archival refresh failed for %s (%s); serving stale cached patch",
+                        grid_key,
+                        exc,
+                    )
+                    validate_sky_patch_manifest(stale_manifest)
+                    return stale_manifest
+                raise
+            if (
+                stale_manifest is not None
+                and manifest.get("data_source_summary", {}).get("provenance_tier") == "simulated"
+                and stale_manifest.get("data_source_summary", {}).get("provenance_tier")
+                != "simulated"
+            ):
+                validate_sky_patch_manifest(stale_manifest)
+                return stale_manifest
             manifest = self._apply_cached_pipeline_sync(manifest, ra=ra, dec=dec, fov=fov)
             manifest, frames = apply_solar_system_ephemeris_to_frames(manifest, frames)
 
@@ -896,6 +919,17 @@ class StarHuntersBackendService:
                 validate_sky_patch_manifest(cached_manifest)
                 return cached_manifest
 
+        stale_manifest: dict[str, Any] | None = None
+        if cached_manifest is None:
+            stale_manifest = self.cache.peek_manifest_memory(grid_key, allow_stale=True)
+            if stale_manifest is None:
+                stale_manifest = await loop.run_in_executor(
+                    self._io_executor,
+                    functools.partial(self.cache.get_manifest, grid_key, allow_stale=True),
+                )
+            if stale_manifest is not None and self._is_pending_archival_demo(stale_manifest):
+                stale_manifest = None
+
         sf_key = f"patch:{grid_key}:arch{int(self.enable_archival_data)}:live{int(live_catalogs)}"
         existing_sf = self._inflight_tasks.get(sf_key)
         is_coalesced = (
@@ -904,6 +938,9 @@ class StarHuntersBackendService:
         if client_ip and not is_coalesced:
             allowed, retry_after_s = self._cold_miss_limiter.allow(client_ip)
             if not allowed:
+                if stale_manifest is not None:
+                    validate_sky_patch_manifest(stale_manifest)
+                    return stale_manifest
                 raise ColdMissRateLimitError(
                     retry_after_s=retry_after_s,
                     limit_per_min=self._cold_miss_limiter.limit_per_min,
@@ -1033,6 +1070,19 @@ class StarHuntersBackendService:
                 pipeline_result, (resolved_manifest, frames) = await asyncio.gather(
                     catalog_coro, _resolve_archival_bounded()
                 )
+                if (
+                    stale_manifest is not None
+                    and resolved_manifest.get("data_source_summary", {}).get("provenance_tier")
+                    == "simulated"
+                    and stale_manifest.get("data_source_summary", {}).get("provenance_tier")
+                    != "simulated"
+                ):
+                    _logger.warning(
+                        "Archival refresh degraded to simulated for %s; serving stale cached patch",
+                        grid_key,
+                    )
+                    validate_sky_patch_manifest(stale_manifest)
+                    return stale_manifest
             else:
                 pipeline_result, frames = await asyncio.gather(catalog_coro, frames_fut)
                 resolved_manifest = base_manifest
@@ -1286,28 +1336,41 @@ class StarHuntersBackendService:
             validate_spectrum_payload(cached_spec)
             return cached_spec
 
+        stale_spec = self.cache.get_spectrum(spectrum_key, allow_stale=True)
         try:
-            cutouts = self.spherex_cutout_fetcher(
+            try:
+                cutouts = self.spherex_cutout_fetcher(
+                    ra=ra,
+                    dec=dec,
+                    fov_arcmin=5.0,
+                    allow_synthetic_fallback=True,
+                    max_cutouts=DEFAULT_MAX_SPECTRUM_CUTOUTS,
+                    budget_seconds=13.0,
+                )
+            except TypeError:
+                cutouts = self.spherex_cutout_fetcher(
+                    ra=ra,
+                    dec=dec,
+                    fov_arcmin=5.0,
+                    allow_synthetic_fallback=True,
+                )
+            payload = self.spectrum_extractor(
                 ra=ra,
                 dec=dec,
-                fov_arcmin=5.0,
-                allow_synthetic_fallback=True,
-                max_cutouts=DEFAULT_MAX_SPECTRUM_CUTOUTS,
-                budget_seconds=13.0,
+                cutouts=cutouts,
+                source_label=resolved_label,
             )
-        except TypeError:
-            cutouts = self.spherex_cutout_fetcher(
-                ra=ra,
-                dec=dec,
-                fov_arcmin=5.0,
-                allow_synthetic_fallback=True,
-            )
-        payload = self.spectrum_extractor(
-            ra=ra,
-            dec=dec,
-            cutouts=cutouts,
-            source_label=resolved_label,
-        )
+        except Exception as exc:
+            if stale_spec is not None:
+                _logger.warning(
+                    "Spectrum refresh failed for %s (%s); serving stale cached spectrum",
+                    spectrum_key,
+                    exc,
+                )
+                stale_spec["source_label"] = resolved_label
+                validate_spectrum_payload(stale_spec)
+                return stale_spec
+            raise
         self.cache.put_spectrum(spectrum_key=spectrum_key, ra=ra, dec=dec, payload=payload)
         return payload
 
@@ -1342,6 +1405,16 @@ class StarHuntersBackendService:
         if client_ip and not is_coalesced:
             allowed, retry_after_s = self._cold_miss_limiter.allow(client_ip)
             if not allowed:
+                stale_spec = self.cache.peek_spectrum_memory(spectrum_key, allow_stale=True)
+                if stale_spec is None:
+                    stale_spec = await loop.run_in_executor(
+                        self._io_executor,
+                        functools.partial(self.cache.get_spectrum, spectrum_key, allow_stale=True),
+                    )
+                if stale_spec is not None:
+                    stale_spec["source_label"] = resolved_label
+                    validate_spectrum_payload(stale_spec)
+                    return stale_spec
                 raise ColdMissRateLimitError(
                     retry_after_s=retry_after_s,
                     limit_per_min=self._cold_miss_limiter.limit_per_min,
