@@ -15,7 +15,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from app.models.contracts import (
     SHOWCASE_TARGETS,
@@ -69,6 +69,24 @@ CPU_PRIORITY_SKY_PATCH = 10
 DEFAULT_CPU_STARVATION_THRESHOLD_S = 2.0
 
 
+class _WaiterEntry(NamedTuple):
+    """Queued waiter entry for ``_AgingPrioritySemaphore``.
+
+    Attributes:
+        priority: Caller priority (lower values are dispatched first).
+        enqueued_at: Monotonic timestamp when the waiter was queued, used for
+            aging/starvation promotion and oldest-first ordering.
+        seq: Monotonically increasing sequence number for deterministic FIFO
+            tie-breaking when timestamps match.
+        future: Future resolved by ``release()`` when this waiter wins a slot.
+    """
+
+    priority: int
+    enqueued_at: float
+    seq: int
+    future: asyncio.Future[None]
+
+
 class _AgingPrioritySemaphore:
     """Async semaphore with priority ordering and anti-starvation aging."""
 
@@ -81,11 +99,11 @@ class _AgingPrioritySemaphore:
         self._starvation_threshold_s = max(0.01, float(starvation_threshold_s))
         self._in_use = 0
         self._seq = 0
-        self._waiters: list[tuple[int, float, int, asyncio.Future[None]]] = []
+        self._waiters: list[_WaiterEntry] = []
 
     def _prune_done_waiters(self) -> None:
         if self._waiters:
-            self._waiters = [w for w in self._waiters if not w[3].done()]
+            self._waiters = [w for w in self._waiters if not w.future.done()]
 
     async def acquire(self, priority: int) -> None:
         """Acquire a CPU slot, queueing by priority when saturated."""
@@ -96,7 +114,12 @@ class _AgingPrioritySemaphore:
 
         fut = asyncio.get_running_loop().create_future()
         self._seq += 1
-        entry = (priority, time.monotonic(), self._seq, fut)
+        entry = _WaiterEntry(
+            priority=priority,
+            enqueued_at=time.monotonic(),
+            seq=self._seq,
+            future=fut,
+        )
         self._waiters.append(entry)
         try:
             await fut
@@ -116,16 +139,21 @@ class _AgingPrioritySemaphore:
 
         now = time.monotonic()
         best_idx = 0
+        # Sort key: (starvation_tier [0=starved, 1=normal], effective_priority, enqueued_at, seq)
         best_key: tuple[int, int, float, int] | None = None
-        for idx, (prio, enq, seq, _fut) in enumerate(self._waiters):
-            starved = (now - enq) >= self._starvation_threshold_s
-            key = (0, 0, enq, seq) if starved else (1, prio, enq, seq)
+        for idx, waiter in enumerate(self._waiters):
+            starved = (now - waiter.enqueued_at) >= self._starvation_threshold_s
+            key = (
+                (0, 0, waiter.enqueued_at, waiter.seq)
+                if starved
+                else (1, waiter.priority, waiter.enqueued_at, waiter.seq)
+            )
             if best_key is None or key < best_key:
                 best_key = key
                 best_idx = idx
 
-        _prio, _enq, _seq, winner_fut = self._waiters.pop(best_idx)
-        winner_fut.set_result(None)
+        winner = self._waiters.pop(best_idx)
+        winner.future.set_result(None)
 
     @asynccontextmanager
     async def slot(self, priority: int) -> AsyncIterator[None]:
