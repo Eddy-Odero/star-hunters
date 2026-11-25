@@ -898,9 +898,14 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
         self.assertEqual(r5_other_ip.status_code, 200)
 
     def test_sqlite_schema_user_version_and_last_accessed_index(self) -> None:
+        from app.services.spatial_cache import SCHEMA_VERSION
+
         with self.cache.connection() as conn:
             ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            self.assertEqual(ver, 3)
+            self.assertEqual(ver, SCHEMA_VERSION)
+            cols = {
+                str(r["name"]) for r in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
+            }
             patch_idx = {
                 str(r["name"]) for r in conn.execute("PRAGMA index_list(sky_patches)").fetchall()
             }
@@ -908,48 +913,9 @@ class LifespanCacheAndPresetsTests(unittest.TestCase):
                 str(r["name"])
                 for r in conn.execute("PRAGMA index_list(catalog_region_cache)").fetchall()
             }
+        self.assertIn("encoding", cols)
         self.assertIn("idx_sky_patches_last_accessed", patch_idx)
         self.assertIn("idx_catalog_region_last_accessed", cat_idx)
-
-        # Simulate upgrading an older v0 SQLite DB without encoding column or new indices
-        import sqlite3
-
-        legacy_db = str(self.tmp_path / "legacy_v0.db")
-        raw_conn = sqlite3.connect(legacy_db)
-        raw_conn.executescript(
-            """
-            CREATE TABLE sky_patches (
-                grid_key TEXT PRIMARY KEY, ra_center REAL NOT NULL,
-                dec_center REAL NOT NULL, fov_arcmin REAL NOT NULL,
-                manifest_json TEXT NOT NULL, catalogs_json TEXT NOT NULL,
-                byte_size INTEGER NOT NULL, created_at REAL NOT NULL, last_accessed REAL NOT NULL
-            );
-            CREATE TABLE binary_frames (
-                grid_key TEXT NOT NULL, filename TEXT NOT NULL,
-                compressed_blob BLOB NOT NULL, raw_byte_size INTEGER NOT NULL,
-                PRIMARY KEY (grid_key, filename)
-            );
-            PRAGMA user_version = 0;
-            """
-        )
-        raw_conn.close()
-
-        migrated = SpatialSqliteCache(db_path=legacy_db)
-        try:
-            with migrated.connection() as conn:
-                self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 3)
-                cols = {
-                    str(r["name"])
-                    for r in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
-                }
-                self.assertIn("encoding", cols)
-                migrated_idx = {
-                    str(r["name"])
-                    for r in conn.execute("PRAGMA index_list(sky_patches)").fetchall()
-                }
-                self.assertIn("idx_sky_patches_last_accessed", migrated_idx)
-        finally:
-            migrated.close()
 
     def test_memory_lru_o1_tag_invalidation(self) -> None:
         gk1 = "ra10.00_dec20.00_fov5.0"

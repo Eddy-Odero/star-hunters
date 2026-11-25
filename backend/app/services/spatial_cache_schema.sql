@@ -1,4 +1,4 @@
--- Quantized SQLite spatial cache schema (SCHEMA_VERSION = 3)
+-- Quantized SQLite spatial cache schema (SCHEMA_VERSION = 1)
 
 CREATE TABLE IF NOT EXISTS sky_patches (
     grid_key TEXT PRIMARY KEY,

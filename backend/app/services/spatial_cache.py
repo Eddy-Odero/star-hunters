@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gzip
 import json
-import math
 import os
 import sqlite3
 import threading
@@ -22,14 +21,19 @@ from app.models.contracts import (
     convert_float16_bytes_to_float32_bytes,
     convert_float32_bytes_to_float16_bytes,
 )
-from app.utils.astronomy import angular_separation_deg, mjd_to_date_bucket
+from app.utils.astronomy import (
+    compute_ephemeris_fov_bounds,
+    filter_ephemeris_candidates_in_fov,
+    interpolate_ephemeris_points,
+    mjd_to_date_bucket,
+)
 
 DEFAULT_GRID_STEP_DEG = 0.05  # 3 arcminutes
 DEFAULT_MAX_CACHE_BYTES = 750 * 1024 * 1024  # 750 MB
 DEFAULT_MAX_MEMORY_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB
 DEFAULT_CATALOG_TTL_SECONDS = 7 * 24 * 3600  # 7 days
 LAST_ACCESS_UPDATE_INTERVAL_SECONDS = 300.0  # 5 minutes
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 1
 _SCHEMA_PATH = Path(__file__).with_name("spatial_cache_schema.sql")
 
 
@@ -331,31 +335,12 @@ class SpatialSqliteCache:
             yield conn
 
     def _init_db(self) -> None:
-        """Enable persistent WAL mode, apply schema DDL, and run versioned migrations."""
+        """Enable persistent WAL mode, apply schema DDL, and stamp ``user_version``."""
         schema_sql = _SCHEMA_PATH.read_text(encoding="utf-8")
         with self.connection() as conn:
             conn.execute("PRAGMA journal_mode=WAL;")
             current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             conn.executescript(schema_sql)
-            if current_version < 2:
-                cols = {
-                    str(row["name"])
-                    for row in conn.execute("PRAGMA table_info(binary_frames)").fetchall()
-                }
-                if "encoding" not in cols:
-                    conn.execute(
-                        "ALTER TABLE binary_frames ADD COLUMN encoding "
-                        "TEXT NOT NULL DEFAULT 'zlib_raw'"
-                    )
-            if current_version < 3:
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_sky_patches_last_accessed "
-                    "ON sky_patches(last_accessed)"
-                )
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_catalog_region_last_accessed "
-                    "ON catalog_region_cache(last_accessed)"
-                )
             if current_version < SCHEMA_VERSION:
                 conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -1021,7 +1006,7 @@ class SpatialSqliteCache:
             ).fetchall()
         if not rows:
             return None
-        interp_ra, interp_dec, interp_vmag = self._interpolate_ephemeris_rows(rows, target_mjd)
+        interp_ra, interp_dec, interp_vmag = interpolate_ephemeris_points(rows, target_mjd)
         first = rows[0]
         return {
             "naif_id": str(first["naif_id"]),
@@ -1043,8 +1028,9 @@ class SpatialSqliteCache:
     ) -> list[dict[str, Any]]:
         """Query Solar System bodies in or traversing the FOV around ``mjd``.
 
-        Linearly interpolates daily ephemeris positions around ``mjd`` (covering
-        +/- 1 day so fast movers near day boundaries are caught accurately).
+        Fetches candidate rows within a padded RA/Dec bounding box across
+        ``mjd +/- 1 day`` and delegates interpolation and angular-separation
+        filtering to :func:`app.utils.astronomy.filter_ephemeris_candidates_in_fov`.
 
         Args:
             mjd: Target Modified Julian Date.
@@ -1056,32 +1042,23 @@ class SpatialSqliteCache:
             List of matching Solar System body dictionaries sorted by angular
             separation.
         """
-        norm_ra = float(ra) % 360.0
-        clamped_dec = max(-90.0, min(90.0, float(dec)))
         target_mjd = float(mjd)
         date_prev = mjd_to_date_bucket(target_mjd - 1.0)
         date_curr = mjd_to_date_bucket(target_mjd)
         date_next = mjd_to_date_bucket(target_mjd + 1.0)
 
-        # Pad bounding box generously (+2.0 deg) to catch fast motion prior to interpolation
-        pad_deg = max(2.0, float(radius_deg) + 1.5)
-        dec_min = max(-90.0, clamped_dec - pad_deg)
-        dec_max = min(90.0, clamped_dec + pad_deg)
-
-        cos_dec = math.cos(math.radians(clamped_dec))
-        if abs(clamped_dec) + pad_deg >= 89.0 or cos_dec < 0.05:
+        norm_ra, clamped_dec, dec_min, dec_max, ra_low, ra_high, wraps = (
+            compute_ephemeris_fov_bounds(ra, dec, radius_deg)
+        )
+        if ra_low is None or ra_high is None:
             ra_clause = "1 = 1"
             ra_params: tuple[Any, ...] = ()
+        elif not wraps:
+            ra_clause = "ra_bucket BETWEEN ? AND ?"
+            ra_params = (ra_low, ra_high)
         else:
-            dra = min(180.0, pad_deg / cos_dec)
-            ra_low = (norm_ra - dra) % 360.0
-            ra_high = (norm_ra + dra) % 360.0
-            if norm_ra - dra >= 0.0 and norm_ra + dra < 360.0:
-                ra_clause = "ra_bucket BETWEEN ? AND ?"
-                ra_params = (ra_low, ra_high)
-            else:
-                ra_clause = "(ra_bucket >= ? OR ra_bucket <= ?)"
-                ra_params = (ra_low, ra_high)
+            ra_clause = "(ra_bucket >= ? OR ra_bucket <= ?)"
+            ra_params = (ra_low, ra_high)
 
         sql = f"""
             SELECT naif_id, body_name, body_class, date_bucket, mjd, ra, dec, vmag, source
@@ -1095,85 +1072,13 @@ class SpatialSqliteCache:
         with self.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
 
-        grouped: dict[str, list[sqlite3.Row]] = {}
-        for row in rows:
-            grouped.setdefault(str(row["naif_id"]), []).append(row)
-
-        matches: list[dict[str, Any]] = []
-        for naif_id, body_rows in grouped.items():
-            body_rows.sort(key=lambda r: float(r["mjd"]))
-            interp_ra, interp_dec, interp_vmag = self._interpolate_ephemeris_rows(
-                body_rows, target_mjd
-            )
-            sep_deg = angular_separation_deg(norm_ra, clamped_dec, interp_ra, interp_dec)
-            if sep_deg <= float(radius_deg):
-                first = body_rows[0]
-                matches.append(
-                    {
-                        "naif_id": naif_id,
-                        "body_name": str(first["body_name"]),
-                        "body_class": str(first["body_class"]),
-                        "mjd": target_mjd,
-                        "ra": round(interp_ra, 6),
-                        "dec": round(interp_dec, 6),
-                        "vmag": round(interp_vmag, 3) if interp_vmag is not None else None,
-                        "angular_sep_deg": round(sep_deg, 6),
-                        "source": str(first["source"]),
-                    }
-                )
-        matches.sort(key=lambda item: float(item["angular_sep_deg"]))
-        return matches
-
-    @staticmethod
-    def _interpolate_ephemeris_rows(
-        rows: list[sqlite3.Row],
-        target_mjd: float,
-    ) -> tuple[float, float, float | None]:
-        """Linearly interpolate ``(ra, dec, vmag)`` across sorted ephemeris rows."""
-        if len(rows) == 1:
-            r0 = rows[0]
-            vmag = float(r0["vmag"]) if r0["vmag"] is not None else None
-            return float(r0["ra"]) % 360.0, float(r0["dec"]), vmag
-
-        before = rows[0]
-        after = rows[-1]
-        for idx in range(len(rows) - 1):
-            m1 = float(rows[idx]["mjd"])
-            m2 = float(rows[idx + 1]["mjd"])
-            if m1 <= target_mjd <= m2:
-                before = rows[idx]
-                after = rows[idx + 1]
-                break
-        if target_mjd <= float(rows[0]["mjd"]):
-            r0 = rows[0]
-            vmag = float(r0["vmag"]) if r0["vmag"] is not None else None
-            return float(r0["ra"]) % 360.0, float(r0["dec"]), vmag
-        if target_mjd >= float(rows[-1]["mjd"]):
-            r_last = rows[-1]
-            vmag = float(r_last["vmag"]) if r_last["vmag"] is not None else None
-            return float(r_last["ra"]) % 360.0, float(r_last["dec"]), vmag
-
-        m1 = float(before["mjd"])
-        m2 = float(after["mjd"])
-        span = m2 - m1
-        t = 0.0 if span <= 1e-9 else max(0.0, min(1.0, (target_mjd - m1) / span))
-        ra1 = float(before["ra"]) % 360.0
-        ra2 = float(after["ra"]) % 360.0
-        # Shortest wrapped angular interpolation in RA
-        dra = (ra2 - ra1 + 540.0) % 360.0 - 180.0
-        interp_ra = (ra1 + t * dra) % 360.0
-        interp_dec = float(before["dec"]) + t * (float(after["dec"]) - float(before["dec"]))
-        v1 = before["vmag"]
-        v2 = after["vmag"]
-        if v1 is not None and v2 is not None:
-            interp_vmag: float | None = float(v1) + t * (float(v2) - float(v1))
-        elif v1 is not None:
-            interp_vmag = float(v1)
-        elif v2 is not None:
-            interp_vmag = float(v2)
-        else:
-            interp_vmag = None
-        return interp_ra, interp_dec, interp_vmag
+        return filter_ephemeris_candidates_in_fov(
+            rows=rows,
+            target_mjd=target_mjd,
+            ra=norm_ra,
+            dec=clamped_dec,
+            radius_deg=radius_deg,
+        )
 
     def get_ephemeris_stats(self) -> dict[str, Any]:
         """Return count of stored ephemeris rows, bodies, and cached catalog regions.
